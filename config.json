@@ -29,6 +29,9 @@
   "ref_image_size": "match",
   "stabilize_full_body": true,
   "keyframe_draft_seconds": 2.0,
+  "keyframe_megapixels": 0.6,
+  "keyframe_steps": 8,
+  "keyframe_ref_image_size": "max",
   "reference_images": [
     "image.png",
     "image (5).png"

@@ -165,6 +165,24 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(graph["40"]["class_type"], "SaveImage")
         self.assertNotIn("last_frame", graph["30"]["inputs"])
         self.assertNotIn("first_frame", graph["30"]["inputs"])
+        self.assertEqual(graph["27"]["inputs"]["megapixels"], 0.6)
+        self.assertEqual(graph["34"]["inputs"]["steps"], 8)
+        self.assertEqual(graph["30"]["inputs"]["ref_image_size"], "max")
+
+    def test_keyframe_quality_controls_do_not_slow_video_generation(self):
+        segment = pipeline.segment_specs(self.config)[0]
+        graph = pipeline.build_graph(
+            self.config,
+            segment["prompt"],
+            None,
+            None,
+            123,
+            segment["seconds"],
+            False,
+        )
+        self.assertEqual(graph["27"]["inputs"]["megapixels"], 0.2)
+        self.assertEqual(graph["34"]["inputs"]["steps"], 6)
+        self.assertEqual(graph["30"]["inputs"]["ref_image_size"], "match")
 
     def test_keyframe_chain_reuses_previous_end_as_next_start(self):
         config = copy.deepcopy(self.config)

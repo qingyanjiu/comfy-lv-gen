@@ -202,6 +202,9 @@ ComfyUI Director 每次启动任务时读取仓库根目录的 `config.json`，�
 | `reference_images` | `["image.png", "image (5).png"]` | CLI 模式的参考图数组，最多 9 张 |
 | `opening_frame` | 可选，不存在时自动生成 | 显式指定第一段构图锚点；正常使用建议删除此项 |
 | `keyframe_draft_seconds` | `2.0` | 生成结束关键帧时使用的 H3 短期草案长度 |
+| `keyframe_megapixels` | `0.6` | 关键帧单独的生成像素量；提高可改善脸部和服装清晰度 |
+| `keyframe_steps` | `8` | 关键帧单独的采样步数 |
+| `keyframe_ref_image_size` | `max` | 关键帧参考图使用较高分辨率身份参考，提高五官细节 |
 | `stabilize_full_body` | `true` | 作为段尾锚定和首段自动构图草案的总默认值；段内可用 `hold_composition` 覆盖 |
 
 `hold_composition` 的优先级高于全局 `stabilize_full_body`。换衣服、上车、下车、换座位等会产生真实状态变化的段落应设为 `false`；纯站姿、短距离行走等需要锁定构图且不改变状态的段落可设为 `true`。
@@ -251,6 +254,10 @@ end_frame_prompt → 新结束关键帧 → 本段 last_frame
 → 生成正式段视频
 → 按需执行二采
 ```
+
+关键帧默认使用 `keyframe_megapixels=0.6`、`keyframe_steps=8` 和
+`keyframe_ref_image_size=max`，正式视频仍使用较轻量的 `megapixels=0.2`。
+这样只在关键帧阶段增加计算，避免每一段视频一采都变慢。
 
 参考图最多 9 张，全部传递到 H3 的 `ref_images.ref_image_0..8`。
 

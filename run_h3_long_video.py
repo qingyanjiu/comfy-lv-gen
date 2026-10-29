@@ -357,7 +357,7 @@ def build_keyframe_graph(config, prompt, first_frame, seed, seconds):
         "27",
         "ResolutionSelector",
         aspect_ratio=config["aspect_ratio"],
-        megapixels=config["megapixels"],
+        megapixels=float(config.get("keyframe_megapixels", config["megapixels"])),
         multiple=32,
     )
     add("28", "PrimitiveStringMultiline", value=prompt)
@@ -369,7 +369,10 @@ def build_keyframe_graph(config, prompt, first_frame, seed, seconds):
         "width": ["27", 0],
         "height": ["27", 1],
         "length": generated_frames,
-        "ref_image_size": config.get("ref_image_size", "match"),
+        "ref_image_size": config.get(
+            "keyframe_ref_image_size",
+            config.get("ref_image_size", "match"),
+        ),
     }
     if first_frame:
         h3_inputs["first_frame"] = ["1", 0]
@@ -385,7 +388,7 @@ def build_keyframe_graph(config, prompt, first_frame, seed, seconds):
         "BasicScheduler",
         model=["26", 0],
         scheduler=config["scheduler"],
-        steps=config["steps"],
+        steps=int(config.get("keyframe_steps", config["steps"])),
         denoise=1.0,
     )
     add(
