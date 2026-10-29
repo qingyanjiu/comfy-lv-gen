@@ -166,7 +166,7 @@ class GraphTests(unittest.TestCase):
         self.assertNotIn("last_frame", graph["30"]["inputs"])
         self.assertNotIn("first_frame", graph["30"]["inputs"])
         self.assertEqual(graph["27"]["inputs"]["megapixels"], 0.6)
-        self.assertEqual(graph["34"]["inputs"]["steps"], 8)
+        self.assertEqual(graph["34"]["inputs"]["steps"], 6)
         self.assertEqual(graph["30"]["inputs"]["ref_image_size"], "max")
 
     def test_keyframe_quality_controls_do_not_slow_video_generation(self):
