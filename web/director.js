@@ -9,24 +9,26 @@ function ensureStyles() {
   const style = document.createElement("style");
   style.id = "h3-long-video-director-style";
   style.textContent = `
-    .h3-director-panel { width: 100%; min-height: 260px; box-sizing: border-box; padding: 8px; color: #ddd; background: #181818; border-top: 1px solid #333; font-family: sans-serif; }
+    .h3-director-panel { width: 100%; height: 560px; box-sizing: border-box; padding: 8px; color: #ddd; background: #181818; border-top: 1px solid #333; font-family: sans-serif; overflow-y: auto; }
     .h3-director-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
     .h3-director-state { flex: 1; font-size: 13px; font-weight: 600; }
     .h3-director-mode { color: #aaa; font-size: 12px; }
     .h3-director-refresh { border: 1px solid #555; background: #2a2a2a; color: #eee; border-radius: 4px; padding: 3px 8px; cursor: pointer; }
     .h3-director-refresh:hover { background: #393939; }
-    .h3-director-keyframes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 8px; margin-bottom: 10px; }
-    .h3-director-keyframe-card { min-width: 0; border: 1px solid #5b4a2a; background: #19150f; border-radius: 6px; padding: 6px; }
+    .h3-director-section-title { margin: 8px 0 5px; color: #c7d0da; font-size: 12px; font-weight: 700; }
+    .h3-director-keyframes { display: flex; align-items: stretch; gap: 8px; margin-bottom: 10px; overflow-x: auto; padding-bottom: 5px; }
+    .h3-director-keyframe-card { flex: 0 0 210px; min-width: 0; border: 1px solid #5b4a2a; background: #19150f; border-radius: 6px; padding: 6px; }
     .h3-director-keyframe-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
     .h3-director-keyframe-pair figure { margin: 0; min-width: 0; }
-    .h3-director-keyframe-pair img { display: block; width: 100%; max-height: 300px; object-fit: contain; border-radius: 4px; background: #000; }
+    .h3-director-keyframe-pair a { display: block; }
+    .h3-director-keyframe-pair img { display: block; width: 100%; height: 150px; object-fit: contain; border-radius: 4px; background: #000; cursor: zoom-in; }
     .h3-director-keyframe-pair figcaption { color: #9fa8b3; text-align: center; font-size: 11px; margin-top: 3px; }
-    .h3-director-segments { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
-    .h3-director-card { min-width: 0; border: 1px solid #34404c; background: #11161c; border-radius: 6px; padding: 6px; }
+    .h3-director-segments { display: flex; align-items: stretch; gap: 8px; overflow-x: auto; padding-bottom: 5px; }
+    .h3-director-card { flex: 0 0 230px; min-width: 0; border: 1px solid #34404c; background: #11161c; border-radius: 6px; padding: 6px; }
     .h3-director-card-head { display: flex; justify-content: space-between; gap: 6px; margin-bottom: 5px; color: #cfd8e3; font-size: 12px; }
-    .h3-director-card video { display: block; width: 100%; max-height: 300px; border-radius: 4px; background: #000; }
+    .h3-director-card video { display: block; width: 100%; height: 220px; object-fit: contain; border-radius: 4px; background: #000; }
     .h3-director-final { margin-top: 10px; border: 1px solid #3b6f55; background: #101b15; border-radius: 6px; padding: 8px; }
-    .h3-director-final video { display: block; width: 100%; max-height: 430px; border-radius: 4px; background: #000; margin: 6px 0; }
+    .h3-director-final video { display: block; width: 100%; height: 360px; object-fit: contain; border-radius: 4px; background: #000; margin: 6px 0; }
     .h3-director-download { display: inline-block; color: #9edcff; text-decoration: none; font-size: 13px; }
     .h3-director-download:hover { text-decoration: underline; }
     .h3-director-meta { color: #87919c; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -69,10 +71,16 @@ function makeKeyframeCard(data) {
     ["结束", data.end_url],
   ]) {
     const figure = document.createElement("figure");
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.title = "点击查看原始尺寸";
     const image = document.createElement("img");
     image.loading = "lazy";
     image.src = url;
-    figure.append(image, makeElement("figcaption", "", label));
+    link.appendChild(image);
+    figure.append(link, makeElement("figcaption", "", label));
     pair.appendChild(figure);
   }
   card.appendChild(pair);
@@ -245,6 +253,8 @@ function installPanel(node) {
   const refresh = makeElement("button", "h3-director-refresh", "刷新预览");
   head.append(state, mode, refresh);
 
+  const keyframeTitle = makeElement("div", "h3-director-section-title", "首尾关键帧（横向滚动）");
+  const segmentsTitle = makeElement("div", "h3-director-section-title", "分段视频（横向滚动）");
   const segments = makeElement("div", "h3-director-segments");
   const keyframes = makeElement("div", "h3-director-keyframes");
   const error = makeElement("div", "h3-director-error");
@@ -259,7 +269,16 @@ function installPanel(node) {
   final.append(finalTitle, finalVideo, download);
 
   const meta = makeElement("div", "h3-director-meta");
-  root.append(head, keyframes, segments, final, error, meta);
+  root.append(
+    head,
+    keyframeTitle,
+    keyframes,
+    segmentsTitle,
+    segments,
+    final,
+    error,
+    meta,
+  );
 
   const ui = {
     state,
@@ -281,8 +300,8 @@ function installPanel(node) {
     serialize: false,
   });
   node.setSize([
-    Math.max(node.size[0], 780),
-    Math.max(node.size[1], 820),
+    Math.max(node.size[0], 840),
+    Math.min(1200, Math.max(node.size[1], 900)),
   ]);
 
   refresh.addEventListener("click", () => {
