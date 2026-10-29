@@ -123,6 +123,9 @@ def _normalize_storyboard(
             raise ValueError(f"Segment {index + 1} has an invalid duration") from exc
         if seconds <= 0:
             raise ValueError(f"Segment {index + 1} has an invalid duration")
+        hold_composition = item.get("hold_composition")
+        if hold_composition is not None:
+            hold_composition = bool(hold_composition)
         two_pass = bool(item.get("two_pass", False))
         if two_pass_mode == "全部一采":
             two_pass = False
@@ -137,6 +140,7 @@ def _normalize_storyboard(
                 "seconds": seconds,
                 "two_pass": two_pass,
                 "prompt": final_prompt,
+                "hold_composition": hold_composition,
             }
         )
     return segments
@@ -379,12 +383,13 @@ class H3LongVideoDirector:
                         "multiline": True,
                         "dynamicPrompts": False,
                         "default": (
-                            "Picture 1（参考图1）是主要人物身份、脸型、五官、发型、"
-                            "身高比例和服装基准。\n"
+                            "Picture 1（参考图1）是主要人物身份、脸型、五官、发型和"
+                            "身高比例基准；只有在剧情已经换好最终服装后才参考它的服装，"
+                            "宿舍试穿阶段必须按每段提示词更换衣服。\n"
                             "Picture 2（参考图2）是中性表情脸型参考，用于稳定眼睛、"
                             "鼻子、脸型和闭嘴嘴宽；不要复制它的白色上衣和背景。\n"
                             "所有段落必须保持与这些参考图相同的同一位成年女性，"
-                            "不得混入其他人物的脸、发型或服装。"
+                            "不得混入其他人物的脸或发型；服装状态严格跟随各段剧情。"
                         ),
                     },
                 ),

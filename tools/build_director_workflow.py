@@ -47,6 +47,11 @@ def build_workflow(config):
                 "seconds": segment["seconds"],
                 "two_pass": segment.get("two_pass", False),
                 "prompt": segment["prompt"],
+                **(
+                    {"hold_composition": segment["hold_composition"]}
+                    if segment.get("hold_composition") is not None
+                    else {}
+                ),
             }
             for segment in config["segments"]
         ]
@@ -101,12 +106,13 @@ def build_workflow(config):
             "widgets_values": [
                 storyboard_text,
                 (
-                    "Picture 1（参考图1）是主要人物身份、脸型、五官、发型、"
-                    "身高比例和服装基准。\n"
+                    "Picture 1（参考图1）是主要人物身份、脸型、五官、发型和"
+                    "身高比例基准；只有在剧情已经换好最终服装后才参考它的服装，"
+                    "宿舍试穿阶段必须按每段提示词更换衣服。\n"
                     "Picture 2（参考图2）是中性表情脸型参考，用于稳定眼睛、"
                     "鼻子、脸型和闭嘴嘴宽；不要复制它的白色上衣和背景。\n"
                     "所有段落必须保持与这些参考图相同的同一位成年女性，"
-                    "不得混入其他人物的脸、发型或服装。"
+                    "不得混入其他人物的脸或发型；服装状态严格跟随各段剧情。"
                 ),
                 config["steps"],
                 config["two_pass_steps"],

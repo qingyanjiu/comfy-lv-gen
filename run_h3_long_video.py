@@ -29,6 +29,13 @@ def output_frames(seconds):
     return max(1, round(float(seconds) * 24))
 
 
+def should_anchor_last_frame(config, segment):
+    hold_composition = segment.get("hold_composition")
+    if hold_composition is None:
+        hold_composition = config.get("stabilize_full_body", False)
+    return bool(hold_composition)
+
+
 def segment_specs(config):
     segments = config.get("segments")
     if not isinstance(segments, list) or not segments:
@@ -41,11 +48,15 @@ def segment_specs(config):
             raise RuntimeError(f"Segment {index + 1} has an empty prompt")
         if seconds <= 0:
             raise RuntimeError(f"Segment {index + 1} has an invalid duration")
+        hold_composition = segment.get("hold_composition")
+        if hold_composition is not None:
+            hold_composition = bool(hold_composition)
         specs.append(
             {
                 "seconds": seconds,
                 "two_pass": bool(segment.get("two_pass", config.get("two_pass_default", False))),
                 "prompt": prompt,
+                "hold_composition": hold_composition,
             }
         )
     return specs
@@ -676,7 +687,11 @@ def main():
             and config.get("stabilize_full_body")
         ):
             first_frame = ensure_opening_frame(config, specs, state, state_path)
-        last_frame = first_frame if config.get("stabilize_full_body") and first_frame else None
+        last_frame = (
+            first_frame
+            if should_anchor_last_frame(config, specs[index]) and first_frame
+            else None
+        )
         segment = run_segment(config, specs[index], index, first_frame, last_frame)
         segment["source_prompt_id"] = previous_prompt_id
         segment["generation_sha1"] = expected_signature
