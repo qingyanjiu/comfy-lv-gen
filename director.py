@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -211,6 +212,12 @@ def _save_image(image, output):
     pil_image.save(output)
 
 
+def _resolve_seed(seed, randomize):
+    if randomize:
+        return secrets.randbits(50)
+    return int(seed)
+
+
 def _write_status(job_dir, **values):
     payload = {
         "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -357,6 +364,7 @@ if PromptServer is not None:
             segments = _job_segments(job_dir, job_id)
             keyframes = _job_keyframes(job_dir, job_id)
             transitions = _job_transitions(job_dir, job_id)
+            job_config = _job_config(job_dir)
             state_path = job_dir / ".state.json"
             try:
                 state = (
@@ -377,6 +385,7 @@ if PromptServer is not None:
                     "completed_keyframes": len(keyframes),
                     "transitions": transitions,
                     "phase": state.get("phase"),
+                    "seed": job_config.get("base_seed"),
                     "final_url": (
                         f"/h3-long-video/media/{job_id}/final"
                         if final_video is not None
@@ -597,6 +606,16 @@ class H3LongVideoDirector:
                         "default": "{}",
                     },
                 ),
+                "seed": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 1125899906842623,
+                        "step": 1,
+                    },
+                ),
+                "randomize_seed": ("BOOLEAN", {"default": True}),
             },
         }
 
@@ -621,6 +640,8 @@ class H3LongVideoDirector:
         keyframe_steps,
         reference_1,
         advanced_overrides="{}",
+        seed=0,
+        randomize_seed=True,
         **reference_images,
     ):
         global _ACTIVE_JOB
@@ -678,6 +699,8 @@ class H3LongVideoDirector:
             config["megapixels"] = float(megapixels)
             config["final_width"] = int(final_width)
             config["final_height"] = int(final_height)
+            actual_seed = _resolve_seed(seed, randomize_seed)
+            config["base_seed"] = actual_seed
             if config["megapixels"] <= 0:
                 raise ValueError("megapixels must be greater than 0")
             if config["final_width"] >= config["final_height"]:
@@ -719,7 +742,7 @@ class H3LongVideoDirector:
             )
             worker.start()
             status = (
-                f"Job {job_id} scheduled. "
+                f"Job {job_id} scheduled with seed {actual_seed}. "
                 f"Status: {(job_dir / 'status.json').as_posix()}"
             )
             return {

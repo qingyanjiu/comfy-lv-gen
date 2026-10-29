@@ -119,6 +119,7 @@ The graph contains:
 - a `reference_notes` field that explains what every numbered reference image
   controls
 - keyframe steps, one-pass steps, two-pass steps, sampler, and scheduler controls
+- fixed seed / randomize-each-run controls with the actual seed shown in the job panel
 - base generation `megapixels` plus final output width and height controls
 - a global two-pass selector: follow each segment, force all one-pass, or force
   all two-pass

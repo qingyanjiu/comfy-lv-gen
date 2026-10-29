@@ -177,7 +177,12 @@ function updatePanel(ui, node, data) {
     ui.final.style.display = "none";
   }
 
-  ui.meta.textContent = data.log ? `日志：${data.log}` : "";
+  const metaParts = [];
+  if (data.seed !== null && data.seed !== undefined) {
+    metaParts.push(`本次 Seed：${data.seed}`);
+  }
+  if (data.log) metaParts.push(`日志：${data.log}`);
+  ui.meta.textContent = metaParts.join("  |  ");
   ui.meta.title = data.log || "";
 }
 
@@ -221,6 +226,14 @@ function findWidget(node, name) {
 }
 
 function migrateWidgetValues(node) {
+  const seed = findWidget(node, "seed");
+  if (seed && !Number.isFinite(Number(seed.value))) {
+    seed.value = 0;
+  }
+  const randomizeSeed = findWidget(node, "randomize_seed");
+  if (randomizeSeed && typeof randomizeSeed.value !== "boolean") {
+    randomizeSeed.value = true;
+  }
   const keyframeSteps = findWidget(node, "keyframe_steps");
   if (
     keyframeSteps &&
@@ -265,12 +278,15 @@ function countSegments(node, ui) {
   const finalWidth = findWidget(node, "final_width");
   const finalHeight = findWidget(node, "final_height");
   const keyframeSteps = findWidget(node, "keyframe_steps");
+  const seed = findWidget(node, "seed");
+  const randomizeSeed = findWidget(node, "randomize_seed");
   node.lastTwoPassMode = mode?.value || "";
   node.samplingSummary = [
     `${steps?.value ?? "?"}+${twoPassSteps?.value ?? "?"} 步`,
     `关键帧${keyframeSteps?.value ?? "?"}步`,
     sampler?.value,
     scheduler?.value,
+    randomizeSeed?.value ? "随机 Seed" : `Seed ${seed?.value ?? "?"}`,
     `${megapixels?.value ?? "?"} MP`,
     `${finalWidth?.value ?? "?"}×${finalHeight?.value ?? "?"}`,
   ]
@@ -398,6 +414,8 @@ function installPanel(node) {
     "final_width",
     "final_height",
     "keyframe_steps",
+    "seed",
+    "randomize_seed",
   ]) {
     const widget = findWidget(node, name);
     if (!widget) continue;

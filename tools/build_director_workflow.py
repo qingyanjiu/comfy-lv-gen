@@ -154,6 +154,8 @@ def build_workflow(config):
                 False,
                 config.get("keyframe_steps", 6),
                 "{}",
+                config.get("base_seed", 0),
+                True,
             ],
         },
     ]
