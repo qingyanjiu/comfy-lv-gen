@@ -67,7 +67,9 @@ function updatePanel(ui, node, data) {
     unknown: "等待状态",
   };
   ui.state.textContent = `${labels[status] || status}${countText}`;
-  ui.mode.textContent = node.lastTwoPassMode || "";
+  ui.mode.textContent = [node.lastTwoPassMode, node.samplingSummary]
+    .filter(Boolean)
+    .join(" · ");
   ui.error.textContent = data.error || "";
 
   const segmentSignature = JSON.stringify(
@@ -139,7 +141,18 @@ function findWidget(node, name) {
 function countSegments(node, ui) {
   const storyboard = findWidget(node, "storyboard");
   const mode = findWidget(node, "two_pass_mode");
+  const steps = findWidget(node, "steps");
+  const twoPassSteps = findWidget(node, "two_pass_steps");
+  const sampler = findWidget(node, "sampler");
+  const scheduler = findWidget(node, "scheduler");
   node.lastTwoPassMode = mode?.value || "";
+  node.samplingSummary = [
+    `${steps?.value ?? "?"}+${twoPassSteps?.value ?? "?"} 步`,
+    sampler?.value,
+    scheduler?.value,
+  ]
+    .filter(Boolean)
+    .join(" / ");
   try {
     const parsed = JSON.parse(storyboard?.value || "{}");
     const segments = Array.isArray(parsed) ? parsed : parsed.segments;
@@ -221,6 +234,16 @@ function installPanel(node) {
   if (modeWidget) {
     const original = modeWidget.callback;
     modeWidget.callback = function () {
+      const result = original?.apply(this, arguments);
+      countSegments(node, ui);
+      return result;
+    };
+  }
+  for (const name of ["steps", "two_pass_steps", "sampler", "scheduler"]) {
+    const widget = findWidget(node, name);
+    if (!widget) continue;
+    const original = widget.callback;
+    widget.callback = function () {
       const result = original?.apply(this, arguments);
       countSegments(node, ui);
       return result;

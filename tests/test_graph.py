@@ -55,6 +55,8 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(graph["43"]["class_type"], "MinimaxH3LatentUpscaler3D")
         self.assertEqual(graph["47"]["class_type"], "MMH3UltimateUpscale")
         self.assertEqual(graph["36"]["inputs"]["samples"], ["47", 0])
+        self.assertTrue(graph["43"]["inputs"]["enable_temporal_chunking"])
+        self.assertIn("temporal_split_param", graph["47"]["inputs"])
 
     def test_generation_signature_changes_with_prompt(self):
         first = pipeline.segment_specs(self.config)[0]
@@ -103,7 +105,13 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(len(workflow["links"]), 2)
         storyboard = json.loads(director_node["widgets_values"][0])
         self.assertEqual(len(storyboard["segments"]), len(self.config["segments"]))
-        self.assertEqual(director_node["widgets_values"][1], "跟随每段 JSON")
+        self.assertEqual(director_node["widgets_values"][1], self.config["steps"])
+        self.assertEqual(
+            director_node["widgets_values"][2], self.config["two_pass_steps"]
+        )
+        self.assertEqual(director_node["widgets_values"][3], self.config["sampler"])
+        self.assertEqual(director_node["widgets_values"][4], self.config["scheduler"])
+        self.assertEqual(director_node["widgets_values"][5], "跟随每段 JSON")
 
 
 if __name__ == "__main__":

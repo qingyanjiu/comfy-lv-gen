@@ -30,6 +30,66 @@ JOB_ROOT = ROOT / "jobs"
 _ACTIVE_LOCK = threading.Lock()
 _ACTIVE_JOB = None
 
+SAMPLER_OPTIONS = [
+    "euler",
+    "euler_cfg_pp",
+    "euler_ancestral",
+    "euler_ancestral_cfg_pp",
+    "heun",
+    "heunpp2",
+    "exp_heun_2_x0",
+    "exp_heun_2_x0_sde",
+    "dpm_2",
+    "dpm_2_ancestral",
+    "lms",
+    "dpm_fast",
+    "dpm_adaptive",
+    "dpmpp_2s_ancestral",
+    "dpmpp_2s_ancestral_cfg_pp",
+    "dpmpp_sde",
+    "dpmpp_sde_gpu",
+    "dpmpp_2m",
+    "dpmpp_2m_cfg_pp",
+    "dpmpp_2m_sde",
+    "dpmpp_2m_sde_gpu",
+    "dpmpp_2m_sde_heun",
+    "dpmpp_2m_sde_heun_gpu",
+    "dpmpp_3m_sde",
+    "dpmpp_3m_sde_gpu",
+    "ddpm",
+    "lcm",
+    "ipndm",
+    "ipndm_v",
+    "deis",
+    "cfgpp_ud10_ab",
+    "res_multistep",
+    "res_multistep_cfg_pp",
+    "res_multistep_ancestral",
+    "res_multistep_ancestral_cfg_pp",
+    "gradient_estimation",
+    "gradient_estimation_cfg_pp",
+    "er_sde",
+    "seeds_2",
+    "seeds_3",
+    "sa_solver",
+    "sa_solver_pece",
+    "ddim",
+    "uni_pc",
+    "uni_pc_bh2",
+]
+
+SCHEDULER_OPTIONS = [
+    "simple",
+    "sgm_uniform",
+    "karras",
+    "exponential",
+    "ddim_uniform",
+    "beta",
+    "normal",
+    "linear_quadratic",
+    "kl_optimal",
+]
+
 
 def _load_base_config():
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -307,6 +367,13 @@ class H3LongVideoDirector:
                         "default": '{"segments":[{"seconds":6,"two_pass":false,"prompt":"第一段提示词"}]}',
                     },
                 ),
+                "steps": ("INT", {"default": 6, "min": 1, "max": 200, "step": 1}),
+                "two_pass_steps": (
+                    "INT",
+                    {"default": 5, "min": 1, "max": 200, "step": 1},
+                ),
+                "sampler": (SAMPLER_OPTIONS, {"default": "res_multistep"}),
+                "scheduler": (SCHEDULER_OPTIONS, {"default": "simple"}),
                 "two_pass_mode": (
                     ["跟随每段 JSON", "全部一采", "全部二采"],
                     {"default": "跟随每段 JSON"},
@@ -335,6 +402,10 @@ class H3LongVideoDirector:
     def execute(
         cls,
         storyboard,
+        steps,
+        two_pass_steps,
+        sampler,
+        scheduler,
         two_pass_mode,
         force,
         reference_1,
@@ -381,6 +452,11 @@ class H3LongVideoDirector:
 
             config = _load_base_config()
             config.update(overrides)
+            config["steps"] = int(steps)
+            config["two_pass_steps"] = int(two_pass_steps)
+            config["sampler"] = sampler
+            config["scheduler"] = scheduler
+            config["two_pass_scheduler"] = scheduler
             config["segments"] = segments
             config["reference_images"] = saved_references
             config_path = job_dir / "config.json"

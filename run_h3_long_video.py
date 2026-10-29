@@ -220,6 +220,7 @@ def build_graph(config, prompt, first_frame, last_frame, seed, seconds, two_pass
             model_name=config["latent_upscaler_name"],
             mode="scale by multiplier",
             align=32,
+            # H3 two-pass temporal chunking is required by the default pipeline.
             enable_temporal_chunking=True,
             force_unload=True,
             device="cuda",
