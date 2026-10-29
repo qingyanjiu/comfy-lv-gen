@@ -34,7 +34,7 @@
 2. 在“上传完整视频（原片）”中选择视频。
 3. `force_rate` 保持 `24`。
 4. `frame_load_cap=0`，表示读取整段视频。
-5. 在参考图1~3中放入人物身份、脸型和角度参考；已连接的隐藏输入支持最多9张。
+5. 在参考图1~9中放入人物身份、脸型、发型、服装和角度参考。
 6. 编辑 H3 节点的提示词，明确使用 `<Picture 1>`、`<Video 1>`。
 7. 点击运行。
 
@@ -46,7 +46,8 @@ and <Picture 3>.
 
 <Picture 1> is the primary identity, face, hairstyle, body proportion,
 and outfit reference.
-<Picture 2> and <Picture 3> supplement facial identity and viewing angles.
+<Picture 2> through <Picture 9> supplement facial identity, hairstyle,
+outfit details, and viewing angles. Ignore backgrounds or conflicting details.
 
 <Video 1> is the complete source video. Preserve its motion, action timing,
 camera movement, framing rhythm, and scene continuity. Replace the source
