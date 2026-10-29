@@ -113,6 +113,37 @@ class GraphTests(unittest.TestCase):
             )
         )
 
+    def test_segment_can_disable_last_frame_composition_anchor(self):
+        config = copy.deepcopy(self.config)
+        config["segments"] = [
+            {
+                "seconds": 5,
+                "two_pass": False,
+                "hold_composition": False,
+                "prompt": "change outfit",
+            }
+        ]
+        segment = pipeline.segment_specs(config)[0]
+        self.assertFalse(pipeline.should_anchor_last_frame(config, segment))
+        segment["hold_composition"] = None
+        self.assertTrue(pipeline.should_anchor_last_frame(config, segment))
+
+    def test_dorm_bus_shopping_example_is_exactly_one_minute(self):
+        storyboard = json.loads(
+            (REPO / "examples" / "dorm_bus_shopping_60s.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(len(storyboard["segments"]), 12)
+        self.assertEqual(
+            sum(segment["seconds"] for segment in storyboard["segments"]),
+            60.0,
+        )
+        self.assertTrue(
+            all(segment["two_pass"] is False for segment in storyboard["segments"])
+        )
+        self.assertFalse(storyboard["segments"][1]["hold_composition"])
+
     def test_director_workflow_links_reference_images(self):
         workflow = json.loads(
             (REPO / "example_workflows" / "H3-Long-Video-Director.json").read_text(
