@@ -53,8 +53,32 @@ def build_workflow(config):
                     else {}
                 ),
                 **(
+                    {"start_frame_prompt": segment["start_frame_prompt"]}
+                    if segment.get("start_frame_prompt")
+                    else {}
+                ),
+                **(
                     {"hold_composition": segment["hold_composition"]}
                     if segment.get("hold_composition") is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "continue_from_previous": segment[
+                            "continue_from_previous"
+                        ]
+                    }
+                    if segment.get("continue_from_previous") is not None
+                    else {}
+                ),
+                **(
+                    {"transition_seconds": segment["transition_seconds"]}
+                    if segment.get("transition_seconds") is not None
+                    else {}
+                ),
+                **(
+                    {"transition_prompt": segment["transition_prompt"]}
+                    if segment.get("transition_prompt")
                     else {}
                 ),
             }

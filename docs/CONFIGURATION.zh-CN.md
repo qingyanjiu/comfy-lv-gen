@@ -38,7 +38,11 @@
       "two_pass": false,
       "prompt": "这一段的动作和运动提示词",
       "end_frame_prompt": "这一段结束时静态画面的描述",
-      "hold_composition": false
+      "start_frame_prompt": "新分镜开始时的静态画面",
+      "hold_composition": false,
+      "continue_from_previous": true,
+      "transition_seconds": 1.0,
+      "transition_prompt": "从上一镜头自然过渡到新镜头"
     }
   ]
 }
@@ -52,7 +56,11 @@
 | `two_pass` | 布尔值 | 否，默认 `false` | `false` 一采，`true` 二采；最终还受全局 `two_pass_mode` 控制 |
 | `prompt` | 字符串 | 是，不能为空 | 该段独立的动作、场景、镜头和声音描述 |
 | `end_frame_prompt` | 字符串 | 否 | 用于生成该段结束关键帧；省略时使用 `prompt` |
+| `start_frame_prompt` | 字符串 | 否 | 分镜断开时用于生成独立开始关键帧；省略时使用 `prompt` |
 | `hold_composition` | 布尔值 | 否 | `true` 不生成新结束帧，直接使用开始帧；`false` 生成独立结束关键帧 |
+| `continue_from_previous` | 布尔值 | 否 | 覆盖全局 `chain_segments`；`false` 表示启用分镜断开 |
+| `transition_seconds` | 数字 | 否 | 分镜断开时自动生成转场视频的时长 |
+| `transition_prompt` | 字符串 | 否 | 分镜转场的动作、镜头和声音提示词 |
 
 画面有 N 个 `segments` 元素，就会自动循环生成 N 段，不要求固定段数。
 
@@ -205,6 +213,9 @@ ComfyUI Director 每次启动任务时读取仓库根目录的 `config.json`，�
 | `keyframe_megapixels` | `0.6` | 关键帧单独的生成像素量；提高可改善脸部和服装清晰度 |
 | `keyframe_steps` | `8` | 关键帧单独的采样步数 |
 | `keyframe_ref_image_size` | `max` | 关键帧参考图使用较高分辨率身份参考，提高五官细节 |
+| `chain_segments` | `true` | 全局默认是否把上一段结束帧作为下一段开始帧 |
+| `transition_default_seconds` | `1.0` | 分镜断开时转场视频的默认时长 |
+| `transition_two_pass` | `false` | 是否对自动生成的转场视频执行二采 |
 | `stabilize_full_body` | `true` | 作为段尾锚定和首段自动构图草案的总默认值；段内可用 `hold_composition` 覆盖 |
 
 `hold_composition` 的优先级高于全局 `stabilize_full_body`。换衣服、上车、下车、换座位等会产生真实状态变化的段落应设为 `false`；纯站姿、短距离行走等需要锁定构图且不改变状态的段落可设为 `true`。
@@ -226,6 +237,30 @@ end_frame_prompt → 新结束关键帧 → 本段 last_frame
 ```
 
 先生成独立的结束关键帧，再用两张不同的图约束完整视频，允许换装、上车、下车和场景状态持续推进。
+
+### 分镜断开与转场
+
+默认 `chain_segments=true`，上一段结束关键帧会直接作为下一段开始关键帧。
+
+当某段需要新的镜头角度、地点或时间状态时，在该段填写：
+
+```json
+{
+  "continue_from_previous": false,
+  "transition_seconds": 1.0,
+  "start_frame_prompt": "新镜头开始时的静态画面",
+  "transition_prompt": "从上一镜头平滑转入新镜头"
+}
+```
+
+此时流程会：
+
+1. 不使用上一段尾帧作为新段首帧。
+2. 根据 `start_frame_prompt` 和参考图生成独立开始关键帧。
+3. 生成一段从上一段结束帧到新段开始帧的 H3 转场视频。
+4. 输出顺序为“上一段视频 → 转场 → 新段视频”。
+
+分镜断开处会额外增加 `transition_seconds`。最终视频总时长等于所有段时长加上所有转场时长。
 
 第一段开始关键帧：
 

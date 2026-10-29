@@ -99,6 +99,7 @@ def _normalize_storyboard(
     value,
     two_pass_mode="跟随每段 JSON",
     reference_notes="",
+    transition_default_seconds=1.0,
 ):
     try:
         data = json.loads(value)
@@ -116,6 +117,7 @@ def _normalize_storyboard(
             raise ValueError(f"Segment {index + 1} must be an object")
         prompt = str(item.get("prompt", "")).strip()
         end_frame_prompt = str(item.get("end_frame_prompt", "")).strip()
+        start_frame_prompt = str(item.get("start_frame_prompt", "")).strip()
         if not prompt:
             raise ValueError(f"Segment {index + 1} has an empty prompt")
         try:
@@ -127,6 +129,22 @@ def _normalize_storyboard(
         hold_composition = item.get("hold_composition")
         if hold_composition is not None:
             hold_composition = bool(hold_composition)
+        continue_from_previous = item.get("continue_from_previous")
+        if continue_from_previous is not None:
+            continue_from_previous = bool(continue_from_previous)
+        transition_seconds = float(
+            item.get("transition_seconds", transition_default_seconds)
+        )
+        if transition_seconds <= 0:
+            raise ValueError(
+                f"Segment {index + 1} has an invalid transition duration"
+            )
+        transition_prompt = str(item.get("transition_prompt", "")).strip()
+        transition_prompt = transition_prompt or (
+            "电影感平滑过渡，从上一镜头结尾自然转变到下一镜头开始；"
+            "保持人物身份、脸型、发型和身体比例一致，动作与场景连续，"
+            "无黑场、无对白、无水印。"
+        )
         two_pass = bool(item.get("two_pass", False))
         if two_pass_mode == "全部一采":
             two_pass = False
@@ -144,7 +162,17 @@ def _normalize_storyboard(
                 "end_frame_prompt": (
                     f"{prefix}\n\n{end_frame_prompt}" if prefix and end_frame_prompt else end_frame_prompt or final_prompt
                 ),
+                "start_frame_prompt": (
+                    f"{prefix}\n\n{start_frame_prompt}" if prefix and start_frame_prompt else start_frame_prompt or final_prompt
+                ),
                 "hold_composition": hold_composition,
+                "continue_from_previous": continue_from_previous,
+                "transition_seconds": transition_seconds,
+                "transition_prompt": (
+                    f"{prefix}\n\n{transition_prompt}"
+                    if prefix
+                    else transition_prompt
+                ),
             }
         )
     return segments
@@ -258,6 +286,34 @@ def _job_keyframes(job_dir, job_id):
     return keyframes
 
 
+def _job_transitions(job_dir, job_id):
+    state_path = job_dir / ".state.json"
+    if not state_path.is_file():
+        return []
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    transitions = []
+    for item in sorted(
+        state.get("transitions", []),
+        key=lambda value: value.get("to_segment", 0),
+    ):
+        video = Path(item.get("video", ""))
+        if not video.is_file():
+            continue
+        index = int(item["to_segment"])
+        transitions.append(
+            {
+                "index": index,
+                "seconds": item.get("seconds"),
+                "filename": video.name,
+                "url": f"/h3-long-video/media/{job_id}/transition/{index}",
+            }
+        )
+    return transitions
+
+
 def _final_video(job_dir):
     config = _job_config(job_dir)
     if not config:
@@ -288,6 +344,7 @@ if PromptServer is not None:
                 status = {"status": "unknown"}
             segments = _job_segments(job_dir, job_id)
             keyframes = _job_keyframes(job_dir, job_id)
+            transitions = _job_transitions(job_dir, job_id)
             state_path = job_dir / ".state.json"
             try:
                 state = (
@@ -306,6 +363,7 @@ if PromptServer is not None:
                     "completed_segments": len(segments),
                     "keyframes": keyframes,
                     "completed_keyframes": len(keyframes),
+                    "transitions": transitions,
                     "phase": state.get("phase"),
                     "final_url": (
                         f"/h3-long-video/media/{job_id}/final"
@@ -362,6 +420,27 @@ if PromptServer is not None:
             if not image.is_file():
                 raise FileNotFoundError(image)
             return web.FileResponse(image, headers={"Content-Type": "image/png"})
+        except Exception:
+            raise web.HTTPNotFound()
+
+    @PromptServer.instance.routes.get(
+        "/h3-long-video/media/{job_id}/transition/{index}"
+    )
+    async def h3_long_video_transition_media(request):
+        try:
+            job_id = request.match_info["job_id"]
+            index = int(request.match_info["index"])
+            job_dir = _job_directory(job_id)
+            state = json.loads((job_dir / ".state.json").read_text(encoding="utf-8"))
+            item = next(
+                value
+                for value in state["transitions"]
+                if int(value["to_segment"]) == index
+            )
+            video = Path(item["video"]).resolve()
+            if not video.is_file():
+                raise FileNotFoundError(video)
+            return web.FileResponse(video, headers={"Content-Type": "video/mp4"})
         except Exception:
             raise web.HTTPNotFound()
 
@@ -537,11 +616,6 @@ class H3LongVideoDirector:
             _ACTIVE_JOB = "reserved"
 
         try:
-            segments = _normalize_storyboard(
-                storyboard,
-                two_pass_mode,
-                reference_notes,
-            )
             try:
                 overrides = json.loads(advanced_overrides or "{}")
             except json.JSONDecodeError as exc:
@@ -552,6 +626,14 @@ class H3LongVideoDirector:
                 raise ValueError(
                     "segments and reference_images are controlled by the Director node"
                 )
+            config = _load_base_config()
+            config.update(overrides)
+            segments = _normalize_storyboard(
+                storyboard,
+                two_pass_mode,
+                reference_notes,
+                float(config.get("transition_default_seconds", 1.0)),
+            )
 
             job_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]
             job_dir = JOB_ROOT / job_id
@@ -569,8 +651,6 @@ class H3LongVideoDirector:
                 _save_image(image, output)
                 saved_references.append(output.as_posix())
 
-            config = _load_base_config()
-            config.update(overrides)
             config["steps"] = int(steps)
             config["two_pass_steps"] = int(two_pass_steps)
             config["sampler"] = sampler

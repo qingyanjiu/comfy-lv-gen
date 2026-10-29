@@ -60,7 +60,8 @@ Double-click `open_config.bat`, then edit `segments` in `config.json`:
   "two_pass": false,
   "prompt": "Action and motion for this exact segment",
   "end_frame_prompt": "Static description of the frame reached at the end",
-  "hold_composition": false
+  "hold_composition": false,
+  "continue_from_previous": true
 }
 ```
 
@@ -71,6 +72,9 @@ Important settings:
 
 - `reference_images`: one to nine images for identity, outfit, and expression
 - `stabilize_full_body`: keeps the complete head-to-shoes composition
+- `chain_segments`: default behavior for using the previous end frame as the
+  next start frame
+- `transition_default_seconds`: generated transition length for storyboard cuts
 - `keyframe_draft_seconds`: H3 draft length used to create keyframes
 - `two_pass_steps` and `two_pass_denoise`: refinement strength
 - `two_pass_fix_opening_frames`: striped frames replaced after 2x upscaling
@@ -80,6 +84,11 @@ The controller first generates the opening keyframe without using a reference
 image as a fixed frame. It then generates each segment's end keyframe from the
 current start keyframe and prompt. That end keyframe becomes the next segment's
 start keyframe. Video generation starts only after the keyframe chain is ready.
+
+Set `continue_from_previous: false` on any storyboard cut. The controller then
+generates an independent start keyframe and inserts a short generated transition
+between the previous segment and the new shot. `transition_seconds` and
+`transition_prompt` can override the transition per segment.
 
 ## Run
 
@@ -135,6 +144,7 @@ The Director node panel polls the job in the background and displays:
 
 - current status and completed segment count
 - start/end keyframe cards while the keyframe phase is running
+- generated transition cards between discontinuous shots
 - one playable video card for every completed segment
 - the final merged video and a download link when stitching finishes
 - the exact log path when a job fails
