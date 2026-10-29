@@ -1,0 +1,276 @@
+{
+  "2": {
+    "class_type": "VHS_LoadImagePath",
+    "inputs": {
+      "image": "D:/Comfy-Desktop/ComfyUI-Shared/input/image.png",
+      "custom_width": 0,
+      "custom_height": 0
+    }
+  },
+  "3": {
+    "class_type": "VHS_LoadImagePath",
+    "inputs": {
+      "image": "D:/Comfy-Desktop/ComfyUI-Shared/input/image (5).png",
+      "custom_width": 0,
+      "custom_height": 0
+    }
+  },
+  "20": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+      "type": "minimax",
+      "device": "default"
+    }
+  },
+  "21": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    }
+  },
+  "22": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    }
+  },
+  "23": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "24": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "23",
+        0
+      ],
+      "lora_name": "TaoMate-H3-3step.safetensors",
+      "strength_model": 1.0
+    }
+  },
+  "25": {
+    "class_type": "ModelAttentionBackend",
+    "inputs": {
+      "model": [
+        "24",
+        0
+      ],
+      "attention": "comfy kitchen attention"
+    }
+  },
+  "26": {
+    "class_type": "MiniMaxH3SigmaShift",
+    "inputs": {
+      "model": [
+        "25",
+        0
+      ],
+      "shift_video": 12,
+      "shift_audio": 3
+    }
+  },
+  "27": {
+    "class_type": "ResolutionSelector",
+    "inputs": {
+      "aspect_ratio": "9:16 (Portrait Widescreen)",
+      "megapixels": 0.2,
+      "multiple": 32
+    }
+  },
+  "28": {
+    "class_type": "PrimitiveStringMultiline",
+    "inputs": {
+      "value": "同一成年女性从街道正中向镜头缓慢走来。严格保持参考图中的身份、脸型、黑色长发、咖啡棕色校服上衣、百褶短裙、白色短袜和黑色乐福鞋，身高和身体比例不变。9:16完整全身镜头，固定全身机位，摄影机不推进、不后退、不缩放；头顶、裙摆和鞋底始终完整入镜，人物身高约占画面70%且逐帧大小不变。面部平静中性，双唇自然闭合，上下唇轻轻接触，嘴角平直，嘴宽与参考图中的中性表情一致；不微笑、不露牙、不张嘴、不咧嘴、不咬唇，嘴巴绝不放大。安静城市街道，柔和自然日光，轻微环境声、脚步声和呼吸声，无对白、无旁白。"
+    }
+  },
+  "30": {
+    "class_type": "VRGDG_MiniMaxH3ImageReferenceToVideo",
+    "inputs": {
+      "clip": [
+        "20",
+        0
+      ],
+      "vae": [
+        "21",
+        0
+      ],
+      "prompt": [
+        "28",
+        0
+      ],
+      "width": [
+        "27",
+        0
+      ],
+      "height": [
+        "27",
+        1
+      ],
+      "length": 158,
+      "ref_image_size": "match",
+      "ref_images.ref_image_0": [
+        "2",
+        0
+      ],
+      "ref_images.ref_image_1": [
+        "3",
+        0
+      ]
+    }
+  },
+  "31": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "res_multistep"
+    }
+  },
+  "32": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 795140483442838
+    }
+  },
+  "33": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": [
+        "26",
+        0
+      ],
+      "conditioning": [
+        "30",
+        0
+      ]
+    }
+  },
+  "34": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+      "model": [
+        "26",
+        0
+      ],
+      "scheduler": "simple",
+      "steps": 6,
+      "denoise": 1.0
+    }
+  },
+  "35": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "32",
+        0
+      ],
+      "guider": [
+        "33",
+        0
+      ],
+      "sampler": [
+        "31",
+        0
+      ],
+      "sigmas": [
+        "34",
+        0
+      ],
+      "latent_image": [
+        "30",
+        1
+      ]
+    }
+  },
+  "36": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "35",
+        0
+      ],
+      "vae": [
+        "21",
+        0
+      ]
+    }
+  },
+  "37": {
+    "class_type": "LTXVAudioVAEDecode",
+    "inputs": {
+      "samples": [
+        "35",
+        0
+      ],
+      "audio_vae": [
+        "22",
+        0
+      ]
+    }
+  },
+  "38": {
+    "class_type": "ImageFromBatch",
+    "inputs": {
+      "image": [
+        "36",
+        0
+      ],
+      "batch_index": 143,
+      "length": 1
+    }
+  },
+  "39": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "38",
+        0
+      ],
+      "filename_prefix": "h3_long_video/last_795140483442838"
+    }
+  },
+  "40": {
+    "class_type": "ImageFromBatch",
+    "inputs": {
+      "image": [
+        "36",
+        0
+      ],
+      "batch_index": 0,
+      "length": 144
+    }
+  },
+  "41": {
+    "class_type": "TrimAudioDuration",
+    "inputs": {
+      "audio": [
+        "37",
+        0
+      ],
+      "start_index": 0.0,
+      "duration": 6.0
+    }
+  },
+  "42": {
+    "class_type": "VHS_VideoCombine",
+    "inputs": {
+      "images": [
+        "40",
+        0
+      ],
+      "audio": [
+        "41",
+        0
+      ],
+      "frame_rate": 24,
+      "loop_count": 0,
+      "filename_prefix": "h3_long_video/segment_795140483442838",
+      "format": "video/h264-mp4",
+      "pingpong": false,
+      "save_output": true
+    }
+  }
+}
