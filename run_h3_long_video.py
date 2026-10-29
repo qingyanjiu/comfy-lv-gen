@@ -610,6 +610,7 @@ def repair_two_pass_opening(
         / f"segment_{prompt_id[:8]}_two_pass.mp4"
     )
     output.parent.mkdir(parents=True, exist_ok=True)
+    filter_complex = build_two_pass_repair_filter(width, height, fix_frames)
     subprocess.run(
         [
             ffmpeg,
@@ -623,12 +624,7 @@ def repair_two_pass_opening(
             "-i",
             str(video),
             "-filter_complex",
-            (
-                f"[0:v]scale={width}:{height},setsar=1,"
-                f"trim=end_frame={fix_frames},setpts=PTS-STARTPTS[a];"
-                f"[1:v]trim=start_frame={fix_frames},setpts=PTS-STARTPTS[b];"
-                "[a][b]concat=n=2:v=1:a=0,format=yuv420p[v]"
-            ),
+            filter_complex,
             "-map",
             "[v]",
             "-map",
@@ -654,6 +650,16 @@ def repair_two_pass_opening(
         check=True,
     )
     return output
+
+
+def build_two_pass_repair_filter(width, height, fix_frames):
+    return (
+        f"[0:v]scale={width}:{height},setsar=1,"
+        f"trim=end_frame={fix_frames},setpts=PTS-STARTPTS[a];"
+        f"[1:v]scale={width}:{height},setsar=1,"
+        f"trim=start_frame={fix_frames},setpts=PTS-STARTPTS[b];"
+        "[a][b]concat=n=2:v=1:a=0,format=yuv420p[v]"
+    )
 
 
 def ensure_keyframe_chain(
