@@ -194,6 +194,13 @@ class GraphTests(unittest.TestCase):
             ],
         )
 
+    def test_two_pass_repair_scales_both_streams_to_final_size(self):
+        filter_complex = pipeline.build_two_pass_repair_filter(720, 1280, 2)
+        self.assertIn("[0:v]scale=720:1280", filter_complex)
+        self.assertIn("[1:v]scale=720:1280", filter_complex)
+        self.assertIn("trim=end_frame=2", filter_complex)
+        self.assertIn("trim=start_frame=2", filter_complex)
+
     def test_default_transition_mode_is_fade(self):
         self.assertEqual(self.config["transition_mode"], "fade")
 
