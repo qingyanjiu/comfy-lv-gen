@@ -67,7 +67,18 @@ def segment_specs(config):
             segment.get("transition_seconds", config.get("transition_default_seconds", 1.0))
         )
         transition_prompt = str(segment.get("transition_prompt", "")).strip()
-        if transition_seconds <= 0:
+        effective_continue = (
+            True
+            if index == 0
+            else (
+                continue_from_previous
+                if continue_from_previous is not None
+                else bool(config.get("chain_segments", True))
+            )
+        )
+        if transition_seconds < 0 or (
+            index > 0 and not effective_continue and transition_seconds <= 0
+        ):
             raise RuntimeError(f"Segment {index + 1} has an invalid transition duration")
         specs.append(
             {
