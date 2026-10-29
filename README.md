@@ -106,6 +106,7 @@ The graph contains:
 - a `reference_notes` field that explains what every numbered reference image
   controls
 - one-pass steps, two-pass steps, sampler, and scheduler controls
+- base generation `megapixels` plus final output width and height controls
 - a global two-pass selector: follow each segment, force all one-pass, or force
   all two-pass
 - one storyboard widget containing arbitrary `seconds`, `two_pass`, and `prompt`
