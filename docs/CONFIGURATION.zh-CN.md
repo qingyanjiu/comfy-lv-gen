@@ -1,5 +1,9 @@
 # 配置参考
 
+故事板中每个字段的完整说明见：
+
+`docs/STORYBOARD_JSON.zh-CN.md`
+
 本文档解释仓库中所有用户可配置项。配置文件分为四层：
 
 1. ComfyUI Director 节点控件
