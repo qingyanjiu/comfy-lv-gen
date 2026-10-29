@@ -138,6 +138,24 @@ function findWidget(node, name) {
   return node.widgets?.find((widget) => widget.name === name);
 }
 
+function migrateWidgetValues(node) {
+  const megapixels = findWidget(node, "megapixels");
+  if (megapixels && typeof megapixels.value === "string") {
+    const parsed = Number(megapixels.value);
+    if (!Number.isFinite(parsed)) {
+      megapixels.value = 0.2;
+    }
+  }
+  const finalWidth = findWidget(node, "final_width");
+  if (finalWidth && !Number.isFinite(Number(finalWidth.value))) {
+    finalWidth.value = 704;
+  }
+  const finalHeight = findWidget(node, "final_height");
+  if (finalHeight && !Number.isFinite(Number(finalHeight.value))) {
+    finalHeight.value = 1216;
+  }
+}
+
 function countSegments(node, ui) {
   const storyboard = findWidget(node, "storyboard");
   const mode = findWidget(node, "two_pass_mode");
@@ -264,6 +282,8 @@ function installPanel(node) {
   }
 
   countSegments(node, ui);
+  migrateWidgetValues(node);
+  countSegments(node, ui);
   if (node.properties?.h3_job_id) {
     startPolling(node, ui, node.properties.h3_job_id);
   }
@@ -287,6 +307,16 @@ app.registerExtension({
     node.onRemoved = function () {
       stopPolling(node);
       return originalRemoved?.apply(this, arguments);
+    };
+    const originalConfigure = node.onConfigure;
+    node.onConfigure = function () {
+      const result = originalConfigure?.apply(this, arguments);
+      setTimeout(() => {
+        migrateWidgetValues(this);
+        countSegments(this, this.h3DirectorUI);
+        app.graph.setDirtyCanvas(true, true);
+      }, 0);
+      return result;
     };
   },
 });
