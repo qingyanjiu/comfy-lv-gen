@@ -137,6 +137,11 @@ class GraphTests(unittest.TestCase):
         segment = director._normalize_storyboard(value)[0]
         self.assertEqual(segment["end_frame_prompt"], "standing at the open door")
 
+    def test_director_resolves_fixed_and_random_seeds(self):
+        self.assertEqual(director._resolve_seed(12345, False), 12345)
+        with mock.patch.object(director.secrets, "randbits", return_value=987654):
+            self.assertEqual(director._resolve_seed(12345, True), 987654)
+
     def test_first_segment_allows_zero_transition_seconds(self):
         value = json.dumps(
             {
@@ -464,6 +469,10 @@ class GraphTests(unittest.TestCase):
             director_node["widgets_values"][11], self.config["keyframe_steps"]
         )
         self.assertEqual(director_node["widgets_values"][12], "{}")
+        self.assertEqual(
+            director_node["widgets_values"][13], self.config["base_seed"]
+        )
+        self.assertTrue(director_node["widgets_values"][14])
 
 
 if __name__ == "__main__":

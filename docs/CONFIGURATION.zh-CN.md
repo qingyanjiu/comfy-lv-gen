@@ -20,6 +20,8 @@
 | `steps` | 一采步数 | `6` | 覆盖全局和高级覆盖里的 `steps` |
 | `two_pass_steps` | 二采步数 | `5` | 覆盖全局和高级覆盖里的 `two_pass_steps` |
 | `keyframe_steps` | 关键帧草案采样步数 | `6` | 覆盖全局 `keyframe_steps` |
+| `seed` | 固定随机种子 | `0` | `randomize_seed=false` 时使用 |
+| `randomize_seed` | 每次任务自动生成新种子 | `true` | 为 `true` 时忽略固定 `seed` |
 | `sampler` | 一采和二采共用的采样器 | `res_multistep` | 覆盖 `sampler` |
 | `scheduler` | 一采和二采共用的调度器 | `simple` | 同时覆盖 `scheduler` 和 `two_pass_scheduler` |
 | `megapixels` | 一采基础生成像素量 | `0.2` | 覆盖 `megapixels` |
@@ -159,7 +161,7 @@ ComfyUI Director 每次启动任务时读取仓库根目录的 `config.json`，�
 | `steps` | `6` | 一采采样步数；Director 的 `steps` 控件优先 |
 | `sampler` | `res_multistep` | 一采和二采使用的采样器；Director 的 `sampler` 控件优先 |
 | `scheduler` | `simple` | 一采调度器；Director 的 `scheduler` 控件优先 |
-| `base_seed` | `795140483442838` | 基础种子，每段按索引递增；生成首帧草稿时额外加 `900000` |
+| `base_seed` | `795140483442838` | CLI 基础种子；Director 每个新任务会覆盖为本次实际 seed |
 
 ### 二采
 
