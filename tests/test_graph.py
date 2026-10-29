@@ -182,6 +182,7 @@ class GraphTests(unittest.TestCase):
         ]
         segment = pipeline.segment_specs(config)[0]
         self.assertFalse(pipeline.should_anchor_last_frame(config, segment))
+        config["stabilize_full_body"] = True
         segment["hold_composition"] = None
         self.assertTrue(pipeline.should_anchor_last_frame(config, segment))
 

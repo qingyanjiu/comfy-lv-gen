@@ -72,7 +72,8 @@ Double-click `open_config.bat`, then edit `segments` in `config.json`:
 Important settings:
 
 - `reference_images`: one to nine images for identity, outfit, and expression
-- `stabilize_full_body`: keeps the complete head-to-shoes composition
+- `stabilize_full_body`: default for `hold_composition`; `false` generates
+  distinct start/end keyframes
 - `chain_segments`: default behavior for using the previous end frame as the
   next start frame
 - `transition_default_seconds`: generated transition length for storyboard cuts
