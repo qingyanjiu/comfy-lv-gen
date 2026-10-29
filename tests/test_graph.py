@@ -7,6 +7,7 @@ from pathlib import Path
 
 import run_h3_long_video as pipeline
 import director
+from tools.build_full_video_2pass_workflow import SOURCE, build_workflow
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -57,6 +58,31 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(graph["36"]["inputs"]["samples"], ["47", 0])
         self.assertTrue(graph["43"]["inputs"]["enable_temporal_chunking"])
         self.assertIn("temporal_split_param", graph["47"]["inputs"])
+
+    def test_full_video_workflow_enables_video_reference_and_two_pass(self):
+        source = json.loads(SOURCE.read_text(encoding="utf-8"))
+        workflow = build_workflow(source)
+        nodes = {node["id"]: node for node in workflow["nodes"]}
+        links = {link[0]: link for link in workflow["links"]}
+
+        self.assertEqual(nodes[135]["mode"], 0)
+        self.assertEqual(nodes[90]["mode"], 0)
+        self.assertEqual(nodes[113]["mode"], 0)
+        self.assertEqual(nodes[114]["mode"], 0)
+        self.assertEqual(nodes[126]["mode"], 4)
+        self.assertEqual(links[35][1:3], [135, 1])
+        self.assertEqual(links[197][1:4], [164, 0, 114])
+        self.assertEqual(links[198][1:4], [135, 1, 164])
+        self.assertEqual(
+            nodes[6]["inputs"][
+                next(
+                    index
+                    for index, value in enumerate(nodes[6]["inputs"])
+                    if value["name"] == "ref_videos.ref_video_0"
+                )
+            ]["link"],
+            172,
+        )
 
     def test_generation_signature_changes_with_prompt(self):
         first = pipeline.segment_specs(self.config)[0]
