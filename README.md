@@ -13,6 +13,7 @@ workflow and generated API graphs for both one-pass and two-pass execution.
 
 - `run_h3_long_video.py`: stable long-video controller and ComfyUI graph builder
 - `config.json`: the current 10-segment street-walk configuration
+- `examples/dorm_bus_shopping_60s.json`: 12 × 5-second dorm, bus, and shopping example
 - `example_workflows/minimax_h3_ui_source.json`: original ComfyUI UI workflow
 - `api_workflows/segment_one_pass_api.json`: generated one-pass API graph
 - `api_workflows/segment_two_pass_api.json`: generated two-pass API graph
