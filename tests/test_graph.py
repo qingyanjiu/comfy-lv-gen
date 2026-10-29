@@ -79,6 +79,18 @@ class GraphTests(unittest.TestCase):
         self.assertEqual([item["seconds"] for item in segments], [3.0, 5.0, 7.0])
         self.assertEqual([item["two_pass"] for item in segments], [False, True, False])
 
+    def test_director_global_two_pass_mode_overrides_segments(self):
+        value = json.dumps(
+            {
+                "segments": [
+                    {"seconds": 3, "two_pass": False, "prompt": "one"},
+                    {"seconds": 5, "two_pass": False, "prompt": "two"},
+                ]
+            }
+        )
+        segments = director._normalize_storyboard(value, "全部二采")
+        self.assertEqual([item["two_pass"] for item in segments], [True, True])
+
     def test_director_workflow_links_reference_images(self):
         workflow = json.loads(
             (REPO / "example_workflows" / "H3-Long-Video-Director.json").read_text(
@@ -91,6 +103,7 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(len(workflow["links"]), 2)
         storyboard = json.loads(director_node["widgets_values"][0])
         self.assertEqual(len(storyboard["segments"]), len(self.config["segments"]))
+        self.assertEqual(director_node["widgets_values"][1], "跟随每段 JSON")
 
 
 if __name__ == "__main__":

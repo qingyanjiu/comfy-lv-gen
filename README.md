@@ -101,6 +101,8 @@ Run `install_custom_node.bat` once, then restart ComfyUI. Open:
 The graph contains:
 
 - one required reference image input and up to eight optional inputs
+- a global two-pass selector: follow each segment, force all one-pass, or force
+  all two-pass
 - one storyboard widget containing arbitrary `seconds`, `two_pass`, and `prompt`
   entries
 - an advanced override JSON widget for global settings
@@ -118,6 +120,13 @@ Job state and logs are written under:
 The Director still calls the same Python controller described above. The ComfyUI
 graph is the control panel; each segment remains a normal local ComfyUI
 execution.
+
+The Director node panel polls the job in the background and displays:
+
+- current status and completed segment count
+- one playable video card for every completed segment
+- the final merged video and a download link when stitching finishes
+- the exact log path when a job fails
 
 ## CLI
 
