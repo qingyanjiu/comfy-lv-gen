@@ -83,6 +83,16 @@ class GraphTests(unittest.TestCase):
             ]["link"],
             172,
         )
+        load_images = [node for node in workflow["nodes"] if node["type"] == "LoadImage"]
+        connected_refs = [
+            item
+            for item in nodes[6]["inputs"]
+            if item["name"].startswith("ref_images.ref_image_")
+        ]
+        self.assertEqual(len(load_images), 9)
+        self.assertTrue(all(node["mode"] == 0 for node in load_images))
+        self.assertEqual(len(connected_refs), 9)
+        self.assertTrue(all(item["link"] is not None for item in connected_refs))
 
     def test_generation_signature_changes_with_prompt(self):
         first = pipeline.segment_specs(self.config)[0]
