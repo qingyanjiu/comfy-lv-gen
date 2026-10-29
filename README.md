@@ -15,8 +15,6 @@ workflow and generated API graphs for both one-pass and two-pass execution.
 - `config.json`: the current 10-segment street-walk configuration
 - `examples/dorm_bus_shopping_60s.json`: 12 × 5-second dorm, bus, and shopping example
 - `example_workflows/minimax_h3_ui_source.json`: original ComfyUI UI workflow
-- `example_workflows/H3-FullVideo-2Pass.json`: full input-video reference with
-  image references and the original MMH3 two-pass chain
 - `api_workflows/segment_one_pass_api.json`: generated one-pass API graph
 - `api_workflows/segment_two_pass_api.json`: generated two-pass API graph
 - `run_test.bat`: render one missing segment without final stitching
@@ -25,7 +23,6 @@ workflow and generated API graphs for both one-pass and two-pass execution.
 - `H3LongVideoDirector`: a ComfyUI node that starts the same pipeline from a graph
 - `example_workflows/H3-Long-Video-Director.json`: graph with reference images and storyboard
 - `docs/CONFIGURATION.zh-CN.md`: complete Chinese configuration reference
-- `docs/FULL_VIDEO_2PASS.zh-CN.md`: full-video H3 reference workflow guide
 - `docs/ARCHITECTURE.md`: execution and caching model
 
 ## ComfyUI requirements
