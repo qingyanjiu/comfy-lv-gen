@@ -238,6 +238,68 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(keyframes[1]["end_frame"], keyframes[1]["start_frame"])
         self.assertTrue(state_path.is_file())
 
+    def test_storyboard_cut_generates_independent_next_start(self):
+        config = copy.deepcopy(self.config)
+        config["segments"] = [
+            {
+                "seconds": 5,
+                "two_pass": False,
+                "hold_composition": False,
+                "prompt": "segment one",
+            },
+            {
+                "seconds": 5,
+                "two_pass": False,
+                "hold_composition": False,
+                "continue_from_previous": False,
+                "transition_seconds": 1.0,
+                "prompt": "new camera angle",
+            },
+        ]
+        specs = pipeline.segment_specs(config)
+        state_path = self.temp / "cut_state.json"
+        state = {}
+        calls = []
+
+        def fake_keyframe(
+            config,
+            segment,
+            seed,
+            first_frame=None,
+            prompt=None,
+            label=None,
+        ):
+            number = len(calls)
+            first = self.temp / f"cut_first_{number}.png"
+            last = self.temp / f"cut_last_{number}.png"
+            first.write_bytes(b"first")
+            last.write_bytes(b"last")
+            calls.append((first_frame, prompt, label))
+            return {
+                "prompt_id": f"cut-prompt-{number}",
+                "first_frame": str(first),
+                "last_frame": str(last),
+            }
+
+        with mock.patch.object(pipeline, "run_keyframe", side_effect=fake_keyframe):
+            keyframes = pipeline.ensure_keyframe_chain(
+                config,
+                specs,
+                state,
+                state_path,
+            )
+
+        self.assertEqual(len(calls), 4)
+        self.assertIsNone(calls[2][0])
+        self.assertFalse(keyframes[1]["continue_from_previous"])
+        self.assertNotEqual(
+            keyframes[1]["start_frame"],
+            keyframes[0]["end_frame"],
+        )
+        self.assertFalse(
+            pipeline.should_continue_from_previous(config, specs[1])
+        )
+
     def test_dorm_bus_shopping_example_is_exactly_one_minute(self):
         storyboard = json.loads(
             (REPO / "examples" / "dorm_bus_shopping_60s.json").read_text(

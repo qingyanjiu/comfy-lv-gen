@@ -36,6 +36,13 @@ def should_anchor_last_frame(config, segment):
     return bool(hold_composition)
 
 
+def should_continue_from_previous(config, segment):
+    value = segment.get("continue_from_previous")
+    if value is None:
+        value = config.get("chain_segments", True)
+    return bool(value)
+
+
 def segment_specs(config):
     segments = config.get("segments")
     if not isinstance(segments, list) or not segments:
@@ -44,6 +51,7 @@ def segment_specs(config):
     for index, segment in enumerate(segments):
         prompt = str(segment.get("prompt", "")).strip()
         end_frame_prompt = str(segment.get("end_frame_prompt", "")).strip()
+        start_frame_prompt = str(segment.get("start_frame_prompt", "")).strip()
         seconds = float(segment.get("seconds", 0))
         if not prompt:
             raise RuntimeError(f"Segment {index + 1} has an empty prompt")
@@ -52,13 +60,31 @@ def segment_specs(config):
         hold_composition = segment.get("hold_composition")
         if hold_composition is not None:
             hold_composition = bool(hold_composition)
+        continue_from_previous = segment.get("continue_from_previous")
+        if continue_from_previous is not None:
+            continue_from_previous = bool(continue_from_previous)
+        transition_seconds = float(
+            segment.get("transition_seconds", config.get("transition_default_seconds", 1.0))
+        )
+        transition_prompt = str(segment.get("transition_prompt", "")).strip()
+        if transition_seconds <= 0:
+            raise RuntimeError(f"Segment {index + 1} has an invalid transition duration")
         specs.append(
             {
                 "seconds": seconds,
                 "two_pass": bool(segment.get("two_pass", config.get("two_pass_default", False))),
                 "prompt": prompt,
                 "end_frame_prompt": end_frame_prompt or prompt,
+                "start_frame_prompt": start_frame_prompt or prompt,
                 "hold_composition": hold_composition,
+                "continue_from_previous": continue_from_previous,
+                "transition_seconds": transition_seconds,
+                "transition_prompt": transition_prompt
+                or (
+                    "电影感平滑过渡，从上一镜头结尾自然转变到下一镜头开始；"
+                    "保持人物身份、脸型、发型和身体比例一致，动作与场景连续，"
+                    "无黑场、无对白、无水印。"
+                ),
             }
         )
     return specs
@@ -641,15 +667,20 @@ def ensure_keyframe_chain(
     for index in range(count):
         spec = specs[index]
         previous = existing.get(index + 1)
+        continues_from_previous = (
+            index > 0 and should_continue_from_previous(config, spec)
+        )
 
-        if index == 0 and start_frame is None:
+        if index == 0 or not continues_from_previous:
             start_spec = {
                 "seconds": draft_seconds,
                 "two_pass": False,
-                "prompt": spec["prompt"],
+                "prompt": spec["start_frame_prompt"],
             }
             start_signature = generation_signature(config, start_spec, None)
-            if (
+            if index == 0 and start_frame is not None:
+                start_signature = f"explicit:{start_frame}"
+            elif (
                 not force
                 and previous
                 and previous.get("start_sha1") == start_signature
@@ -668,8 +699,12 @@ def ensure_keyframe_chain(
                     spec,
                     int(config["base_seed"]) + 900000,
                     first_frame=None,
-                    prompt=spec["prompt"],
-                    label="Opening keyframe",
+                    prompt=spec["start_frame_prompt"],
+                    label=(
+                        "Opening keyframe"
+                        if index == 0
+                        else f"Independent start keyframe {index + 1}"
+                    ),
                 )
                 start_frame = record["first_frame"]
                 start_prompt_id = record["prompt_id"]
@@ -723,6 +758,7 @@ def ensure_keyframe_chain(
             "end_prompt_id": end_prompt_id,
             "start_sha1": start_signature,
             "end_sha1": end_signature,
+            "continue_from_previous": continues_from_previous,
         }
         ordered.append(item)
         merged = [
@@ -751,7 +787,7 @@ def ensure_keyframe_chain(
     return ordered
 
 
-def stitch_segments(config, videos, work_dir=HERE):
+def stitch_segments(config, videos, work_dir=HERE, total_seconds=None):
     ffmpeg = find_ffmpeg()
     concat_file = Path(work_dir) / "concat.txt"
     concat_file.write_text(
@@ -760,7 +796,8 @@ def stitch_segments(config, videos, work_dir=HERE):
     )
     output = Path(config.get("final_output_dir", config["comfy_output_dir"])) / config["output_prefix"] / "long_video.mp4"
     output.parent.mkdir(parents=True, exist_ok=True)
-    total_seconds = sum(float(item["seconds"]) for item in config["segments"])
+    if total_seconds is None:
+        total_seconds = sum(float(item["seconds"]) for item in config["segments"])
     width = int(config.get("final_width", 704))
     height = int(config.get("final_height", 1216))
     subprocess.run(
@@ -885,13 +922,87 @@ def main():
     )
     state["phase"] = "videos"
     state["keyframe_total"] = render_count
+    required_transitions = {
+        index + 1
+        for index, keyframe in enumerate(keyframes)
+        if index > 0 and not keyframe.get("continue_from_previous", True)
+    }
+    state["transitions"] = [
+        item
+        for item in state.get("transitions", [])
+        if int(item.get("to_segment", -1)) in required_transitions
+    ]
     state_path.write_text(
         json.dumps(state, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
-    valid_video_paths = []
+    playlist_paths = []
+    transitions = state.setdefault("transitions", [])
+    completed_segments = 0
     for index, keyframe in enumerate(keyframes):
+        if index > 0 and not keyframe.get("continue_from_previous", True):
+            previous_keyframe = keyframes[index - 1]
+            transition_spec = {
+                "seconds": specs[index]["transition_seconds"],
+                "two_pass": bool(config.get("transition_two_pass", False)),
+                "prompt": specs[index]["transition_prompt"],
+            }
+            transition_source = (
+                f"{previous_keyframe.get('end_prompt_id')}:"
+                f"{keyframe.get('start_prompt_id')}"
+            )
+            transition_signature = generation_signature(
+                config,
+                transition_spec,
+                transition_source,
+            )
+            existing_transition = next(
+                (
+                    item
+                    for item in transitions
+                    if int(item.get("to_segment", -1)) == index + 1
+                ),
+                None,
+            )
+            if (
+                existing_transition
+                and not args.force
+                and existing_transition.get("video")
+                and Path(existing_transition["video"]).is_file()
+                and existing_transition.get("generation_sha1")
+                == transition_signature
+                and existing_transition.get("source_prompt_id")
+                == transition_source
+            ):
+                playlist_paths.append(existing_transition["video"])
+            else:
+                transition_record = run_segment(
+                    config,
+                    transition_spec,
+                    index,
+                    previous_keyframe["end_frame"],
+                    keyframe["start_frame"],
+                    seed=int(config["base_seed"]) + 800000 + index,
+                    log_label=f"Transition to segment {index + 1}",
+                )
+                transition_record["to_segment"] = index + 1
+                transition_record["source_prompt_id"] = transition_source
+                transition_record["generation_sha1"] = transition_signature
+                transitions = [
+                    item
+                    for item in transitions
+                    if int(item.get("to_segment", -1)) != index + 1
+                ]
+                transitions.append(transition_record)
+                transitions.sort(key=lambda item: item["to_segment"])
+                state["transitions"] = transitions
+                state_path.write_text(
+                    json.dumps(state, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                playlist_paths.append(transition_record["video"])
+
         existing = next((x for x in segments if x.get("segment") == index + 1), None)
         source_key = (
             f"{keyframe.get('start_prompt_id')}:"
@@ -909,7 +1020,8 @@ def main():
             and existing.get("generation_sha1") == expected_signature
             and existing.get("source_prompt_id") == source_key
         ):
-            valid_video_paths.append(existing["video"])
+            playlist_paths.append(existing["video"])
+            completed_segments += 1
             continue
         segment = run_segment(
             config,
@@ -927,19 +1039,31 @@ def main():
         segments.sort(key=lambda x: x["segment"])
         state["segments"] = segments
         state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
-        valid_video_paths.append(segment["video"])
+        playlist_paths.append(segment["video"])
+        completed_segments += 1
 
     if args.no_stitch:
         return
-    if len(valid_video_paths) != segment_count:
+    if completed_segments != segment_count:
         print(
-            f"[H3] {len(valid_video_paths)}/{segment_count} segments are ready; "
+            f"[H3] {completed_segments}/{segment_count} segments are ready; "
             "the final video will be created after the remaining chain is rendered.",
             flush=True,
         )
         return
-    if valid_video_paths:
-        output = stitch_segments(config, valid_video_paths, config_path.parent)
+    if playlist_paths:
+        total_seconds = sum(spec["seconds"] for spec in specs)
+        total_seconds += sum(
+            spec["transition_seconds"]
+            for index, spec in enumerate(specs)
+            if index > 0 and not should_continue_from_previous(config, spec)
+        )
+        output = stitch_segments(
+            config,
+            playlist_paths,
+            config_path.parent,
+            total_seconds=total_seconds,
+        )
         print(f"[H3] Final video: {output}", flush=True)
 
 

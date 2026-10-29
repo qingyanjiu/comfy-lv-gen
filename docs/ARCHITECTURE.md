@@ -10,9 +10,11 @@ For each segment, the controller:
 3. Builds a sequential keyframe chain before any full segment video starts.
 4. Uses each generated end keyframe as the exact start keyframe of the next
    segment.
-5. Submits the graph to `/prompt`, waits for `/history`, and records the result
+5. Supports storyboard cuts: when `continue_from_previous` is false, generates
+   an independent start keyframe and a transition video between shots.
+6. Submits the graph to `/prompt`, waits for `/history`, and records the result
    in `.state.json`.
-6. Uses FFmpeg to normalize and concatenate the completed segment videos.
+7. Uses FFmpeg to normalize and concatenate segment and transition videos.
 
 The opening keyframe deliberately has no fixed `first_frame` from
 `reference_images`. A short H3 draft is generated, its first frame becomes the

@@ -87,6 +87,20 @@ function makeKeyframeCard(data) {
   return card;
 }
 
+function makeTransitionCard(data) {
+  const card = makeElement("div", "h3-director-card");
+  const head = makeElement("div", "h3-director-card-head");
+  const title = makeElement("strong", "", `进入第 ${data.index} 段`);
+  const details = makeElement("span", "", `${data.seconds ?? "?"} 秒`);
+  head.append(title, details);
+  const video = document.createElement("video");
+  video.controls = true;
+  video.preload = "metadata";
+  video.src = data.url;
+  card.append(head, video);
+  return card;
+}
+
 function updatePanel(ui, node, data) {
   const status = data.status || "unknown";
   const total = Number(node.storyboardCount || 0);
@@ -122,6 +136,22 @@ function updatePanel(ui, node, data) {
     ui.keyframes.replaceChildren(
       ...(data.keyframes || []).map((item) => makeKeyframeCard(item)),
     );
+  }
+
+  const transitionSignature = JSON.stringify(
+    (data.transitions || []).map((item) => [
+      item.index,
+      item.url,
+      item.seconds,
+    ]),
+  );
+  if (ui.transitionSignature !== transitionSignature) {
+    ui.transitionSignature = transitionSignature;
+    ui.transitions.replaceChildren(
+      ...(data.transitions || []).map((item) => makeTransitionCard(item)),
+    );
+    ui.transitionTitle.style.display = data.transitions?.length ? "block" : "none";
+    ui.transitions.style.display = data.transitions?.length ? "flex" : "none";
   }
 
   const segmentSignature = JSON.stringify(
@@ -254,6 +284,14 @@ function installPanel(node) {
   head.append(state, mode, refresh);
 
   const keyframeTitle = makeElement("div", "h3-director-section-title", "首尾关键帧（横向滚动）");
+  const transitionTitle = makeElement(
+    "div",
+    "h3-director-section-title",
+    "分镜转场（横向滚动）",
+  );
+  transitionTitle.style.display = "none";
+  const transitions = makeElement("div", "h3-director-segments");
+  transitions.style.display = "none";
   const segmentsTitle = makeElement("div", "h3-director-section-title", "分段视频（横向滚动）");
   const segments = makeElement("div", "h3-director-segments");
   const keyframes = makeElement("div", "h3-director-keyframes");
@@ -273,6 +311,8 @@ function installPanel(node) {
     head,
     keyframeTitle,
     keyframes,
+    transitionTitle,
+    transitions,
     segmentsTitle,
     segments,
     final,
@@ -284,6 +324,8 @@ function installPanel(node) {
     state,
     mode,
     keyframes,
+    transitionTitle,
+    transitions,
     segments,
     final,
     finalVideo,
@@ -292,6 +334,7 @@ function installPanel(node) {
     meta,
     segmentSignature: "",
     keyframeSignature: "",
+    transitionSignature: "",
     finalUrl: "",
     jobId: "",
   };
