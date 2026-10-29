@@ -221,6 +221,22 @@ function findWidget(node, name) {
 }
 
 function migrateWidgetValues(node) {
+  const keyframeSteps = findWidget(node, "keyframe_steps");
+  if (
+    keyframeSteps &&
+    typeof keyframeSteps.value === "string" &&
+    !Number.isFinite(Number(keyframeSteps.value))
+  ) {
+    const oldAdvancedOverrides = keyframeSteps.value;
+    keyframeSteps.value = 6;
+    const advancedOverrides = findWidget(node, "advanced_overrides");
+    if (
+      advancedOverrides &&
+      (!advancedOverrides.value || advancedOverrides.value === "{}")
+    ) {
+      advancedOverrides.value = oldAdvancedOverrides;
+    }
+  }
   const megapixels = findWidget(node, "megapixels");
   if (megapixels && typeof megapixels.value === "string") {
     const parsed = Number(megapixels.value);
@@ -248,9 +264,11 @@ function countSegments(node, ui) {
   const megapixels = findWidget(node, "megapixels");
   const finalWidth = findWidget(node, "final_width");
   const finalHeight = findWidget(node, "final_height");
+  const keyframeSteps = findWidget(node, "keyframe_steps");
   node.lastTwoPassMode = mode?.value || "";
   node.samplingSummary = [
     `${steps?.value ?? "?"}+${twoPassSteps?.value ?? "?"} 步`,
+    `关键帧${keyframeSteps?.value ?? "?"}步`,
     sampler?.value,
     scheduler?.value,
     `${megapixels?.value ?? "?"} MP`,
@@ -379,6 +397,7 @@ function installPanel(node) {
     "megapixels",
     "final_width",
     "final_height",
+    "keyframe_steps",
   ]) {
     const widget = findWidget(node, name);
     if (!widget) continue;
