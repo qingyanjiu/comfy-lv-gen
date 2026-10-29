@@ -15,7 +15,7 @@ import requests
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "config.json"
-GRAPH_VERSION = 4
+GRAPH_VERSION = 5
 
 
 def h3_frame_count(seconds):
@@ -663,6 +663,8 @@ def ensure_keyframe_chain(
     start_frame = config.get("opening_frame") or None
     start_prompt_id = None
     start_signature = f"explicit:{start_frame}" if start_frame else None
+    opening_draft_last_frame = None
+    opening_draft_prompt_id = None
 
     for index in range(count):
         spec = specs[index]
@@ -689,6 +691,12 @@ def ensure_keyframe_chain(
             ):
                 start_frame = previous["start_frame"]
                 start_prompt_id = previous.get("start_prompt_id")
+                opening_draft_last_frame = previous.get(
+                    "opening_draft_last_frame"
+                )
+                opening_draft_prompt_id = previous.get(
+                    "opening_draft_prompt_id"
+                )
                 print(
                     f"[H3] Reusing opening keyframe: {start_frame}",
                     flush=True,
@@ -708,12 +716,28 @@ def ensure_keyframe_chain(
                 )
                 start_frame = record["first_frame"]
                 start_prompt_id = record["prompt_id"]
+                if index == 0:
+                    opening_draft_last_frame = record["last_frame"]
+                    opening_draft_prompt_id = record["prompt_id"]
 
         hold_composition = should_anchor_last_frame(config, spec)
         if hold_composition:
             end_frame = start_frame
             end_prompt_id = start_prompt_id
             end_signature = f"hold:{start_signature}"
+        elif (
+            index == 0
+            and spec["end_frame_prompt"] == spec["prompt"]
+            and opening_draft_last_frame
+            and Path(opening_draft_last_frame).is_file()
+        ):
+            end_frame = opening_draft_last_frame
+            end_prompt_id = opening_draft_prompt_id
+            end_signature = f"opening-draft:{start_signature}"
+            print(
+                f"[H3] Reusing opening draft end keyframe: {end_frame}",
+                flush=True,
+            )
         else:
             end_spec = {
                 "seconds": draft_seconds,
@@ -759,6 +783,8 @@ def ensure_keyframe_chain(
             "start_sha1": start_signature,
             "end_sha1": end_signature,
             "continue_from_previous": continues_from_previous,
+            "opening_draft_last_frame": opening_draft_last_frame,
+            "opening_draft_prompt_id": opening_draft_prompt_id,
         }
         ordered.append(item)
         merged = [
