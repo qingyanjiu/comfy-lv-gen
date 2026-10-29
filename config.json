@@ -29,6 +29,7 @@
   "ref_image_size": "match",
   "stabilize_full_body": false,
   "chain_segments": true,
+  "transition_mode": "fade",
   "transition_default_seconds": 1.0,
   "transition_two_pass": false,
   "keyframe_draft_seconds": 2.0,

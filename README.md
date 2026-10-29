@@ -76,6 +76,8 @@ Important settings:
   distinct start/end keyframes
 - `chain_segments`: default behavior for using the previous end frame as the
   next start frame
+- `transition_mode`: `fade` for FFmpeg fade-out/fade-in, `generated` for an
+  H3 transition clip, or `none`
 - `transition_default_seconds`: generated transition length for storyboard cuts
 - `keyframe_draft_seconds`: H3 draft length used to create keyframes
 - `two_pass_steps` and `two_pass_denoise`: refinement strength
@@ -88,9 +90,8 @@ current start keyframe and prompt. That end keyframe becomes the next segment's
 start keyframe. Video generation starts only after the keyframe chain is ready.
 
 Set `continue_from_previous: false` on any storyboard cut. The controller then
-generates an independent start keyframe and inserts a short generated transition
-between the previous segment and the new shot. `transition_seconds` and
-`transition_prompt` can override the transition per segment.
+generates an independent start keyframe and applies either a fast FFmpeg fade
+(default) or an optional generated H3 transition between shots.
 
 ## Run
 

@@ -102,6 +102,9 @@ def segment_specs(config):
 
 
 def validate_config(config):
+    transition_mode = str(config.get("transition_mode", "fade")).lower()
+    if transition_mode not in {"fade", "generated", "none"}:
+        raise RuntimeError("transition_mode must be fade, generated, or none")
     aspect_ratio = str(config.get("aspect_ratio", ""))
     if "9:16" not in aspect_ratio:
         raise RuntimeError("This H3 flow is locked to a 9:16 portrait aspect ratio")
@@ -824,7 +827,38 @@ def ensure_keyframe_chain(
     return ordered
 
 
-def stitch_segments(config, videos, work_dir=HERE, total_seconds=None):
+def build_fade_filters(boundaries):
+    video_filters = []
+    audio_filters = []
+    for boundary, duration in boundaries:
+        half = max(0.001, float(duration) / 2.0)
+        fade_out_start = max(0.0, boundary - half)
+        video_filters.extend(
+            [
+                f"fade=t=out:st={fade_out_start:.6f}:d={half:.6f}:"
+                f"enable='between(t,{fade_out_start:.6f},{boundary:.6f})'",
+                f"fade=t=in:st={boundary:.6f}:d={half:.6f}:"
+                f"enable='between(t,{boundary:.6f},{boundary + half:.6f})'",
+            ]
+        )
+        audio_filters.extend(
+            [
+                f"afade=t=out:st={fade_out_start:.6f}:d={half:.6f}:"
+                f"enable='between(t,{fade_out_start:.6f},{boundary:.6f})'",
+                f"afade=t=in:st={boundary:.6f}:d={half:.6f}:"
+                f"enable='between(t,{boundary:.6f},{boundary + half:.6f})'",
+            ]
+        )
+    return video_filters, audio_filters
+
+
+def stitch_segments(
+    config,
+    videos,
+    work_dir=HERE,
+    total_seconds=None,
+    fade_boundaries=None,
+):
     ffmpeg = find_ffmpeg()
     concat_file = Path(work_dir) / "concat.txt"
     concat_file.write_text(
@@ -837,30 +871,39 @@ def stitch_segments(config, videos, work_dir=HERE, total_seconds=None):
         total_seconds = sum(float(item["seconds"]) for item in config["segments"])
     width = int(config.get("final_width", 704))
     height = int(config.get("final_height", 1216))
-    subprocess.run(
+    fade_boundaries = fade_boundaries or []
+    video_fade_filters, audio_fade_filters = build_fade_filters(fade_boundaries)
+    video_filter = f"scale={width}:{height}:flags=lanczos"
+    if video_fade_filters:
+        video_filter += "," + ",".join(video_fade_filters)
+    command = [
+        ffmpeg,
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_file),
+        "-t",
+        str(total_seconds),
+        "-vf",
+        video_filter,
+        "-r",
+        "24",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
+    ]
+    if audio_fade_filters:
+        command.extend(["-af", ",".join(audio_fade_filters)])
+    command.extend(
         [
-            ffmpeg,
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(concat_file),
-            "-t",
-            str(total_seconds),
-            "-vf",
-            f"scale={width}:{height}:flags=lanczos",
-            "-r",
-            "24",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "18",
-            "-pix_fmt",
-            "yuv420p",
             "-c:a",
             "aac",
             "-b:a",
@@ -868,7 +911,10 @@ def stitch_segments(config, videos, work_dir=HERE, total_seconds=None):
             "-movflags",
             "+faststart",
             str(output),
-        ],
+        ]
+    )
+    subprocess.run(
+        command,
         check=True,
     )
     return output
@@ -959,10 +1005,15 @@ def main():
     )
     state["phase"] = "videos"
     state["keyframe_total"] = render_count
+    transition_mode = str(config.get("transition_mode", "fade")).lower()
     required_transitions = {
         index + 1
         for index, keyframe in enumerate(keyframes)
-        if index > 0 and not keyframe.get("continue_from_previous", True)
+        if (
+            transition_mode == "generated"
+            and index > 0
+            and not keyframe.get("continue_from_previous", True)
+        )
     }
     state["transitions"] = [
         item
@@ -978,7 +1029,11 @@ def main():
     transitions = state.setdefault("transitions", [])
     completed_segments = 0
     for index, keyframe in enumerate(keyframes):
-        if index > 0 and not keyframe.get("continue_from_previous", True):
+        if (
+            transition_mode == "generated"
+            and index > 0
+            and not keyframe.get("continue_from_previous", True)
+        ):
             previous_keyframe = keyframes[index - 1]
             transition_spec = {
                 "seconds": specs[index]["transition_seconds"],
@@ -1090,16 +1145,28 @@ def main():
         return
     if playlist_paths:
         total_seconds = sum(spec["seconds"] for spec in specs)
-        total_seconds += sum(
-            spec["transition_seconds"]
-            for index, spec in enumerate(specs)
-            if index > 0 and not should_continue_from_previous(config, spec)
-        )
+        fade_boundaries = []
+        if transition_mode == "generated":
+            total_seconds += sum(
+                spec["transition_seconds"]
+                for index, spec in enumerate(specs)
+                if index > 0 and not should_continue_from_previous(config, spec)
+            )
+        elif transition_mode == "fade":
+            elapsed = 0.0
+            for index, spec in enumerate(specs[:-1]):
+                elapsed += spec["seconds"]
+                next_spec = specs[index + 1]
+                if not should_continue_from_previous(config, next_spec):
+                    fade_boundaries.append(
+                        (elapsed, next_spec["transition_seconds"])
+                    )
         output = stitch_segments(
             config,
             playlist_paths,
             config_path.parent,
             total_seconds=total_seconds,
+            fade_boundaries=fade_boundaries,
         )
         print(f"[H3] Final video: {output}", flush=True)
 

@@ -170,6 +170,28 @@ class GraphTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             director._normalize_storyboard(value)
 
+    def test_fade_transition_filters_are_centered_on_cut(self):
+        video_filters, audio_filters = pipeline.build_fade_filters(
+            [(5.0, 1.0)]
+        )
+        self.assertEqual(
+            video_filters,
+            [
+                "fade=t=out:st=4.500000:d=0.500000:enable='between(t,4.500000,5.000000)'",
+                "fade=t=in:st=5.000000:d=0.500000:enable='between(t,5.000000,5.500000)'",
+            ],
+        )
+        self.assertEqual(
+            audio_filters,
+            [
+                "afade=t=out:st=4.500000:d=0.500000:enable='between(t,4.500000,5.000000)'",
+                "afade=t=in:st=5.000000:d=0.500000:enable='between(t,5.000000,5.500000)'",
+            ],
+        )
+
+    def test_default_transition_mode_is_fade(self):
+        self.assertEqual(self.config["transition_mode"], "fade")
+
     def test_segment_can_disable_last_frame_composition_anchor(self):
         config = copy.deepcopy(self.config)
         config["segments"] = [
