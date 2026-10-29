@@ -143,6 +143,13 @@ class GraphTests(unittest.TestCase):
             all(segment["two_pass"] is False for segment in storyboard["segments"])
         )
         self.assertFalse(storyboard["segments"][1]["hold_composition"])
+        self.assertTrue(
+            all("<女主角>" in segment["prompt"] for segment in storyboard["segments"])
+        )
+        self.assertIn("浅灰色居家短袖", storyboard["segments"][0]["prompt"])
+        for segment in storyboard["segments"][1:]:
+            self.assertNotIn("浅蓝色短款针织开衫", segment["prompt"])
+            self.assertNotIn("深棕色高腰百褶裙", segment["prompt"])
 
     def test_director_workflow_links_reference_images(self):
         workflow = json.loads(
