@@ -437,6 +437,11 @@ class GraphTests(unittest.TestCase):
             director_node["widgets_values"][8], self.config["final_height"]
         )
         self.assertEqual(director_node["widgets_values"][9], "跟随每段 JSON")
+        self.assertFalse(director_node["widgets_values"][10])
+        self.assertEqual(
+            director_node["widgets_values"][11], self.config["keyframe_steps"]
+        )
+        self.assertEqual(director_node["widgets_values"][12], "{}")
 
 
 if __name__ == "__main__":

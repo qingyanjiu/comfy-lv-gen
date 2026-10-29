@@ -581,6 +581,10 @@ class H3LongVideoDirector:
                     {"default": "跟随每段 JSON"},
                 ),
                 "force": ("BOOLEAN", {"default": False}),
+                "keyframe_steps": (
+                    "INT",
+                    {"default": 6, "min": 1, "max": 200, "step": 1},
+                ),
                 "reference_1": ("IMAGE",),
             },
             "optional": {
@@ -614,6 +618,7 @@ class H3LongVideoDirector:
         final_height,
         two_pass_mode,
         force,
+        keyframe_steps,
         reference_1,
         advanced_overrides="{}",
         **reference_images,
@@ -666,6 +671,7 @@ class H3LongVideoDirector:
 
             config["steps"] = int(steps)
             config["two_pass_steps"] = int(two_pass_steps)
+            config["keyframe_steps"] = int(keyframe_steps)
             config["sampler"] = sampler
             config["scheduler"] = scheduler
             config["two_pass_scheduler"] = scheduler

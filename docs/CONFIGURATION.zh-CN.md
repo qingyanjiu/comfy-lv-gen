@@ -19,6 +19,7 @@
 | `reference_notes` | 说明每张参考图负责身份、脸型、发型、服装等哪些特征 | 图1/图2说明模板 | 自动加到每一段提示词最前面 |
 | `steps` | 一采步数 | `6` | 覆盖全局和高级覆盖里的 `steps` |
 | `two_pass_steps` | 二采步数 | `5` | 覆盖全局和高级覆盖里的 `two_pass_steps` |
+| `keyframe_steps` | 关键帧草案采样步数 | `6` | 覆盖全局 `keyframe_steps` |
 | `sampler` | 一采和二采共用的采样器 | `res_multistep` | 覆盖 `sampler` |
 | `scheduler` | 一采和二采共用的调度器 | `simple` | 同时覆盖 `scheduler` 和 `two_pass_scheduler` |
 | `megapixels` | 一采基础生成像素量 | `0.2` | 覆盖 `megapixels` |

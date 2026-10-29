@@ -152,6 +152,7 @@ def build_workflow(config):
                 config["final_height"],
                 "跟随每段 JSON",
                 False,
+                config.get("keyframe_steps", 6),
                 "{}",
             ],
         },
