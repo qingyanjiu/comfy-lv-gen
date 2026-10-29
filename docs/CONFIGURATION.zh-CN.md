@@ -64,8 +64,8 @@
 | `start_frame_prompt` | 字符串 | 否 | 分镜断开时用于生成独立开始关键帧；省略时使用 `prompt` |
 | `hold_composition` | 布尔值 | 否 | `true` 不生成新结束帧，直接使用开始帧；`false` 生成独立结束关键帧 |
 | `continue_from_previous` | 布尔值 | 否 | 覆盖全局 `chain_segments`；`false` 表示启用分镜断开 |
-| `transition_seconds` | 数字 | 否 | 分镜断开时自动生成转场视频的时长 |
-| `transition_prompt` | 字符串 | 否 | 分镜转场的动作、镜头和声音提示词 |
+| `transition_seconds` | 数字 | 否 | 分镜淡入淡出或生成式转场的时长 |
+| `transition_prompt` | 字符串 | 否 | `generated` 模式下生成式转场的提示词 |
 
 画面有 N 个 `segments` 元素，就会自动循环生成 N 段，不要求固定段数。
 
@@ -219,8 +219,9 @@ ComfyUI Director 每次启动任务时读取仓库根目录的 `config.json`，�
 | `keyframe_steps` | `6` | 关键帧单独的采样步数 |
 | `keyframe_ref_image_size` | `max` | 关键帧参考图使用较高分辨率身份参考，提高五官细节 |
 | `chain_segments` | `true` | 全局默认是否把上一段结束帧作为下一段开始帧 |
-| `transition_default_seconds` | `1.0` | 分镜断开时转场视频的默认时长 |
-| `transition_two_pass` | `false` | 是否对自动生成的转场视频执行二采 |
+| `transition_mode` | `fade` | `fade` 为 FFmpeg 淡出淡入，`generated` 为 H3 生成转场，`none` 为硬切 |
+| `transition_default_seconds` | `1.0` | 分镜断开时转场的默认时长 |
+| `transition_two_pass` | `false` | 是否对 `generated` 模式的转场视频执行二采 |
 | `stabilize_full_body` | `false` | `hold_composition` 的全局默认值；现在默认生成不同的首尾关键帧 |
 
 `hold_composition` 的优先级高于全局 `stabilize_full_body`。换衣服、上车、下车、换座位等会产生真实状态变化的段落应设为 `false`；纯站姿、短距离行走等需要锁定构图且不改变状态的段落可设为 `true`。
@@ -265,7 +266,10 @@ end_frame_prompt → 新结束关键帧 → 本段 last_frame
 3. 生成一段从上一段结束帧到新段开始帧的 H3 转场视频。
 4. 输出顺序为“上一段视频 → 转场 → 新段视频”。
 
-分镜断开处会额外增加 `transition_seconds`。最终视频总时长等于所有段时长加上所有转场时长。
+默认 `transition_mode=fade` 使用 FFmpeg 在分镜边界淡出到黑再淡入，不额外调用 H3，
+也不会增加成片总时长。`transition_seconds` 是跨越边界的淡出和淡入总时长。
+
+如果改为 `transition_mode=generated`，才会生成独立的 H3 转场视频，并增加最终时长。
 
 第一段开始关键帧：
 

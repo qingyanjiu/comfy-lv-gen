@@ -229,11 +229,11 @@
 
 ```text
 独立生成本段开始关键帧
-上一段结束帧 → 转场视频 → 本段开始帧
+上一段结束帧 → 淡出淡入转场 → 本段开始帧
 ```
 
 - 本段是新分镜，不再强制首尾相连。
-- 会自动生成转场视频。
+- 默认自动添加 FFmpeg 淡出淡入；只有 `transition_mode=generated` 才生成 H3 转场视频。
 - 使用 `start_frame_prompt` 描述新分镜开始画面。
 
 省略该字段时，使用全局 `chain_segments`。
@@ -248,19 +248,20 @@
 }
 ```
 
-作用：`continue_from_previous: false` 时，自动生成的分镜转场视频时长。
+作用：`continue_from_previous: false` 时，分镜转场的时长。
 
 - 单位是秒。
 - 只在当前段启用分镜断开时有效。
 - 默认跟随全局 `transition_default_seconds`。
 - 第一个分镜没有转场，可以设为 `0`。
 - 第二个分镜以后如果 `continue_from_previous:false`，必须大于 `0`。
-- 转场是额外视频内容，会增加最终成片总时长。
+- 默认 `transition_mode=fade`：时长是边界两侧淡出和淡入的总时长，不增加总时长。
+- `transition_mode=generated`：会生成额外 H3 转场视频，并增加成片总时长。
 
 例如：
 
 ```text
-12段 × 5秒 + 2段 × 1秒转场 = 62秒
+默认 fade 模式：12段 × 5秒 = 60秒，转场复用相邻片段边界，不增加时长。
 ```
 
 ## 11. transition_prompt
@@ -271,11 +272,11 @@
 }
 ```
 
-作用：描述“上一段结束帧 → 本段新开始帧”之间的转场过程。
+作用：`transition_mode=generated` 时，描述“上一段结束帧 → 本段新开始帧”之间的转场过程。
 
 规则：
 
-- 只在 `continue_from_previous: false` 时有效。
+- 只在 `continue_from_previous: false` 且 `transition_mode=generated` 时有效。
 - 省略时使用内置的电影感平滑转场提示。
 - 建议说明空间、光线、镜头和动作如何变化。
 - 不要写黑场、闪白或硬切，除非确实需要。
@@ -344,7 +345,7 @@
 
 ```text
 独立生成新分镜开始帧
-上一段结束帧 → 转场视频 → 新分镜
+上一段结束帧 → 淡出淡入转场 → 新分镜
 新分镜结束帧可继续供下一段使用
 ```
 
