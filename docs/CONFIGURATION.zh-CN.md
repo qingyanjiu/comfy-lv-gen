@@ -220,7 +220,7 @@ ComfyUI Director 每次启动任务时读取仓库根目录的 `config.json`，�
 | `chain_segments` | `true` | 全局默认是否把上一段结束帧作为下一段开始帧 |
 | `transition_default_seconds` | `1.0` | 分镜断开时转场视频的默认时长 |
 | `transition_two_pass` | `false` | 是否对自动生成的转场视频执行二采 |
-| `stabilize_full_body` | `true` | 作为段尾锚定和首段自动构图草案的总默认值；段内可用 `hold_composition` 覆盖 |
+| `stabilize_full_body` | `false` | `hold_composition` 的全局默认值；现在默认生成不同的首尾关键帧 |
 
 `hold_composition` 的优先级高于全局 `stabilize_full_body`。换衣服、上车、下车、换座位等会产生真实状态变化的段落应设为 `false`；纯站姿、短距离行走等需要锁定构图且不改变状态的段落可设为 `true`。
 
@@ -336,7 +336,7 @@ ComfyUI Director 会使用节点当前故事板，并覆盖任务副本中的这
   "final_width": 704,
   "final_height": 1216,
   "lora_strength": 1.0,
-  "stabilize_full_body": true
+  "stabilize_full_body": false
 }
 ```
 
