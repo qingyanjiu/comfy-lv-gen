@@ -64,7 +64,7 @@ def build_workflow(config):
             "id": 4,
             "type": "H3LongVideoDirector",
             "pos": [20, 80],
-            "size": [820, 900],
+            "size": [840, 1040],
             "flags": {},
             "order": 3,
             "mode": 0,
@@ -100,6 +100,14 @@ def build_workflow(config):
             },
             "widgets_values": [
                 storyboard_text,
+                (
+                    "Picture 1（参考图1）是主要人物身份、脸型、五官、发型、"
+                    "身高比例和服装基准。\n"
+                    "Picture 2（参考图2）是中性表情脸型参考，用于稳定眼睛、"
+                    "鼻子、脸型和闭嘴嘴宽；不要复制它的白色上衣和背景。\n"
+                    "所有段落必须保持与这些参考图相同的同一位成年女性，"
+                    "不得混入其他人物的脸、发型或服装。"
+                ),
                 config["steps"],
                 config["two_pass_steps"],
                 config["sampler"],

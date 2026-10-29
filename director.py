@@ -95,7 +95,11 @@ def _load_base_config():
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 
-def _normalize_storyboard(value, two_pass_mode="跟随每段 JSON"):
+def _normalize_storyboard(
+    value,
+    two_pass_mode="跟随每段 JSON",
+    reference_notes="",
+):
     try:
         data = json.loads(value)
     except json.JSONDecodeError as exc:
@@ -126,11 +130,13 @@ def _normalize_storyboard(value, two_pass_mode="跟随每段 JSON"):
             two_pass = True
         elif two_pass_mode != "跟随每段 JSON":
             raise ValueError(f"Unknown two-pass mode: {two_pass_mode}")
+        prefix = str(reference_notes or "").strip()
+        final_prompt = f"{prefix}\n\n{prompt}" if prefix else prompt
         segments.append(
             {
                 "seconds": seconds,
                 "two_pass": two_pass,
-                "prompt": prompt,
+                "prompt": final_prompt,
             }
         )
     return segments
@@ -367,6 +373,21 @@ class H3LongVideoDirector:
                         "default": '{"segments":[{"seconds":6,"two_pass":false,"prompt":"第一段提示词"}]}',
                     },
                 ),
+                "reference_notes": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "dynamicPrompts": False,
+                        "default": (
+                            "Picture 1（参考图1）是主要人物身份、脸型、五官、发型、"
+                            "身高比例和服装基准。\n"
+                            "Picture 2（参考图2）是中性表情脸型参考，用于稳定眼睛、"
+                            "鼻子、脸型和闭嘴嘴宽；不要复制它的白色上衣和背景。\n"
+                            "所有段落必须保持与这些参考图相同的同一位成年女性，"
+                            "不得混入其他人物的脸、发型或服装。"
+                        ),
+                    },
+                ),
                 "steps": ("INT", {"default": 6, "min": 1, "max": 200, "step": 1}),
                 "two_pass_steps": (
                     "INT",
@@ -402,6 +423,7 @@ class H3LongVideoDirector:
     def execute(
         cls,
         storyboard,
+        reference_notes,
         steps,
         two_pass_steps,
         sampler,
@@ -422,7 +444,11 @@ class H3LongVideoDirector:
             _ACTIVE_JOB = "reserved"
 
         try:
-            segments = _normalize_storyboard(storyboard, two_pass_mode)
+            segments = _normalize_storyboard(
+                storyboard,
+                two_pass_mode,
+                reference_notes,
+            )
             try:
                 overrides = json.loads(advanced_overrides or "{}")
             except json.JSONDecodeError as exc:

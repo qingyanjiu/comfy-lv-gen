@@ -93,6 +93,26 @@ class GraphTests(unittest.TestCase):
         segments = director._normalize_storyboard(value, "全部二采")
         self.assertEqual([item["two_pass"] for item in segments], [True, True])
 
+    def test_director_reference_notes_are_prepended_to_every_prompt(self):
+        value = json.dumps(
+            {
+                "segments": [
+                    {"seconds": 3, "two_pass": False, "prompt": "one"},
+                    {"seconds": 5, "two_pass": False, "prompt": "two"},
+                ]
+            }
+        )
+        segments = director._normalize_storyboard(
+            value,
+            reference_notes="Picture 1 is the identity reference.",
+        )
+        self.assertTrue(
+            all(
+                item["prompt"].startswith("Picture 1 is the identity reference.")
+                for item in segments
+            )
+        )
+
     def test_director_workflow_links_reference_images(self):
         workflow = json.loads(
             (REPO / "example_workflows" / "H3-Long-Video-Director.json").read_text(
@@ -105,13 +125,14 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(len(workflow["links"]), 2)
         storyboard = json.loads(director_node["widgets_values"][0])
         self.assertEqual(len(storyboard["segments"]), len(self.config["segments"]))
-        self.assertEqual(director_node["widgets_values"][1], self.config["steps"])
+        self.assertIn("Picture 1", director_node["widgets_values"][1])
+        self.assertEqual(director_node["widgets_values"][2], self.config["steps"])
         self.assertEqual(
-            director_node["widgets_values"][2], self.config["two_pass_steps"]
+            director_node["widgets_values"][3], self.config["two_pass_steps"]
         )
-        self.assertEqual(director_node["widgets_values"][3], self.config["sampler"])
-        self.assertEqual(director_node["widgets_values"][4], self.config["scheduler"])
-        self.assertEqual(director_node["widgets_values"][5], "跟随每段 JSON")
+        self.assertEqual(director_node["widgets_values"][4], self.config["sampler"])
+        self.assertEqual(director_node["widgets_values"][5], self.config["scheduler"])
+        self.assertEqual(director_node["widgets_values"][6], "跟随每段 JSON")
 
 
 if __name__ == "__main__":
