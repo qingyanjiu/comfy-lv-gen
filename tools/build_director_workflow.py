@@ -98,7 +98,16 @@ def build_workflow(config):
             "properties": {
                 "Node name for S&R": "H3LongVideoDirector",
             },
-            "widgets_values": [storyboard_text, "跟随每段 JSON", False, "{}"],
+            "widgets_values": [
+                storyboard_text,
+                config["steps"],
+                config["two_pass_steps"],
+                config["sampler"],
+                config["scheduler"],
+                "跟随每段 JSON",
+                False,
+                "{}",
+            ],
         },
     ]
     return {

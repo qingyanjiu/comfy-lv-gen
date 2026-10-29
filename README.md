@@ -101,11 +101,15 @@ Run `install_custom_node.bat` once, then restart ComfyUI. Open:
 The graph contains:
 
 - one required reference image input and up to eight optional inputs
+- one-pass steps, two-pass steps, sampler, and scheduler controls
 - a global two-pass selector: follow each segment, force all one-pass, or force
   all two-pass
 - one storyboard widget containing arbitrary `seconds`, `two_pass`, and `prompt`
   entries
 - an advanced override JSON widget for global settings
+
+The sampler and scheduler controls apply to both passes. The second pass uses
+the same scheduler and keeps temporal chunking enabled by default.
 
 Connect or replace the reference images, edit the storyboard entries, then queue
 the graph. The Director node returns a job ID immediately, and a background
