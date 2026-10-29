@@ -391,6 +391,7 @@
 | 配置 | 正确位置 |
 |---|---|
 | 参考图片 | Director 的 `reference_1` 到 `reference_9` |
+| 第一段固定首帧 | Director 的 `first_frame` |
 | 参考图用途说明 | Director 的 `reference_notes` |
 | 模型、VAE、LoRA | `config.json` 或 `advanced_overrides` |
 | 一采步数 | Director 的 `steps` |

@@ -22,6 +22,7 @@
 | `keyframe_steps` | 关键帧草案采样步数 | `6` | 覆盖全局 `keyframe_steps` |
 | `seed` | 固定随机种子 | `0` | `randomize_seed=false` 时使用 |
 | `randomize_seed` | 每次任务自动生成新种子 | `true` | 为 `true` 时忽略固定 `seed` |
+| `first_frame` | 可选的首段固定首帧 | 未连接 | 连接后跳过一次第一段开始关键帧生成 |
 | `sampler` | 一采和二采共用的采样器 | `res_multistep` | 覆盖 `sampler` |
 | `scheduler` | 一采和二采共用的调度器 | `simple` | 同时覆盖 `scheduler` 和 `two_pass_scheduler` |
 | `megapixels` | 一采基础生成像素量 | `0.2` | 覆盖 `megapixels` |
@@ -310,6 +311,15 @@ end_frame_prompt → 新结束关键帧 → 本段 last_frame
 这样只在关键帧阶段增加计算，避免每一段视频一采都变慢。
 
 参考图最多 9 张，全部传递到 H3 的 `ref_images.ref_image_0..8`。
+
+`first_frame` 是独立于 9 张参考图的可选图片输入：
+
+- 只用于第一段固定开始帧。
+- 连接后不会额外生成第一段开始关键帧。
+- 它不占用 `reference_1..9` 的编号。
+- 如果希望“第一张图固定开头、其他图片作为身份参考”，把第一张图只接到
+  `first_frame`，其余图片接到 `reference_1..9`。
+- 其他分镜切换仍由各自的 `start_frame_prompt` 生成开始关键帧。
 
 ### 段落
 
