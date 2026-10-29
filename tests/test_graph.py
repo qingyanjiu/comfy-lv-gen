@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 import run_h3_long_video as pipeline
+import director
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -63,6 +64,33 @@ class GraphTests(unittest.TestCase):
         changed_hash = pipeline.generation_signature(self.config, changed, None)
         self.assertNotEqual(original_hash, changed_hash)
         self.assertEqual(len(original_hash), hashlib.sha1().digest_size * 2)
+
+    def test_director_storyboard_accepts_arbitrary_segment_count(self):
+        value = json.dumps(
+            {
+                "segments": [
+                    {"seconds": 3, "two_pass": False, "prompt": "one"},
+                    {"seconds": 5, "two_pass": True, "prompt": "two"},
+                    {"seconds": 7, "two_pass": False, "prompt": "three"},
+                ]
+            }
+        )
+        segments = director._normalize_storyboard(value)
+        self.assertEqual([item["seconds"] for item in segments], [3.0, 5.0, 7.0])
+        self.assertEqual([item["two_pass"] for item in segments], [False, True, False])
+
+    def test_director_workflow_links_reference_images(self):
+        workflow = json.loads(
+            (REPO / "example_workflows" / "H3-Long-Video-Director.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        director_node = next(
+            node for node in workflow["nodes"] if node["type"] == "H3LongVideoDirector"
+        )
+        self.assertEqual(len(workflow["links"]), 2)
+        storyboard = json.loads(director_node["widgets_values"][0])
+        self.assertEqual(len(storyboard["segments"]), len(self.config["segments"]))
 
 
 if __name__ == "__main__":

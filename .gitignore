@@ -1,7 +1,9 @@
 .state.json
+**/.state.json
 __pycache__/
 *.py[cod]
 output/
+jobs/
 *.mp4
 *.mov
 *.png

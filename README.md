@@ -13,12 +13,14 @@ workflow and generated API graphs for both one-pass and two-pass execution.
 
 - `run_h3_long_video.py`: stable long-video controller and ComfyUI graph builder
 - `config.json`: the current 10-segment street-walk configuration
-- `workflows/minimax_h3_ui_source.json`: original ComfyUI UI workflow
-- `workflows/segment_one_pass_api.json`: generated one-pass API graph
-- `workflows/segment_two_pass_api.json`: generated two-pass API graph
+- `example_workflows/minimax_h3_ui_source.json`: original ComfyUI UI workflow
+- `api_workflows/segment_one_pass_api.json`: generated one-pass API graph
+- `api_workflows/segment_two_pass_api.json`: generated two-pass API graph
 - `run_test.bat`: render one missing segment without final stitching
 - `run_full.bat`: render the complete missing chain and make the final video
 - `open_config.bat`: edit prompts and per-segment settings in Notepad
+- `H3LongVideoDirector`: a ComfyUI node that starts the same pipeline from a graph
+- `example_workflows/H3-Long-Video-Director.json`: graph with reference images and storyboard
 - `docs/ARCHITECTURE.md`: execution and caching model
 
 ## ComfyUI requirements
@@ -90,13 +92,40 @@ Start ComfyUI first. Then:
 The final file is not created early from an incomplete chain. Completed segments
 are reused only when their generation settings and upstream result are unchanged.
 
+## Run from a ComfyUI graph
+
+Run `install_custom_node.bat` once, then restart ComfyUI. Open:
+
+`example_workflows/H3-Long-Video-Director.json`
+
+The graph contains:
+
+- one required reference image input and up to eight optional inputs
+- one storyboard widget containing arbitrary `seconds`, `two_pass`, and `prompt`
+  entries
+- an advanced override JSON widget for global settings
+
+Connect or replace the reference images, edit the storyboard entries, then queue
+the graph. The Director node returns a job ID immediately, and a background
+process continues submitting the actual segment graphs to ComfyUI after the
+outer graph finishes. This avoids the deadlock that would happen if one ComfyUI
+prompt tried to wait for another prompt on the same server.
+
+Job state and logs are written under:
+
+`jobs/<job_id>/`
+
+The Director still calls the same Python controller described above. The ComfyUI
+graph is the control panel; each segment remains a normal local ComfyUI
+execution.
+
 ## CLI
 
 ```powershell
 python run_h3_long_video.py --config config.json
 python run_h3_long_video.py --config config.json --limit 1 --no-stitch
 python run_h3_long_video.py --config config.json --force
-python run_h3_long_video.py --config config.json --dump-graphs workflows
+python run_h3_long_video.py --config config.json --dump-graphs api_workflows
 ```
 
 ## Aspect ratio and resolution
