@@ -22,6 +22,7 @@ workflow and generated API graphs for both one-pass and two-pass execution.
 - `open_config.bat`: edit prompts and per-segment settings in Notepad
 - `H3LongVideoDirector`: a ComfyUI node that starts the same pipeline from a graph
 - `example_workflows/H3-Long-Video-Director.json`: graph with reference images and storyboard
+- `docs/CONFIGURATION.zh-CN.md`: complete Chinese configuration reference
 - `docs/ARCHITECTURE.md`: execution and caching model
 
 ## ComfyUI requirements
