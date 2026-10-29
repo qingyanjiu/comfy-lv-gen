@@ -170,7 +170,16 @@ class GraphTests(unittest.TestCase):
         )
         self.assertEqual(director_node["widgets_values"][4], self.config["sampler"])
         self.assertEqual(director_node["widgets_values"][5], self.config["scheduler"])
-        self.assertEqual(director_node["widgets_values"][6], "跟随每段 JSON")
+        self.assertEqual(
+            director_node["widgets_values"][6], self.config["megapixels"]
+        )
+        self.assertEqual(
+            director_node["widgets_values"][7], self.config["final_width"]
+        )
+        self.assertEqual(
+            director_node["widgets_values"][8], self.config["final_height"]
+        )
+        self.assertEqual(director_node["widgets_values"][9], "跟随每段 JSON")
 
 
 if __name__ == "__main__":

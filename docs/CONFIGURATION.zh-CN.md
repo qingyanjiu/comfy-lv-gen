@@ -17,6 +17,9 @@
 | `two_pass_steps` | 二采步数 | `5` | 覆盖全局和高级覆盖里的 `two_pass_steps` |
 | `sampler` | 一采和二采共用的采样器 | `res_multistep` | 覆盖 `sampler` |
 | `scheduler` | 一采和二采共用的调度器 | `simple` | 同时覆盖 `scheduler` 和 `two_pass_scheduler` |
+| `megapixels` | 一采基础生成像素量 | `0.2` | 覆盖 `megapixels` |
+| `final_width` | 最终视频宽度 | `704` | 覆盖 `final_width` |
+| `final_height` | 最终视频高度 | `1216` | 覆盖 `final_height` |
 | `two_pass_mode` | 全局二采模式 | `跟随每段 JSON` | 可强制所有段一采或二采 |
 | `force` | CLI 缓存强制重跑开关 | `false` | Director 每个任务目录都是新的，通常无效 |
 | `reference_1` | 必选参考图 | 无 | 必须连接 IMAGE |
@@ -199,6 +202,24 @@ ComfyUI Director 每次启动任务时读取仓库根目录的 `config.json`，�
 | `stabilize_full_body` | `true` | 作为段尾锚定和首段自动构图草案的总默认值；段内可用 `hold_composition` 覆盖 |
 
 `hold_composition` 的优先级高于全局 `stabilize_full_body`。换衣服、上车、下车、换座位等会产生真实状态变化的段落应设为 `false`；纯站姿、短距离行走等需要锁定构图且不改变状态的段落可设为 `true`。
+
+`hold_composition=true` 时：
+
+```text
+上一段真实尾帧 → 本段 first_frame
+上一段真实尾帧 → 本段 last_frame
+```
+
+首尾都被同一张图约束，镜头和人物构图更稳定，但不适合换衣服或明显改变位置。
+
+`hold_composition=false` 时：
+
+```text
+上一段真实尾帧 → 本段 first_frame
+last_frame 不连接
+```
+
+本段可以从首帧继续向新的动作、服装或场景状态发展。
 
 第一段：
 

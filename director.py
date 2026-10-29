@@ -400,6 +400,18 @@ class H3LongVideoDirector:
                 ),
                 "sampler": (SAMPLER_OPTIONS, {"default": "res_multistep"}),
                 "scheduler": (SCHEDULER_OPTIONS, {"default": "simple"}),
+                "megapixels": (
+                    "FLOAT",
+                    {"default": 0.2, "min": 0.05, "max": 4.0, "step": 0.01},
+                ),
+                "final_width": (
+                    "INT",
+                    {"default": 704, "min": 256, "max": 4096, "step": 8},
+                ),
+                "final_height": (
+                    "INT",
+                    {"default": 1216, "min": 256, "max": 4096, "step": 8},
+                ),
                 "two_pass_mode": (
                     ["跟随每段 JSON", "全部一采", "全部二采"],
                     {"default": "跟随每段 JSON"},
@@ -433,6 +445,9 @@ class H3LongVideoDirector:
         two_pass_steps,
         sampler,
         scheduler,
+        megapixels,
+        final_width,
+        final_height,
         two_pass_mode,
         force,
         reference_1,
@@ -488,6 +503,16 @@ class H3LongVideoDirector:
             config["sampler"] = sampler
             config["scheduler"] = scheduler
             config["two_pass_scheduler"] = scheduler
+            config["megapixels"] = float(megapixels)
+            config["final_width"] = int(final_width)
+            config["final_height"] = int(final_height)
+            if config["megapixels"] <= 0:
+                raise ValueError("megapixels must be greater than 0")
+            if config["final_width"] >= config["final_height"]:
+                raise ValueError("final resolution must remain portrait")
+            ratio = config["final_width"] / config["final_height"]
+            if abs(ratio - (9 / 16)) > 0.02:
+                raise ValueError("final resolution must keep the 9:16 portrait preset")
             config["segments"] = segments
             config["reference_images"] = saved_references
             config_path = job_dir / "config.json"

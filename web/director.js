@@ -145,11 +145,16 @@ function countSegments(node, ui) {
   const twoPassSteps = findWidget(node, "two_pass_steps");
   const sampler = findWidget(node, "sampler");
   const scheduler = findWidget(node, "scheduler");
+  const megapixels = findWidget(node, "megapixels");
+  const finalWidth = findWidget(node, "final_width");
+  const finalHeight = findWidget(node, "final_height");
   node.lastTwoPassMode = mode?.value || "";
   node.samplingSummary = [
     `${steps?.value ?? "?"}+${twoPassSteps?.value ?? "?"} 步`,
     sampler?.value,
     scheduler?.value,
+    `${megapixels?.value ?? "?"} MP`,
+    `${finalWidth?.value ?? "?"}×${finalHeight?.value ?? "?"}`,
   ]
     .filter(Boolean)
     .join(" / ");
@@ -239,7 +244,15 @@ function installPanel(node) {
       return result;
     };
   }
-  for (const name of ["steps", "two_pass_steps", "sampler", "scheduler"]) {
+  for (const name of [
+    "steps",
+    "two_pass_steps",
+    "sampler",
+    "scheduler",
+    "megapixels",
+    "final_width",
+    "final_height",
+  ]) {
     const widget = findWidget(node, name);
     if (!widget) continue;
     const original = widget.callback;
