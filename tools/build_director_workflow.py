@@ -48,6 +48,11 @@ def build_workflow(config):
                 "two_pass": segment.get("two_pass", False),
                 "prompt": segment["prompt"],
                 **(
+                    {"end_frame_prompt": segment["end_frame_prompt"]}
+                    if segment.get("end_frame_prompt")
+                    else {}
+                ),
+                **(
                     {"hold_composition": segment["hold_composition"]}
                     if segment.get("hold_composition") is not None
                     else {}

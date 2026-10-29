@@ -7,18 +7,18 @@ For each segment, the controller:
 
 1. Reads the segment prompt, duration, and two-pass flag from `config.json`.
 2. Builds a fresh ComfyUI API graph.
-3. Supplies the previous segment's saved last image as `first_frame` when the
-   segment is not the first one.
-4. Uses the generated full-body opening image as both boundaries of the first
-   segment when `stabilize_full_body` is enabled.
+3. Builds a sequential keyframe chain before any full segment video starts.
+4. Uses each generated end keyframe as the exact start keyframe of the next
+   segment.
 5. Submits the graph to `/prompt`, waits for `/history`, and records the result
    in `.state.json`.
 6. Uses FFmpeg to normalize and concatenate the completed segment videos.
 
-The first segment deliberately has no fixed `first_frame` from
-`reference_images`. A short H3 draft is generated first, its first frame is
-saved as a new composition anchor, and the final first segment starts from that
-generated anchor.
+The opening keyframe deliberately has no fixed `first_frame` from
+`reference_images`. A short H3 draft is generated, its first frame becomes the
+opening keyframe, and each later end keyframe is generated from the previous
+end frame plus the next segment prompt. Full video generation begins only after
+all keyframes are ready.
 
 The two-pass path mirrors the source ComfyUI workflow:
 

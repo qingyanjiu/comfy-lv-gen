@@ -36,7 +36,9 @@
     {
       "seconds": 5.0,
       "two_pass": false,
-      "prompt": "这一段的提示词"
+      "prompt": "这一段的动作和运动提示词",
+      "end_frame_prompt": "这一段结束时静态画面的描述",
+      "hold_composition": false
     }
   ]
 }
@@ -48,8 +50,9 @@
 |---|---|---:|---|
 | `seconds` | 数字，必须大于 0 | 是 | 该段视频时长。实际输出帧数按 24 fps 计算并截断 |
 | `two_pass` | 布尔值 | 否，默认 `false` | `false` 一采，`true` 二采；最终还受全局 `two_pass_mode` 控制 |
-| `hold_composition` | 布尔值 | 否 | `true` 把段首帧同时作为段尾锚点；`false` 允许本段服装、动作和场景状态继续变化 |
 | `prompt` | 字符串 | 是，不能为空 | 该段独立的动作、场景、镜头和声音描述 |
+| `end_frame_prompt` | 字符串 | 否 | 用于生成该段结束关键帧；省略时使用 `prompt` |
+| `hold_composition` | 布尔值 | 否 | `true` 不生成新结束帧，直接使用开始帧；`false` 生成独立结束关键帧 |
 
 画面有 N 个 `segments` 元素，就会自动循环生成 N 段，不要求固定段数。
 
@@ -198,7 +201,7 @@ ComfyUI Director 每次启动任务时读取仓库根目录的 `config.json`，�
 |---|---|---|
 | `reference_images` | `["image.png", "image (5).png"]` | CLI 模式的参考图数组，最多 9 张 |
 | `opening_frame` | 可选，不存在时自动生成 | 显式指定第一段构图锚点；正常使用建议删除此项 |
-| `opening_draft_seconds` | `2.0` | 自动生成第一段构图首帧的 H3 草稿时长 |
+| `keyframe_draft_seconds` | `2.0` | 生成结束关键帧时使用的 H3 短期草案长度 |
 | `stabilize_full_body` | `true` | 作为段尾锚定和首段自动构图草案的总默认值；段内可用 `hold_composition` 覆盖 |
 
 `hold_composition` 的优先级高于全局 `stabilize_full_body`。换衣服、上车、下车、换座位等会产生真实状态变化的段落应设为 `false`；纯站姿、短距离行走等需要锁定构图且不改变状态的段落可设为 `true`。
@@ -206,37 +209,47 @@ ComfyUI Director 每次启动任务时读取仓库根目录的 `config.json`，�
 `hold_composition=true` 时：
 
 ```text
-上一段真实尾帧 → 本段 first_frame
-上一段真实尾帧 → 本段 last_frame
+本段开始关键帧 → 本段 first_frame
+本段开始关键帧 → 本段 last_frame
 ```
 
-首尾都被同一张图约束，镜头和人物构图更稳定，但不适合换衣服或明显改变位置。
+不生成新的结束关键帧，首尾被同一张图约束。适合站定、稳定构图镜头，不适合换衣服或明显改变位置。
 
 `hold_composition=false` 时：
 
 ```text
-上一段真实尾帧 → 本段 first_frame
-last_frame 不连接
+本段开始关键帧 → 本段 first_frame
+end_frame_prompt → 新结束关键帧 → 本段 last_frame
 ```
 
-本段可以从首帧继续向新的动作、服装或场景状态发展。
+先生成独立的结束关键帧，再用两张不同的图约束完整视频，允许换装、上车、下车和场景状态持续推进。
 
-第一段：
+第一段开始关键帧：
 
 ```text
-提示词 + 参考图
-→ 生成短草案
-→ 提取草案第一帧作为新构图锚点
-→ 生成正式第一段
+第一段提示词 + 参考图
+→ H3 短草案
+→ 提取草案第一帧
 ```
 
 不会把参考图文件直接作为第一段的固定首帧。
 
-第二段开始：
+之后按段链式生成结束关键帧：
 
 ```text
-上一段实际保存尾帧 = 下一段 first_frame
-上一段实际保存尾帧 = 下一段 last_frame（hold_composition=true 时）
+开始关键帧 + 本段 end_frame_prompt
+→ H3 短草案
+→ 提取草案最后一帧作为结束关键帧
+→ 下一段直接复用该结束关键帧作为开始帧
+```
+
+全部关键帧完成后才生成正式视频：
+
+```text
+开始关键帧 → H3 first_frame
+结束关键帧 → H3 last_frame
+→ 生成正式段视频
+→ 按需执行二采
 ```
 
 参考图最多 9 张，全部传递到 H3 的 `ref_images.ref_image_0..8`。

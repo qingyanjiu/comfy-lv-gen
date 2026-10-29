@@ -15,7 +15,7 @@ import requests
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "config.json"
-GRAPH_VERSION = 3
+GRAPH_VERSION = 4
 
 
 def h3_frame_count(seconds):
@@ -43,6 +43,7 @@ def segment_specs(config):
     specs = []
     for index, segment in enumerate(segments):
         prompt = str(segment.get("prompt", "")).strip()
+        end_frame_prompt = str(segment.get("end_frame_prompt", "")).strip()
         seconds = float(segment.get("seconds", 0))
         if not prompt:
             raise RuntimeError(f"Segment {index + 1} has an empty prompt")
@@ -56,6 +57,7 @@ def segment_specs(config):
                 "seconds": seconds,
                 "two_pass": bool(segment.get("two_pass", config.get("two_pass_default", False))),
                 "prompt": prompt,
+                "end_frame_prompt": end_frame_prompt or prompt,
                 "hold_composition": hold_composition,
             }
         )
@@ -307,6 +309,118 @@ def build_graph(config, prompt, first_frame, last_frame, seed, seconds, two_pass
     return node
 
 
+def build_keyframe_graph(config, prompt, first_frame, seed, seconds):
+    generated_frames = h3_frame_count(seconds)
+    final_frames = output_frames(seconds)
+    node = {}
+
+    def add(node_id, class_type, **inputs):
+        node[str(node_id)] = {"class_type": class_type, "inputs": inputs}
+        return str(node_id)
+
+    if first_frame:
+        add(
+            "1",
+            "VHS_LoadImagePath",
+            image=input_image_path(config, first_frame),
+            custom_width=0,
+            custom_height=0,
+        )
+    for i, image in enumerate(config["reference_images"]):
+        add(
+            str(2 + i),
+            "VHS_LoadImagePath",
+            image=input_image_path(config, image),
+            custom_width=0,
+            custom_height=0,
+        )
+
+    add(
+        "20",
+        "CLIPLoader",
+        clip_name=config["clip_name"],
+        type="minimax",
+        device="default",
+    )
+    add("21", "VAELoader", vae_name=config["video_vae_name"])
+    add("23", "UNETLoader", unet_name=config["unet_name"], weight_dtype="default")
+    add(
+        "24",
+        "LoraLoaderModelOnly",
+        model=["23", 0],
+        lora_name=config["lora_name"],
+        strength_model=config["lora_strength"],
+    )
+    add("25", "ModelAttentionBackend", model=["24", 0], attention="comfy kitchen attention")
+    add("26", "MiniMaxH3SigmaShift", model=["25", 0], shift_video=12, shift_audio=3)
+    add(
+        "27",
+        "ResolutionSelector",
+        aspect_ratio=config["aspect_ratio"],
+        megapixels=config["megapixels"],
+        multiple=32,
+    )
+    add("28", "PrimitiveStringMultiline", value=prompt)
+
+    h3_inputs = {
+        "clip": ["20", 0],
+        "vae": ["21", 0],
+        "prompt": ["28", 0],
+        "width": ["27", 0],
+        "height": ["27", 1],
+        "length": generated_frames,
+        "ref_image_size": config.get("ref_image_size", "match"),
+    }
+    if first_frame:
+        h3_inputs["first_frame"] = ["1", 0]
+    for i in range(len(config["reference_images"])):
+        h3_inputs[f"ref_images.ref_image_{i}"] = [str(2 + i), 0]
+    add("30", "VRGDG_MiniMaxH3ImageReferenceToVideo", **h3_inputs)
+
+    add("31", "KSamplerSelect", sampler_name=config["sampler"])
+    add("32", "RandomNoise", noise_seed=seed)
+    add("33", "BasicGuider", model=["26", 0], conditioning=["30", 0])
+    add(
+        "34",
+        "BasicScheduler",
+        model=["26", 0],
+        scheduler=config["scheduler"],
+        steps=config["steps"],
+        denoise=1.0,
+    )
+    add(
+        "35",
+        "SamplerCustomAdvanced",
+        noise=["32", 0],
+        guider=["33", 0],
+        sampler=["31", 0],
+        sigmas=["34", 0],
+        latent_image=["30", 1],
+    )
+    add("36", "VAEDecode", samples=["35", 0], vae=["21", 0])
+    add("37", "ImageFromBatch", image=["36", 0], batch_index=0, length=1)
+    add(
+        "38",
+        "SaveImage",
+        images=["37", 0],
+        filename_prefix=f"{config['output_prefix']}/keyframes/first_{seed}",
+    )
+    add(
+        "39",
+        "ImageFromBatch",
+        image=["36", 0],
+        batch_index=final_frames - 1,
+        length=1,
+    )
+    add(
+        "40",
+        "SaveImage",
+        images=["39", 0],
+        filename_prefix=f"{config['output_prefix']}/keyframes/last_{seed}",
+    )
+    return node
+
+
 def wait_for_prompt(base_url, prompt_id, timeout):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -325,6 +439,22 @@ def wait_for_prompt(base_url, prompt_id, timeout):
 def resolve_output(config, item):
     root = Path(config["comfy_output_dir"])
     return root / item.get("subfolder", "") / item["filename"]
+
+
+def submit_graph(config, graph, label):
+    client_id = str(uuid.uuid4())
+    response = requests.post(
+        f"{config['comfy_url']}/prompt",
+        json={"prompt": graph, "client_id": client_id},
+        timeout=60,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"{response.status_code}: {response.text}")
+    response.raise_for_status()
+    prompt_id = response.json()["prompt_id"]
+    print(f"[H3] {label}: submitted {prompt_id}", flush=True)
+    entry = wait_for_prompt(config["comfy_url"], prompt_id, timeout=7200)
+    return prompt_id, entry
 
 
 def run_segment(
@@ -349,18 +479,7 @@ def run_segment(
         segment["seconds"],
         segment["two_pass"],
     )
-    client_id = str(uuid.uuid4())
-    response = requests.post(
-        f"{config['comfy_url']}/prompt",
-        json={"prompt": graph, "client_id": client_id},
-        timeout=60,
-    )
-    if response.status_code != 200:
-        raise RuntimeError(f"{response.status_code}: {response.text}")
-    response.raise_for_status()
-    prompt_id = response.json()["prompt_id"]
-    print(f"[H3] {label}: submitted {prompt_id}", flush=True)
-    entry = wait_for_prompt(config["comfy_url"], prompt_id, timeout=7200)
+    prompt_id, entry = submit_graph(config, graph, label)
     outputs = entry["outputs"]
     images = outputs.get("39", {}).get("images", [])
     videos = outputs.get("42", {}).get("gifs", []) or outputs.get("42", {}).get("videos", [])
@@ -399,6 +518,27 @@ def run_segment(
     }
 
 
+def run_keyframe(config, segment, seed, first_frame=None, prompt=None, label=None):
+    seconds = float(config.get("keyframe_draft_seconds", 2.0))
+    keyframe_prompt = prompt or segment["prompt"]
+    graph = build_keyframe_graph(config, keyframe_prompt, first_frame, seed, seconds)
+    prompt_id, entry = submit_graph(
+        config,
+        graph,
+        label or f"Keyframe {seed}",
+    )
+    outputs = entry["outputs"]
+    first_images = outputs.get("38", {}).get("images", [])
+    last_images = outputs.get("40", {}).get("images", [])
+    if not first_images or not last_images:
+        raise RuntimeError("Keyframe image outputs were not reported")
+    return {
+        "prompt_id": prompt_id,
+        "first_frame": str(resolve_output(config, first_images[0])),
+        "last_frame": str(resolve_output(config, last_images[0])),
+    }
+
+
 def find_ffmpeg():
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -408,29 +548,6 @@ def find_ffmpeg():
         except Exception as exc:
             raise RuntimeError("ffmpeg was not found; install it or install imageio-ffmpeg") from exc
     return ffmpeg
-
-
-def extract_first_frame(video, output):
-    ffmpeg = find_ffmpeg()
-    output = Path(output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            ffmpeg,
-            "-y",
-            "-i",
-            str(video),
-            "-vf",
-            "select=eq(n\\,0)",
-            "-frames:v",
-            "1",
-            "-update",
-            "1",
-            str(output),
-        ],
-        check=True,
-    )
-    return output
 
 
 def repair_two_pass_opening(
@@ -496,48 +613,139 @@ def repair_two_pass_opening(
     return output
 
 
-def ensure_opening_frame(config, specs, state, state_path):
-    draft_seconds = float(config.get("opening_draft_seconds", 2.0))
-    draft_spec = {
-        "seconds": draft_seconds,
-        "two_pass": False,
-        "prompt": specs[0]["prompt"],
+def ensure_keyframe_chain(
+    config,
+    specs,
+    state,
+    state_path,
+    *,
+    max_segments=None,
+    force=False,
+):
+    count = len(specs) if max_segments is None else min(len(specs), max_segments)
+    draft_seconds = float(config.get("keyframe_draft_seconds", 2.0))
+    existing = {
+        int(item["segment"]): item
+        for item in state.get("keyframes", [])
+        if "segment" in item
     }
-    signature = generation_signature(config, draft_spec, None)
-    existing = state.get("opening", {})
-    existing_frame = existing.get("frame")
-    if (
-        existing.get("draft_sha1") == signature
-        and existing_frame
-        and Path(existing_frame).is_file()
-    ):
-        print(f"[H3] Reusing generated opening frame: {existing_frame}", flush=True)
-        return existing_frame
+    ordered = []
 
-    record = run_segment(
-        config,
-        draft_spec,
-        0,
-        None,
-        None,
-        seed=int(config["base_seed"]) + 900000,
-        log_label="Generated opening",
-    )
-    output = (
-        Path(config.get("final_output_dir", config["comfy_output_dir"]))
-        / config["output_prefix"]
-        / f"opening_{signature[:12]}.png"
-    )
-    extract_first_frame(record["video"], output)
-    state["opening"] = {
-        "prompt_id": record["prompt_id"],
-        "video": record["video"],
-        "frame": str(output),
-        "draft_sha1": signature,
-    }
-    state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"[H3] Generated full-body opening frame: {output}", flush=True)
-    return str(output)
+    start_frame = config.get("opening_frame") or None
+    start_prompt_id = None
+    start_signature = f"explicit:{start_frame}" if start_frame else None
+
+    for index in range(count):
+        spec = specs[index]
+        previous = existing.get(index + 1)
+
+        if index == 0 and start_frame is None:
+            start_spec = {
+                "seconds": draft_seconds,
+                "two_pass": False,
+                "prompt": spec["prompt"],
+            }
+            start_signature = generation_signature(config, start_spec, None)
+            if (
+                not force
+                and previous
+                and previous.get("start_sha1") == start_signature
+                and previous.get("start_frame")
+                and Path(previous["start_frame"]).is_file()
+            ):
+                start_frame = previous["start_frame"]
+                start_prompt_id = previous.get("start_prompt_id")
+                print(
+                    f"[H3] Reusing opening keyframe: {start_frame}",
+                    flush=True,
+                )
+            else:
+                record = run_keyframe(
+                    config,
+                    spec,
+                    int(config["base_seed"]) + 900000,
+                    first_frame=None,
+                    prompt=spec["prompt"],
+                    label="Opening keyframe",
+                )
+                start_frame = record["first_frame"]
+                start_prompt_id = record["prompt_id"]
+
+        hold_composition = should_anchor_last_frame(config, spec)
+        if hold_composition:
+            end_frame = start_frame
+            end_prompt_id = start_prompt_id
+            end_signature = f"hold:{start_signature}"
+        else:
+            end_spec = {
+                "seconds": draft_seconds,
+                "two_pass": False,
+                "prompt": spec["end_frame_prompt"],
+            }
+            end_signature = generation_signature(
+                config,
+                end_spec,
+                start_prompt_id,
+            )
+            if (
+                not force
+                and previous
+                and previous.get("end_sha1") == end_signature
+                and previous.get("end_frame")
+                and Path(previous["end_frame"]).is_file()
+            ):
+                end_frame = previous["end_frame"]
+                end_prompt_id = previous.get("end_prompt_id")
+                print(
+                    f"[H3] Reusing end keyframe {index + 1}: {end_frame}",
+                    flush=True,
+                )
+            else:
+                record = run_keyframe(
+                    config,
+                    spec,
+                    int(config["base_seed"]) + 700000 + index * 2,
+                    first_frame=start_frame,
+                    prompt=spec["end_frame_prompt"],
+                    label=f"End keyframe {index + 1}",
+                )
+                end_frame = record["last_frame"]
+                end_prompt_id = record["prompt_id"]
+
+        item = {
+            "segment": index + 1,
+            "start_frame": start_frame,
+            "end_frame": end_frame,
+            "start_prompt_id": start_prompt_id,
+            "end_prompt_id": end_prompt_id,
+            "start_sha1": start_signature,
+            "end_sha1": end_signature,
+        }
+        ordered.append(item)
+        merged = [
+            value
+            for value in state.get("keyframes", [])
+            if int(value.get("segment", -1)) != index + 1
+        ]
+        merged.append(item)
+        merged.sort(key=lambda value: value["segment"])
+        state["keyframes"] = merged
+        state["phase"] = "keyframes"
+        state["keyframe_total"] = count
+        state_path.write_text(
+            json.dumps(state, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(
+            f"[H3] Keyframe pair {index + 1}/{count} ready",
+            flush=True,
+        )
+
+        start_frame = end_frame
+        start_prompt_id = end_prompt_id
+        start_signature = end_signature
+
+    return ordered
 
 
 def stitch_segments(config, videos, work_dir=HERE):
@@ -660,50 +868,63 @@ def main():
     if state_path.exists():
         state = json.loads(state_path.read_text(encoding="utf-8"))
     segments = state.setdefault("segments", [])
+    render_count = segment_count
+    if args.limit:
+        render_count = min(render_count, args.limit)
 
-    first_frame = config.get("opening_frame") or None
-    previous_prompt_id = None
-    rendered_this_run = 0
+    keyframes = ensure_keyframe_chain(
+        config,
+        specs,
+        state,
+        state_path,
+        max_segments=render_count,
+        force=args.force,
+    )
+    state["phase"] = "videos"
+    state["keyframe_total"] = render_count
+    state_path.write_text(
+        json.dumps(state, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
     valid_video_paths = []
-    for index in range(segment_count):
+    for index, keyframe in enumerate(keyframes):
         existing = next((x for x in segments if x.get("segment") == index + 1), None)
-        expected_signature = generation_signature(config, specs[index], previous_prompt_id)
+        source_key = (
+            f"{keyframe.get('start_prompt_id')}:"
+            f"{keyframe.get('end_prompt_id')}"
+        )
+        expected_signature = generation_signature(
+            config,
+            specs[index],
+            source_key,
+        )
         if (
             existing
             and not args.force
             and Path(existing["video"]).exists()
             and existing.get("generation_sha1") == expected_signature
-            and existing.get("source_prompt_id") == previous_prompt_id
+            and existing.get("source_prompt_id") == source_key
         ):
-            first_frame = existing["next_frame"]
-            previous_prompt_id = existing["prompt_id"]
             valid_video_paths.append(existing["video"])
             continue
-        if args.limit and rendered_this_run >= args.limit:
-            break
-        if (
-            index == 0
-            and first_frame is None
-            and config.get("stabilize_full_body")
-        ):
-            first_frame = ensure_opening_frame(config, specs, state, state_path)
-        last_frame = (
-            first_frame
-            if should_anchor_last_frame(config, specs[index]) and first_frame
-            else None
+        segment = run_segment(
+            config,
+            specs[index],
+            index,
+            keyframe["start_frame"],
+            keyframe["end_frame"],
         )
-        segment = run_segment(config, specs[index], index, first_frame, last_frame)
-        segment["source_prompt_id"] = previous_prompt_id
+        segment["source_prompt_id"] = source_key
         segment["generation_sha1"] = expected_signature
+        segment["start_keyframe"] = keyframe["start_frame"]
+        segment["end_keyframe"] = keyframe["end_frame"]
         segments = [x for x in segments if x.get("segment") != index + 1]
         segments.append(segment)
         segments.sort(key=lambda x: x["segment"])
         state["segments"] = segments
         state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
-        first_frame = segment["next_frame"]
-        previous_prompt_id = segment["prompt_id"]
         valid_video_paths.append(segment["video"])
-        rendered_this_run += 1
 
     if args.no_stitch:
         return

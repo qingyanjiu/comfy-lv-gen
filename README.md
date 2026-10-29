@@ -2,8 +2,8 @@
 
 This repository turns a MiniMax H3 ComfyUI workflow into a resumable long-video
 pipeline. Each segment has its own prompt, duration, and one-pass/two-pass
-switch. The controller automatically chains the saved last frame of one segment
-to the first frame of the next.
+switch. The controller first builds a sequential start/end keyframe chain, then
+generates every video between its approved keyframes.
 
 The controller is Python-based; ComfyUI still executes every diffusion and
 audio step through its HTTP API. The repository includes the source ComfyUI UI
@@ -61,27 +61,28 @@ Double-click `open_config.bat`, then edit `segments` in `config.json`:
 {
   "seconds": 6.0,
   "two_pass": false,
-  "prompt": "Description of this exact segment"
+  "prompt": "Action and motion for this exact segment",
+  "end_frame_prompt": "Static description of the frame reached at the end",
+  "hold_composition": false
 }
 ```
 
 `seconds` and `prompt` are required. `two_pass` can be omitted to use
-`two_pass_default`.
+`two_pass_default`. `end_frame_prompt` is optional and falls back to `prompt`.
 
 Important settings:
 
 - `reference_images`: one to nine images for identity, outfit, and expression
 - `stabilize_full_body`: keeps the complete head-to-shoes composition
-- `opening_draft_seconds`: draft length used to create the first composition
-  anchor
+- `keyframe_draft_seconds`: H3 draft length used to create keyframes
 - `two_pass_steps` and `two_pass_denoise`: refinement strength
 - `two_pass_fix_opening_frames`: striped frames replaced after 2x upscaling
 - `final_width` and `final_height`: final normalized output size
 
-The first segment is not copied from a reference image. The controller generates
-a new 2-second H3 draft from the first prompt, extracts its first frame, and uses
-that generated image as the full-body anchor. Segment two and later use the
-previous segment's actual saved final frame.
+The controller first generates the opening keyframe without using a reference
+image as a fixed frame. It then generates each segment's end keyframe from the
+current start keyframe and prompt. That end keyframe becomes the next segment's
+start keyframe. Video generation starts only after the keyframe chain is ready.
 
 ## Run
 
@@ -112,8 +113,8 @@ The graph contains:
 - base generation `megapixels` plus final output width and height controls
 - a global two-pass selector: follow each segment, force all one-pass, or force
   all two-pass
-- one storyboard widget containing arbitrary `seconds`, `two_pass`, and `prompt`
-  entries
+- one storyboard widget containing arbitrary `seconds`, `two_pass`, `prompt`,
+  optional `end_frame_prompt`, and `hold_composition` entries
 - an advanced override JSON widget for global settings
 
 The sampler and scheduler controls apply to both passes. The second pass uses
@@ -136,6 +137,7 @@ execution.
 The Director node panel polls the job in the background and displays:
 
 - current status and completed segment count
+- start/end keyframe cards while the keyframe phase is running
 - one playable video card for every completed segment
 - the final merged video and a download link when stitching finishes
 - the exact log path when a job fails
