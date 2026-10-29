@@ -3,6 +3,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import run_h3_long_video as pipeline
@@ -148,6 +149,29 @@ class GraphTests(unittest.TestCase):
                 for item in segments
             )
         )
+        self.assertTrue(
+            all(
+                item["end_frame_prompt"].startswith(
+                    "Picture 1 is the identity reference."
+                )
+                for item in segments
+            )
+        )
+
+    def test_director_uses_explicit_end_frame_prompt(self):
+        value = json.dumps(
+            {
+                "segments": [
+                    {
+                        "seconds": 5,
+                        "prompt": "walk toward the door",
+                        "end_frame_prompt": "standing at the open door",
+                    }
+                ]
+            }
+        )
+        segment = director._normalize_storyboard(value)[0]
+        self.assertEqual(segment["end_frame_prompt"], "standing at the open door")
 
     def test_segment_can_disable_last_frame_composition_anchor(self):
         config = copy.deepcopy(self.config)
@@ -163,6 +187,74 @@ class GraphTests(unittest.TestCase):
         self.assertFalse(pipeline.should_anchor_last_frame(config, segment))
         segment["hold_composition"] = None
         self.assertTrue(pipeline.should_anchor_last_frame(config, segment))
+
+    def test_keyframe_graph_builds_first_and_last_targets(self):
+        segment = pipeline.segment_specs(self.config)[0]
+        graph = pipeline.build_keyframe_graph(
+            self.config,
+            segment["prompt"],
+            None,
+            123,
+            2.0,
+        )
+        self.assertEqual(graph["38"]["class_type"], "SaveImage")
+        self.assertEqual(graph["40"]["class_type"], "SaveImage")
+        self.assertNotIn("last_frame", graph["30"]["inputs"])
+        self.assertNotIn("first_frame", graph["30"]["inputs"])
+
+    def test_keyframe_chain_reuses_previous_end_as_next_start(self):
+        config = copy.deepcopy(self.config)
+        config["segments"] = [
+            {
+                "seconds": 5,
+                "two_pass": False,
+                "hold_composition": False,
+                "prompt": "segment one",
+            },
+            {
+                "seconds": 5,
+                "two_pass": False,
+                "hold_composition": True,
+                "prompt": "segment two",
+            },
+        ]
+        specs = pipeline.segment_specs(config)
+        state_path = self.temp / ".state.json"
+        state = {}
+        calls = []
+
+        def fake_keyframe(
+            config,
+            segment,
+            seed,
+            first_frame=None,
+            prompt=None,
+            label=None,
+        ):
+            number = len(calls)
+            first = self.temp / f"first_{number}.png"
+            last = self.temp / f"last_{number}.png"
+            first.write_bytes(b"first")
+            last.write_bytes(b"last")
+            calls.append((first_frame, prompt, label))
+            return {
+                "prompt_id": f"prompt-{number}",
+                "first_frame": str(first),
+                "last_frame": str(last),
+            }
+
+        with mock.patch.object(pipeline, "run_keyframe", side_effect=fake_keyframe):
+            keyframes = pipeline.ensure_keyframe_chain(
+                config,
+                specs,
+                state,
+                state_path,
+            )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(keyframes[1]["start_frame"], keyframes[0]["end_frame"])
+        self.assertEqual(keyframes[1]["end_frame"], keyframes[1]["start_frame"])
+        self.assertTrue(state_path.is_file())
 
     def test_dorm_bus_shopping_example_is_exactly_one_minute(self):
         storyboard = json.loads(

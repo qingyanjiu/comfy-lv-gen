@@ -115,6 +115,7 @@ def _normalize_storyboard(
         if not isinstance(item, dict):
             raise ValueError(f"Segment {index + 1} must be an object")
         prompt = str(item.get("prompt", "")).strip()
+        end_frame_prompt = str(item.get("end_frame_prompt", "")).strip()
         if not prompt:
             raise ValueError(f"Segment {index + 1} has an empty prompt")
         try:
@@ -140,6 +141,9 @@ def _normalize_storyboard(
                 "seconds": seconds,
                 "two_pass": two_pass,
                 "prompt": final_prompt,
+                "end_frame_prompt": (
+                    f"{prefix}\n\n{end_frame_prompt}" if prefix and end_frame_prompt else end_frame_prompt or final_prompt
+                ),
                 "hold_composition": hold_composition,
             }
         )
@@ -222,6 +226,38 @@ def _job_segments(job_dir, job_id):
     return segments
 
 
+def _job_keyframes(job_dir, job_id):
+    state_path = job_dir / ".state.json"
+    if not state_path.is_file():
+        return []
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    keyframes = []
+    for item in sorted(
+        state.get("keyframes", []),
+        key=lambda value: value.get("segment", 0),
+    ):
+        start_frame = Path(item.get("start_frame", ""))
+        end_frame = Path(item.get("end_frame", ""))
+        if not start_frame.is_file() or not end_frame.is_file():
+            continue
+        index = int(item["segment"])
+        keyframes.append(
+            {
+                "index": index,
+                "start_url": (
+                    f"/h3-long-video/media/{job_id}/keyframe/{index}/start"
+                ),
+                "end_url": (
+                    f"/h3-long-video/media/{job_id}/keyframe/{index}/end"
+                ),
+            }
+        )
+    return keyframes
+
+
 def _final_video(job_dir):
     config = _job_config(job_dir)
     if not config:
@@ -251,6 +287,16 @@ if PromptServer is not None:
             except (json.JSONDecodeError, OSError):
                 status = {"status": "unknown"}
             segments = _job_segments(job_dir, job_id)
+            keyframes = _job_keyframes(job_dir, job_id)
+            state_path = job_dir / ".state.json"
+            try:
+                state = (
+                    json.loads(state_path.read_text(encoding="utf-8"))
+                    if state_path.is_file()
+                    else {}
+                )
+            except (json.JSONDecodeError, OSError):
+                state = {}
             final_video = _final_video(job_dir)
             return web.json_response(
                 {
@@ -258,6 +304,9 @@ if PromptServer is not None:
                     "job_id": job_id,
                     "segments": segments,
                     "completed_segments": len(segments),
+                    "keyframes": keyframes,
+                    "completed_keyframes": len(keyframes),
+                    "phase": state.get("phase"),
                     "final_url": (
                         f"/h3-long-video/media/{job_id}/final"
                         if final_video is not None
@@ -289,6 +338,30 @@ if PromptServer is not None:
             if not video.is_file():
                 raise FileNotFoundError(video)
             return web.FileResponse(video, headers={"Content-Type": "video/mp4"})
+        except Exception:
+            raise web.HTTPNotFound()
+
+    @PromptServer.instance.routes.get(
+        "/h3-long-video/media/{job_id}/keyframe/{index}/{side}"
+    )
+    async def h3_long_video_keyframe_media(request):
+        try:
+            job_id = request.match_info["job_id"]
+            index = int(request.match_info["index"])
+            side = request.match_info["side"]
+            if side not in {"start", "end"}:
+                raise ValueError("Invalid keyframe side")
+            job_dir = _job_directory(job_id)
+            state = json.loads((job_dir / ".state.json").read_text(encoding="utf-8"))
+            item = next(
+                value
+                for value in state["keyframes"]
+                if int(value["segment"]) == index
+            )
+            image = Path(item[f"{side}_frame"]).resolve()
+            if not image.is_file():
+                raise FileNotFoundError(image)
+            return web.FileResponse(image, headers={"Content-Type": "image/png"})
         except Exception:
             raise web.HTTPNotFound()
 

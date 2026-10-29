@@ -15,6 +15,12 @@ function ensureStyles() {
     .h3-director-mode { color: #aaa; font-size: 12px; }
     .h3-director-refresh { border: 1px solid #555; background: #2a2a2a; color: #eee; border-radius: 4px; padding: 3px 8px; cursor: pointer; }
     .h3-director-refresh:hover { background: #393939; }
+    .h3-director-keyframes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 8px; margin-bottom: 10px; }
+    .h3-director-keyframe-card { min-width: 0; border: 1px solid #5b4a2a; background: #19150f; border-radius: 6px; padding: 6px; }
+    .h3-director-keyframe-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .h3-director-keyframe-pair figure { margin: 0; min-width: 0; }
+    .h3-director-keyframe-pair img { display: block; width: 100%; max-height: 300px; object-fit: contain; border-radius: 4px; background: #000; }
+    .h3-director-keyframe-pair figcaption { color: #9fa8b3; text-align: center; font-size: 11px; margin-top: 3px; }
     .h3-director-segments { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
     .h3-director-card { min-width: 0; border: 1px solid #34404c; background: #11161c; border-radius: 6px; padding: 6px; }
     .h3-director-card-head { display: flex; justify-content: space-between; gap: 6px; margin-bottom: 5px; color: #cfd8e3; font-size: 12px; }
@@ -54,6 +60,25 @@ function makeVideoCard(data) {
   return card;
 }
 
+function makeKeyframeCard(data) {
+  const card = makeElement("div", "h3-director-keyframe-card");
+  card.append(makeElement("strong", "", `第 ${data.index} 段关键帧`));
+  const pair = makeElement("div", "h3-director-keyframe-pair");
+  for (const [label, url] of [
+    ["开始", data.start_url],
+    ["结束", data.end_url],
+  ]) {
+    const figure = document.createElement("figure");
+    const image = document.createElement("img");
+    image.loading = "lazy";
+    image.src = url;
+    figure.append(image, makeElement("figcaption", "", label));
+    pair.appendChild(figure);
+  }
+  card.appendChild(pair);
+  return card;
+}
+
 function updatePanel(ui, node, data) {
   const status = data.status || "unknown";
   const total = Number(node.storyboardCount || 0);
@@ -66,11 +91,30 @@ function updatePanel(ui, node, data) {
     failed: "生成失败",
     unknown: "等待状态",
   };
-  ui.state.textContent = `${labels[status] || status}${countText}`;
+  const phaseLabels = {
+    keyframes: `关键帧 ${data.completed_keyframes || 0}/${total || "?"}`,
+    videos: `视频 ${done}/${total || "?"}`,
+  };
+  ui.state.textContent =
+    phaseLabels[data.phase] || `${labels[status] || status}${countText}`;
   ui.mode.textContent = [node.lastTwoPassMode, node.samplingSummary]
     .filter(Boolean)
     .join(" · ");
   ui.error.textContent = data.error || "";
+
+  const keyframeSignature = JSON.stringify(
+    (data.keyframes || []).map((item) => [
+      item.index,
+      item.start_url,
+      item.end_url,
+    ]),
+  );
+  if (ui.keyframeSignature !== keyframeSignature) {
+    ui.keyframeSignature = keyframeSignature;
+    ui.keyframes.replaceChildren(
+      ...(data.keyframes || []).map((item) => makeKeyframeCard(item)),
+    );
+  }
 
   const segmentSignature = JSON.stringify(
     (data.segments || []).map((item) => [item.index, item.url, item.seconds, item.two_pass]),
@@ -202,6 +246,7 @@ function installPanel(node) {
   head.append(state, mode, refresh);
 
   const segments = makeElement("div", "h3-director-segments");
+  const keyframes = makeElement("div", "h3-director-keyframes");
   const error = makeElement("div", "h3-director-error");
 
   const final = makeElement("div", "h3-director-final");
@@ -214,11 +259,12 @@ function installPanel(node) {
   final.append(finalTitle, finalVideo, download);
 
   const meta = makeElement("div", "h3-director-meta");
-  root.append(head, segments, final, error, meta);
+  root.append(head, keyframes, segments, final, error, meta);
 
   const ui = {
     state,
     mode,
+    keyframes,
     segments,
     final,
     finalVideo,
@@ -226,6 +272,7 @@ function installPanel(node) {
     error,
     meta,
     segmentSignature: "",
+    keyframeSignature: "",
     finalUrl: "",
     jobId: "",
   };
