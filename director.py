@@ -100,6 +100,7 @@ def _normalize_storyboard(
     two_pass_mode="跟随每段 JSON",
     reference_notes="",
     transition_default_seconds=1.0,
+    chain_segments=True,
 ):
     try:
         data = json.loads(value)
@@ -135,7 +136,18 @@ def _normalize_storyboard(
         transition_seconds = float(
             item.get("transition_seconds", transition_default_seconds)
         )
-        if transition_seconds <= 0:
+        effective_continue = (
+            True
+            if index == 0
+            else (
+                continue_from_previous
+                if continue_from_previous is not None
+                else bool(chain_segments)
+            )
+        )
+        if transition_seconds < 0 or (
+            index > 0 and not effective_continue and transition_seconds <= 0
+        ):
             raise ValueError(
                 f"Segment {index + 1} has an invalid transition duration"
             )
@@ -633,6 +645,7 @@ class H3LongVideoDirector:
                 two_pass_mode,
                 reference_notes,
                 float(config.get("transition_default_seconds", 1.0)),
+                bool(config.get("chain_segments", True)),
             )
 
             job_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]

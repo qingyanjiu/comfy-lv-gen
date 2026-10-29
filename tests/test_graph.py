@@ -137,6 +137,39 @@ class GraphTests(unittest.TestCase):
         segment = director._normalize_storyboard(value)[0]
         self.assertEqual(segment["end_frame_prompt"], "standing at the open door")
 
+    def test_first_segment_allows_zero_transition_seconds(self):
+        value = json.dumps(
+            {
+                "segments": [
+                    {
+                        "seconds": 5,
+                        "continue_from_previous": False,
+                        "transition_seconds": 0,
+                        "prompt": "first shot",
+                    }
+                ]
+            }
+        )
+        segments = director._normalize_storyboard(value)
+        self.assertEqual(segments[0]["transition_seconds"], 0)
+
+    def test_later_cut_requires_positive_transition_seconds(self):
+        value = json.dumps(
+            {
+                "segments": [
+                    {"seconds": 5, "prompt": "first"},
+                    {
+                        "seconds": 5,
+                        "continue_from_previous": False,
+                        "transition_seconds": 0,
+                        "prompt": "second",
+                    },
+                ]
+            }
+        )
+        with self.assertRaises(ValueError):
+            director._normalize_storyboard(value)
+
     def test_segment_can_disable_last_frame_composition_anchor(self):
         config = copy.deepcopy(self.config)
         config["segments"] = [
