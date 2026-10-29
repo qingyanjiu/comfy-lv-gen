@@ -233,10 +233,14 @@ class GraphTests(unittest.TestCase):
                 state_path,
             )
 
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 1)
         self.assertEqual(keyframes[1]["start_frame"], keyframes[0]["end_frame"])
         self.assertEqual(keyframes[1]["end_frame"], keyframes[1]["start_frame"])
         self.assertTrue(state_path.is_file())
+        self.assertEqual(
+            keyframes[0]["end_frame"],
+            keyframes[0]["opening_draft_last_frame"],
+        )
 
     def test_storyboard_cut_generates_independent_next_start(self):
         config = copy.deepcopy(self.config)
@@ -289,8 +293,8 @@ class GraphTests(unittest.TestCase):
                 state_path,
             )
 
-        self.assertEqual(len(calls), 4)
-        self.assertIsNone(calls[2][0])
+        self.assertEqual(len(calls), 3)
+        self.assertIsNone(calls[1][0])
         self.assertFalse(keyframes[1]["continue_from_previous"])
         self.assertNotEqual(
             keyframes[1]["start_frame"],
@@ -298,6 +302,53 @@ class GraphTests(unittest.TestCase):
         )
         self.assertFalse(
             pipeline.should_continue_from_previous(config, specs[1])
+        )
+
+    def test_custom_first_end_prompt_uses_a_second_keyframe_draft(self):
+        config = copy.deepcopy(self.config)
+        config["segments"] = [
+            {
+                "seconds": 5,
+                "two_pass": False,
+                "hold_composition": False,
+                "prompt": "walking forward",
+                "end_frame_prompt": "standing at the mirror",
+            }
+        ]
+        specs = pipeline.segment_specs(config)
+        calls = []
+
+        def fake_keyframe(
+            config,
+            segment,
+            seed,
+            first_frame=None,
+            prompt=None,
+            label=None,
+        ):
+            number = len(calls)
+            first = self.temp / f"custom_first_{number}.png"
+            last = self.temp / f"custom_last_{number}.png"
+            first.write_bytes(b"first")
+            last.write_bytes(b"last")
+            calls.append(prompt)
+            return {
+                "prompt_id": f"custom-prompt-{number}",
+                "first_frame": str(first),
+                "last_frame": str(last),
+            }
+
+        with mock.patch.object(pipeline, "run_keyframe", side_effect=fake_keyframe):
+            pipeline.ensure_keyframe_chain(
+                config,
+                specs,
+                {},
+                self.temp / "custom_state.json",
+            )
+
+        self.assertEqual(
+            calls,
+            ["walking forward", "standing at the mirror"],
         )
 
     def test_dorm_bus_shopping_example_is_exactly_one_minute(self):

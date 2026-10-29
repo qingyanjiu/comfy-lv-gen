@@ -290,6 +290,10 @@ end_frame_prompt → 新结束关键帧 → 本段 last_frame
 → 按需执行二采
 ```
 
+第一段如果没有单独填写不同的 `end_frame_prompt`，会直接使用开始关键帧草案
+中已经生成的最后一帧作为第一段结束帧，不会为第一段再提交一次结束帧草案。
+只有第一段填写了独立结束描述时，才会额外生成第二个关键帧草案。
+
 关键帧默认使用 `keyframe_megapixels=0.6`、`keyframe_steps=6` 和
 `keyframe_ref_image_size=max`，正式视频仍使用较轻量的 `megapixels=0.2`。
 这样只在关键帧阶段增加计算，避免每一段视频一采都变慢。
