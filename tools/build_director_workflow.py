@@ -64,7 +64,7 @@ def build_workflow(config):
             "id": 4,
             "type": "H3LongVideoDirector",
             "pos": [20, 80],
-            "size": [680, 620],
+            "size": [820, 900],
             "flags": {},
             "order": 3,
             "mode": 0,
@@ -98,7 +98,7 @@ def build_workflow(config):
             "properties": {
                 "Node name for S&R": "H3LongVideoDirector",
             },
-            "widgets_values": [storyboard_text, False, "{}"],
+            "widgets_values": [storyboard_text, "跟随每段 JSON", False, "{}"],
         },
     ]
     return {
