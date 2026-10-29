@@ -1,0 +1,3 @@
+requests>=2.32
+imageio-ffmpeg>=0.5
+

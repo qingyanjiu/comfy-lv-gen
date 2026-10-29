@@ -1,0 +1,11 @@
+.state.json
+__pycache__/
+*.py[cod]
+output/
+*.mp4
+*.mov
+*.png
+*.jpg
+*.jpeg
+stitch_test/
+
