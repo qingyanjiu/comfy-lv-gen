@@ -616,6 +616,7 @@ class H3LongVideoDirector:
                     },
                 ),
                 "randomize_seed": ("BOOLEAN", {"default": True}),
+                "first_frame": ("IMAGE",),
             },
         }
 
@@ -642,6 +643,7 @@ class H3LongVideoDirector:
         advanced_overrides="{}",
         seed=0,
         randomize_seed=True,
+        first_frame=None,
         **reference_images,
     ):
         global _ACTIVE_JOB
@@ -690,6 +692,11 @@ class H3LongVideoDirector:
                 _save_image(image, output)
                 saved_references.append(output.as_posix())
 
+            opening_frame = None
+            if first_frame is not None:
+                opening_frame = job_dir / "opening_frame.png"
+                _save_image(first_frame, opening_frame)
+
             config["steps"] = int(steps)
             config["two_pass_steps"] = int(two_pass_steps)
             config["keyframe_steps"] = int(keyframe_steps)
@@ -710,6 +717,8 @@ class H3LongVideoDirector:
                 raise ValueError("final resolution must keep the 9:16 portrait preset")
             config["segments"] = segments
             config["reference_images"] = saved_references
+            if opening_frame is not None:
+                config["opening_frame"] = opening_frame.as_posix()
             config_path = job_dir / "config.json"
             config_path.write_text(
                 json.dumps(config, indent=2, ensure_ascii=False),

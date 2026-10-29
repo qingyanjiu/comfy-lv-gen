@@ -451,7 +451,7 @@ class GraphTests(unittest.TestCase):
         director_node = next(
             node for node in workflow["nodes"] if node["type"] == "H3LongVideoDirector"
         )
-        self.assertEqual(len(workflow["links"]), 2)
+        self.assertEqual(len(workflow["links"]), 3)
         storyboard = json.loads(director_node["widgets_values"][0])
         self.assertEqual(len(storyboard["segments"]), len(self.config["segments"]))
         self.assertIn("Picture 1", director_node["widgets_values"][1])

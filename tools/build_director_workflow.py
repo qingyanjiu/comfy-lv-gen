@@ -5,14 +5,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def load_image_node(node_id, title, filename, y, linked=True):
+def load_image_node(node_id, title, filename, y, linked=True, order=None):
     return {
         "id": node_id,
         "type": "LoadImage",
         "pos": [-620, y],
         "size": [315, 314],
         "flags": {},
-        "order": node_id - 1,
+        "order": node_id - 1 if order is None else order,
         "mode": 0,
         "inputs": [
             {
@@ -94,13 +94,14 @@ def build_workflow(config):
         load_image_node(1, "参考图 1（必选）", reference_defaults[0], 80),
         load_image_node(2, "参考图 2", reference_defaults[1], 440),
         load_image_node(3, "参考图 3（可选）", reference_defaults[2], 800, linked=False),
+        load_image_node(5, "首帧图（可选）", reference_defaults[0], 1160, order=3),
         {
             "id": 4,
             "type": "H3LongVideoDirector",
             "pos": [20, 80],
             "size": [840, 1120],
             "flags": {},
-            "order": 3,
+            "order": 4,
             "mode": 0,
             "inputs": [
                 {
@@ -122,6 +123,13 @@ def build_workflow(config):
                     "shape": 7,
                     "type": "IMAGE",
                     "link": None,
+                },
+                {
+                    "localized_name": "first_frame",
+                    "name": "first_frame",
+                    "shape": 7,
+                    "type": "IMAGE",
+                    "link": 3,
                 },
             ],
             "outputs": [
@@ -162,12 +170,13 @@ def build_workflow(config):
     return {
         "id": "6f3176cf-6d82-4ec5-b65f-127ae3cfd62f",
         "revision": 0,
-        "last_node_id": 4,
-        "last_link_id": 2,
+        "last_node_id": 5,
+        "last_link_id": 3,
         "nodes": nodes,
         "links": [
             [1, 1, 0, 4, 0, "IMAGE"],
             [2, 2, 0, 4, 1, "IMAGE"],
+            [3, 5, 0, 4, 9, "IMAGE"],
         ],
         "groups": [],
         "config": {},

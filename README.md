@@ -120,6 +120,7 @@ The graph contains:
   controls
 - keyframe steps, one-pass steps, two-pass steps, sampler, and scheduler controls
 - fixed seed / randomize-each-run controls with the actual seed shown in the job panel
+- an optional dedicated `first_frame` image input separate from numbered identity references
 - base generation `megapixels` plus final output width and height controls
 - a global two-pass selector: follow each segment, force all one-pass, or force
   all two-pass
