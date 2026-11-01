@@ -172,6 +172,19 @@ def validate_config(config):
         )
     if float(config.get("fps", 24)) != 24:
         raise RuntimeError("This H3 flow currently requires fps=24")
+    if keyframe_backend(config) in QWEN_BACKENDS:
+        keyframe_width, keyframe_height = keyframe_size(config)
+        if keyframe_width % 32 or keyframe_height % 32:
+            raise RuntimeError(
+                "keyframe_width/keyframe_height must be multiples of 32 so the "
+                "Qwen backends can hit the size exactly; got "
+                f"{keyframe_width}x{keyframe_height}"
+            )
+        if keyframe_width >= keyframe_height:
+            raise RuntimeError(
+                "keyframe_width/keyframe_height must stay portrait; got "
+                f"{keyframe_width}x{keyframe_height}"
+            )
     references = config.get("reference_images")
     if not isinstance(references, list) or not references:
         raise RuntimeError("reference_images must contain at least one image")
@@ -542,6 +555,422 @@ def build_keyframe_graph(config, prompt, first_frame, seed, seconds):
     return node
 
 
+# ---------------------------------------------------------------------------
+# Qwen keyframe backends
+# ---------------------------------------------------------------------------
+# ``keyframe_backend`` picks who draws the anchors. "h3" runs H3's own draft
+# graph above; the two Qwen values run the edit models here, in the runner, so
+# a Director job never has to be opened by hand in ComfyUI.
+BACKEND_H3 = "h3"
+BACKEND_QWEN2511 = "qwen2511"
+BACKEND_QWEN21 = "qwen21"
+BACKEND_MANUAL = "manual"
+QWEN_BACKENDS = (BACKEND_QWEN2511, BACKEND_QWEN21)
+
+# Keyframe resolution is fixed, on purpose. 608x1056 is exactly what
+# ResolutionSelector(9:16, 0.6MP, multiple=32) returns for H3's own draft, so a
+# Qwen anchor and an H3 anchor are interchangeable in the same video stage. Both
+# numbers are multiples of 32, which is what lets us hand the exact size to
+# ImageScale + VAEEncode instead of letting FluxKontextImageScale pick "about
+# 1MP" for us -- that node turns a 720x1280 input into 752x1392 (ratio 0.540)
+# and H3 then refuses it with "final resolution must remain a 9:16 preset".
+DEFAULT_KEYFRAME_WIDTH = 608
+DEFAULT_KEYFRAME_HEIGHT = 1056
+
+QWEN_KEYFRAME_PRESETS = {
+    BACKEND_QWEN2511: {
+        "unet": "qwen_image_edit_2511_int8_convrot.safetensors",
+        "clip": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+        "vae": "qwen_image_vae.safetensors",
+        # 8-step over 4-step, measured on the same canvas and seed: the 4-step
+        # output has waxy skin, mushy fingers and a soft face; 8-step costs
+        # ~24 s more per frame and fixes all of it. This backend exists to be
+        # the quality option (2.1 is the fast one), so don't sand it down.
+        "lora": "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors",
+        "steps": 8,
+        "cfg": 1.0,
+        "shift": 3.1,
+        "prefix": "qwen2511_edit",
+    },
+    BACKEND_QWEN21: {
+        "unet": "qwen_image_2.1_int8_convrot.safetensors",
+        "clip": "qwen3vl_8b_int8_convrot.safetensors",
+        "vae": "qwen_image_2.1_vae_bf16.safetensors",
+        # A/B on the same canvas + seed (2026-11-01): LR-8step kept the outfit,
+        # the shoes and the framing best and was the fastest of the three 8-step
+        # candidates (18s vs 30s); turbo_r178 drifted the costume (suit lost its
+        # sleeves), p_8step_v0.1 duplicated the person even with the no-extra-
+        # people suffix. Subfolder paths must use backslashes: that is what
+        # ComfyUI's combo list on Windows contains.
+        "lora": r"Qwen-功能2.1\Qwen-Image-2.1-LR-8step-lora-r128.safetensors",
+        "steps": 8,
+        "cfg": 1.0,
+        "shift": None,
+        "prefix": "qwen21_edit",
+    },
+}
+
+
+def keyframe_backend(config):
+    value = str(config.get("keyframe_backend") or BACKEND_H3).strip().lower()
+    return value or BACKEND_H3
+
+
+def keyframe_size(config):
+    width = int(config.get("keyframe_width") or DEFAULT_KEYFRAME_WIDTH)
+    height = int(config.get("keyframe_height") or DEFAULT_KEYFRAME_HEIGHT)
+    return width, height
+
+
+# Every Qwen anchor carries this tail. Both edit models read the identity
+# references as "people in the picture", and without an explicit headcount they
+# happily render the same girl two or three times (verified on the very first
+# 2.1 canvas test: image_2 + image_3 became two extra classmates). The manual
+# 2511 workflow template already says this; the runner now says it too.
+DEFAULT_QWEN_KEYFRAME_SUFFIX = (
+    "画面中只有同一个人物，不新增人物、不复制人物，背景里的路人和行人保持远景虚化。"
+    "真实摄影，自然皮肤纹理，无文字水印。"
+)
+
+
+def qwen_keyframe_prompt(config, prompt):
+    suffix = str(
+        config.get("keyframe_qwen_prompt_suffix", DEFAULT_QWEN_KEYFRAME_SUFFIX)
+    ).strip()
+    if suffix and suffix not in prompt:
+        prompt = f"{prompt}\n\n{suffix}"
+    return prompt
+
+
+def qwen_keyframe_preset(config, backend):
+    if backend not in QWEN_KEYFRAME_PRESETS:
+        raise RuntimeError(f"Unknown keyframe backend: {backend}")
+    preset = dict(QWEN_KEYFRAME_PRESETS[backend])
+    # 换 LoRA 就等于换加速档：蒸馏 LoRA 只在它自己的步数上成立（2511 Lightning
+    # 4 步 / 2.1 8 步），所以 steps 跟 LoRA 一起覆盖，避免「4 步 + 8 步 LoRA」
+    # 这种既糊又不像的组合悄悄跑完一整条任务。``keyframe_qwen_lora: "none"``
+    # 表示不用任何 LoRA、走原生步数（此时 keyframe_qwen_steps 必须一起给，
+    # 否则会拿蒸馏档的 8 步去跑原生权重，出图必然又糊又花）。
+    lora = config.get("keyframe_qwen_lora")
+    if lora is not None:
+        text = str(lora).strip()
+        preset["lora"] = "" if text.lower() in {"", "none", "no", "null"} else text
+    preset["steps"] = int(config.get("keyframe_qwen_steps") or preset["steps"])
+    preset["cfg"] = float(
+        config.get("keyframe_qwen_cfg")
+        if config.get("keyframe_qwen_cfg") is not None
+        else preset["cfg"]
+    )
+    return preset
+
+
+def build_qwen_keyframe_graph(config, backend, prompt, canvas, seed):
+    """Draw one anchor frame with a Qwen edit model, at a fixed resolution.
+
+    ``canvas`` is the frame this one has to grow out of:
+
+    * ``None`` -- the segment has no predecessor. An empty latent at
+      ``keyframe_width x keyframe_height`` builds the shot natively (this is the
+      "empty latent instead of VAEEncode(image1)" trick from
+      ``docs/关键帧生成.md``), with the reference photos feeding identity.
+    * a path -- the previous anchor is used as image 1 *and* as the canvas:
+      scaled to the fixed size, VAEEncoded, and sampled at that size, so framing,
+      camera height and subject scale are locked and only the action changes.
+
+    Only one image comes out of an edit sampler, which is why the caller treats
+    the result as either the start *or* the end anchor of a segment.
+    """
+    if backend not in QWEN_BACKENDS:
+        raise RuntimeError(f"Unknown keyframe backend: {backend}")
+    preset = qwen_keyframe_preset(config, backend)
+    width, height = keyframe_size(config)
+    references = [str(item) for item in config.get("reference_images") or []]
+    # Measured on 2.1 with the same canvas and seed: canvas alone renders
+    # one person; canvas + either one or two identity references renders
+    # TWO people -- the model treats "reference photo of the same person"
+    # as a second subject to paint, and the no-extra-people prompt suffix
+    # cannot stop it. The canvas already carries identity, clothing and
+    # framing, so edit passes (derived frames) never take references;
+    # only start frames (canvas=None) feed them. This also keeps 2511
+    # within its hard 3-slot limit instead of silently dropping inputs.
+    #
+    # ``keyframe_qwen_canvas_refs`` flips that rule for the identity-swap
+    # workflow: a pose/angle plate drawn by another model (2511 can turn the
+    # head, 2.1 cannot) is used as the canvas while the original front photo
+    # goes in as an identity reference, so 2.1 repaints the face onto the
+    # plate. Only turn it on when the canvas shows a *different-looking*
+    # person -- feeding the same person twice is what paints a twin.
+    if canvas and not str(config.get("keyframe_qwen_canvas_refs") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        references = []
+    node = {}
+
+    def add(node_id, class_type, **inputs):
+        node[str(node_id)] = {"class_type": class_type, "inputs": inputs}
+        return str(node_id)
+
+    image_slots = []
+    if canvas:
+        image_slots.append(
+            add(
+                "1",
+                "VHS_LoadImagePath",
+                image=input_image_path(config, canvas),
+                custom_width=0,
+                custom_height=0,
+            )
+        )
+    for index, image in enumerate(references):
+        image_slots.append(
+            add(
+                str(2 + index),
+                "VHS_LoadImagePath",
+                image=input_image_path(config, image),
+                custom_width=0,
+                custom_height=0,
+            )
+        )
+    if not image_slots:
+        raise RuntimeError("Qwen keyframes need at least one reference image")
+
+    if backend == BACKEND_QWEN2511:
+        # 20 -> 21 -> 22 -> 23: 2511 int8 + Lightning 4 steps. AuraFlow shift and
+        # CFGNorm mirror the manual workflow; cfg is 1.0 so the negative encoder
+        # is only there to satisfy KSampler.
+        add("20", "UNETLoader", unet_name=preset["unet"], weight_dtype="default")
+        add(
+            "21",
+            "ModelSamplingAuraFlow",
+            model=["20", 0],
+            shift=float(preset["shift"]),
+        )
+        add("22", "CFGNorm", model=["21", 0], strength=1.0, pre_cfg=False)
+        # 没有 LoRA 时跳过这个节点：原生权重要靠原生步数跑，接了空 LoRA 名
+        # 会被 ComfyUI 以 value_not_in_list 拒掉。
+        model_src = "22"
+        if preset.get("lora"):
+            model_src = add(
+                "23",
+                "LoraLoaderModelOnly",
+                model=["22", 0],
+                lora_name=preset["lora"],
+                strength_model=1.0,
+            )
+        add(
+            "24",
+            "CLIPLoader",
+            clip_name=preset["clip"],
+            type="qwen_image",
+            device="default",
+        )
+        add("25", "VAELoader", vae_name=preset["vae"])
+        if canvas:
+            scaled = add(
+                "26",
+                "ImageScale",
+                image=["1", 0],
+                upscale_method="lanczos",
+                width=width,
+                height=height,
+                crop="center",
+            )
+            latent = add("27", "VAEEncode", pixels=[scaled, 0], vae=["25", 0])
+        else:
+            latent = add(
+                "27",
+                "EmptySD3LatentImage",
+                width=width,
+                height=height,
+                batch_size=1,
+            )
+        positive = add(
+            "28",
+            "TextEncodeQwenImageEditPlus",
+            clip=["24", 0],
+            vae=["25", 0],
+            prompt=prompt,
+            **{
+                f"image{slot + 1}": [node_id, 0]
+                for slot, node_id in enumerate(image_slots[:3])
+            },
+        )
+        negative = add(
+            "29",
+            "TextEncodeQwenImageEditPlus",
+            clip=["24", 0],
+            vae=["25", 0],
+            prompt="",
+        )
+        model = [model_src, 0]
+        vae = ["25", 0]
+        sampler_inputs = {
+            "positive": [positive, 0],
+            "negative": [negative, 0],
+            "latent_image": [latent, 0],
+        }
+    else:
+        add(
+            "20",
+            "CLIPLoader",
+            clip_name=preset["clip"],
+            type="qwen_image",
+            device="default",
+        )
+        add("21", "VAELoader", vae_name=preset["vae"])
+        add("22", "UNETLoader", unet_name=preset["unet"], weight_dtype="default")
+        model_src = "22"
+        if preset.get("lora"):
+            model_src = add(
+                "23",
+                "LoraLoaderModelOnly",
+                model=["22", 0],
+                lora_name=preset["lora"],
+                strength_model=1.0,
+            )
+        add("24", "QwenImage21Cache", model=[model_src, 0], device="auto", dtype="default")
+        # 2.1 builds its own latent inside the encoder, sized from image_1, so
+        # image_1 must already be the exact target size and ``resolution`` has to
+        # stay 0 -- any positive value re-rounds image_1 to a ~1MP box (a 9:16
+        # canvas becomes 768x1376, ratio 0.558) and the size then drifts with the
+        # aspect of whatever the previous frame was. Without a canvas the first
+        # reference photo plays image_1, so it gets the same fixed-size crop;
+        # the remaining references only need a cheap pixel budget (they are pure
+        # identity input, the latent never comes from them).
+        encoder_slots = []
+        first = add(
+            "26",
+            "ImageScale",
+            image=[image_slots[0], 0],
+            upscale_method="lanczos",
+            width=width,
+            height=height,
+            crop="center",
+        )
+        # ``keyframe_qwen_canvas_blur_mp`` (megapixels, 0 = off) degrades the
+        # canvas before it hits the encoder: downscale to that budget, then
+        # scale back up. Measured in the identity-swap test (2511 angle plate
+        # + front reference): with a crisp canvas 2.1 treats the reference as
+        # decoration and repaints the plate's face almost unchanged; with a
+        # ~0.12MP mushed canvas it has to re-imagine the details, and the
+        # reference actually steers the face (eyes/lips/hair drift toward it)
+        # while pose, angle and framing still follow the canvas. Only use it
+        # for face-swap passes -- a derived frame that merely continues the
+        # action wants the crisp canvas so the previous frame's detail
+        # survives.
+        blur_mp = float(config.get("keyframe_qwen_canvas_blur_mp") or 0)
+        if blur_mp > 0:
+            mushed = add(
+                "26b",
+                "ImageScaleToTotalPixels",
+                image=[first, 0],
+                upscale_method="lanczos",
+                megapixels=blur_mp,
+                resolution_steps=32,
+            )
+            first = add(
+                "26c",
+                "ImageScale",
+                image=[mushed, 0],
+                upscale_method="lanczos",
+                width=width,
+                height=height,
+                crop="center",
+            )
+        encoder_slots.append(first)
+        for index, node_id in enumerate(image_slots[1:]):
+            if len(encoder_slots) >= 16:
+                break
+            encoder_slots.append(
+                add(
+                    str(40 + index),
+                    "ImageScaleToTotalPixels",
+                    image=[node_id, 0],
+                    upscale_method="lanczos",
+                    megapixels=0.4,
+                    resolution_steps=32,
+                )
+            )
+        encoder_images = {
+            f"images.image_{slot + 1}": [node_id, 0]
+            for slot, node_id in enumerate(encoder_slots)
+        }
+        positive = add(
+            "28",
+            "TextEncodeQwenImage21",
+            clip=["20", 0],
+            vae=["21", 0],
+            prompt=prompt,
+            negative_prompt="",
+            resolution=0,
+            **encoder_images,
+        )
+        model = ["24", 0]
+        vae = ["21", 0]
+        sampler_inputs = {
+            "positive": [positive, 0],
+            "negative": [positive, 1],
+            "latent_image": [positive, 2],
+        }
+
+    add(
+        "30",
+        "KSampler",
+        model=model,
+        seed=int(seed),
+        steps=int(preset["steps"]),
+        cfg=float(preset["cfg"]),
+        sampler_name="euler",
+        scheduler="simple",
+        denoise=1.0,
+        **sampler_inputs,
+    )
+    add("31", "VAEDecode", samples=["30", 0], vae=vae)
+    add(
+        "32",
+        "SaveImage",
+        images=["31", 0],
+        filename_prefix=f"{config['output_prefix']}/keyframes/{preset['prefix']}_{seed}",
+    )
+    return node
+
+
+def run_qwen_keyframe(config, backend, prompt, canvas, seed, label):
+    """Submit one Qwen anchor and return it as a start *or* an end keyframe.
+
+    ``canvas is None`` means this call is producing a segment's first frame;
+    otherwise it is producing that segment's last frame from its first frame.
+    Returning ``None`` for the unused side keeps the H3-only "reuse the opening
+    draft's last frame" shortcut from firing on an edit model, which would
+    otherwise hand a segment an end frame identical to its start.
+    """
+    graph = build_qwen_keyframe_graph(
+        config,
+        backend,
+        qwen_keyframe_prompt(config, prompt),
+        canvas,
+        seed,
+    )
+    prompt_id, entry = submit_graph(
+        config,
+        graph,
+        label or f"Qwen keyframe {seed}",
+    )
+    images = (entry.get("outputs") or {}).get("32", {}).get("images") or []
+    if not images:
+        raise RuntimeError("Qwen keyframe image output was not reported")
+    path = str(resolve_output(config, images[0]))
+    is_end = canvas is not None
+    return {
+        "prompt_id": prompt_id,
+        "first_frame": None if is_end else path,
+        "last_frame": path if is_end else None,
+    }
+
+
 def _request_with_retry(method, url, *, retries=3, **kwargs):
     """request() with exponential backoff on network errors and 5xx replies."""
     last_error = None
@@ -751,6 +1180,16 @@ def video_prompt_spec(config, spec):
 
 
 def run_keyframe(config, segment, seed, first_frame=None, prompt=None, label=None):
+    backend = keyframe_backend(config)
+    if backend in QWEN_BACKENDS:
+        return run_qwen_keyframe(
+            config,
+            backend,
+            prompt or segment["prompt"],
+            first_frame,
+            seed,
+            label,
+        )
     seconds = float(config.get("keyframe_draft_seconds", 2.0))
     keyframe_prompt = prompt or segment["prompt"]
     graph = build_keyframe_graph(config, keyframe_prompt, first_frame, seed, seconds)
@@ -2085,13 +2524,14 @@ def main():
             print("[H3] 请先运行 --stage keyframes 生成并确认关键帧。", flush=True)
             raise SystemExit(2)
 
-    # 关键帧来源不是 H3 时（Qwen 出图 / 只用手动图），不烧 GPU 生成关键帧：
-    # 只把任务标成「等人工放图」，已有的手动帧原样留在 state 里。
-    backend = str(config.get("keyframe_backend") or "h3").strip()
-    if backend != "h3" and args.stage in {"keyframes", "all"}:
+    # 关键帧来源不是 H3 时：先确认这个后端到底是「代码出图」还是「只等人工图」。
+    # qwen2511 / qwen21 走 build_qwen_keyframe_graph，和 h3 一样自动出图，
+    # 只是慢得多（一张一分钟级），所以仍然停在关键帧阶段等人工确认。
+    backend = keyframe_backend(config)
+    state["keyframe_backend"] = backend
+    if backend == BACKEND_MANUAL and args.stage in {"keyframes", "all"}:
         state["stage"] = args.stage
         state["phase"] = "keyframes"
-        state["keyframe_backend"] = backend
         state["awaiting_review"] = True
         state["review_segments"] = render_end
         state_path.write_text(
@@ -2099,7 +2539,7 @@ def main():
             encoding="utf-8",
         )
         print(
-            f"[H3] 关键帧来源 = {backend}：跳过 H3 关键帧生成，{render_end} 段等外部图。",
+            f"[H3] 关键帧来源 = {backend}：跳过 AI 出图，{render_end} 段等人工放图。",
             flush=True,
         )
         print(
@@ -2108,6 +2548,13 @@ def main():
             flush=True,
         )
         return
+    if backend in QWEN_BACKENDS and args.stage in {"keyframes", "all"}:
+        width, height = keyframe_size(config)
+        print(
+            f"[H3] 关键帧来源 = {backend}：用 Qwen 出图，"
+            f"固定 {width}x{height}，共 {render_end} 段。",
+            flush=True,
+        )
 
     keyframes = ensure_keyframe_chain(
         config,

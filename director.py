@@ -112,8 +112,8 @@ STAGE_TO_FLAG = {
     STAGE_VIDEOS: "videos",
 }
 
-# 关键帧从哪来。前两个值会写进任务 config，runner 看到就不是 "h3" 时跳过 AI 生成，
-# 只把已有（手动 / push 进来的）帧整理成 state，等你在面板上逐张替换。
+# 关键帧从哪来。h3 / qwen2511 / qwen21 都由 runner 在代码里建图自动出图，
+# 区别只是用哪个模型；manual 才是「等人工放图」。
 BACKEND_H3 = "h3"
 BACKEND_QWEN2511 = "qwen2511"
 BACKEND_QWEN21 = "qwen21"
@@ -136,11 +136,12 @@ KEYFRAME_BACKEND_LABELS = {
     BACKEND_QWEN21: "Qwen-Image-2.1",
     BACKEND_MANUAL: "只用手动图",
 }
-# 每种外部后端推荐打开哪张工作流出图，面板直接显示这一句。
+# 每种后端一句话说明，面板直接显示。
 KEYFRAME_BACKEND_HINTS = {
-    BACKEND_QWEN2511: "用 example_workflows/Qwen2511-Reference-Edit.json 出图",
-    BACKEND_QWEN21: "用 example_workflows/Qwen21-Reference-Edit.json 出图",
-    BACKEND_MANUAL: "自己出图或从别的片子截帧",
+    BACKEND_H3: "H3 草稿自动出图（最快，5 秒一段）",
+    BACKEND_QWEN2511: "Qwen-Image-Edit 2511 自动出图（约 40–90 秒一张，能转角度、脸会漂）",
+    BACKEND_QWEN21: "Qwen-Image-2.1 自动出图（约 20–30 秒一张，最像参考、角度跟参考走）",
+    BACKEND_MANUAL: "等你手动放图 / 从别的片子截帧",
 }
 
 SAMPLER_OPTIONS = [
@@ -1955,8 +1956,8 @@ class H3LongVideoDirector:
                         "default": "",
                     },
                 ),
-                # 全局配置：整条任务的关键帧从哪来。非 "H3 自己出" 时 runner 跳过
-                # AI 生成，只整理已有帧，等你在面板上替换。
+                # 全局配置：整条任务的关键帧从哪来。h3 / qwen2511 / qwen21 都由
+                # runner 自动出图；manual 才是等人工放图。
                 "keyframe_backend": (
                     KEYFRAME_BACKEND_OPTIONS,
                     {"default": KEYFRAME_BACKEND_OPTIONS[0]},

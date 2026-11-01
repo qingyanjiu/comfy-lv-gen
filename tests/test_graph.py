@@ -1326,6 +1326,282 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(node["widgets_values"][1], 5.0)
         self.assertFalse(node["widgets_values"][10])
 
+    # ------------------------------------------------------------------
+    # Qwen keyframe backends
+    # ------------------------------------------------------------------
+
+    def test_qwen_keyframe_graph_hits_the_fixed_size(self):
+        for backend in pipeline.QWEN_BACKENDS:
+            for canvas in (None, self.config["reference_images"][0]):
+                graph = pipeline.build_qwen_keyframe_graph(
+                    self.config,
+                    backend,
+                    "test prompt",
+                    canvas,
+                    123,
+                )
+                save = graph["32"]
+                self.assertEqual(save["class_type"], "SaveImage")
+                self.assertIn("keyframes", save["inputs"]["filename_prefix"])
+                if backend == pipeline.BACKEND_QWEN2511:
+                    latent = graph["27"]
+                    if canvas is None:
+                        self.assertEqual(latent["class_type"], "EmptySD3LatentImage")
+                        self.assertEqual(
+                            (latent["inputs"]["width"], latent["inputs"]["height"]),
+                            pipeline.keyframe_size(self.config),
+                        )
+                    else:
+                        self.assertEqual(latent["class_type"], "VAEEncode")
+                        scaler = graph[latent["inputs"]["pixels"][0]]
+                        self.assertEqual(scaler["class_type"], "ImageScale")
+                        self.assertEqual(
+                            (
+                                scaler["inputs"]["width"],
+                                scaler["inputs"]["height"],
+                            ),
+                            pipeline.keyframe_size(self.config),
+                        )
+                else:
+                    # 2.1 has no external latent: the encoder builds one from
+                    # image_1, so image_1 must already be the exact size and
+                    # resolution must stay 0 or the size drifts with the input.
+                    encoder = graph["28"]
+                    self.assertEqual(encoder["class_type"], "TextEncodeQwenImage21")
+                    self.assertEqual(encoder["inputs"]["resolution"], 0)
+                    first = graph[encoder["inputs"]["images.image_1"][0]]
+                    self.assertEqual(first["class_type"], "ImageScale")
+                    self.assertEqual(
+                        (first["inputs"]["width"], first["inputs"]["height"]),
+                        pipeline.keyframe_size(self.config),
+                    )
+                    # The rest are pure identity input: pixel-budgeted, never
+                    # allowed to define the latent size. With a canvas there
+                    # must be NO extra slots at all -- canvas + references
+                    # measured as two people in the output.
+                    extra = [
+                        key
+                        for key in encoder["inputs"]
+                        if key.startswith("images.image_") and key != "images.image_1"
+                    ]
+                    if canvas is None:
+                        for key in extra:
+                            node = graph[encoder["inputs"][key][0]]
+                            self.assertEqual(
+                                node["class_type"], "ImageScaleToTotalPixels"
+                            )
+                    else:
+                        self.assertEqual(extra, [])
+
+    def test_qwen_keyframe_native_weights_skip_the_lora_node(self):
+        # keyframe_qwen_lora: "none" must drop LoraLoaderModelOnly entirely and
+        # wire UNET -> (Cache) directly, for both backends.
+        for backend in pipeline.QWEN_BACKENDS:
+            config = dict(self.config)
+            config["keyframe_qwen_lora"] = "none"
+            config["keyframe_qwen_steps"] = 20
+            graph = pipeline.build_qwen_keyframe_graph(config, backend, "p", None, 123)
+            self.assertFalse(
+                [n for n in graph.values() if n["class_type"] == "LoraLoaderModelOnly"],
+                backend,
+            )
+            self.assertEqual(graph["30"]["inputs"]["steps"], 20, backend)
+
+    def test_qwen_keyframe_canvas_never_takes_references(self):
+        # Edit passes (canvas given) must not feed identity references: the
+        # canvas already carries the person, and measured on 2.1 the model
+        # paints the references as additional people instead of treating them
+        # as identity anchors. Start frames (canvas None) keep the references.
+        for backend in pipeline.QWEN_BACKENDS:
+            encoder_type = (
+                "TextEncodeQwenImageEditPlus"
+                if backend == pipeline.BACKEND_QWEN2511
+                else "TextEncodeQwenImage21"
+            )
+            slot_prefix = (
+                "image" if backend == pipeline.BACKEND_QWEN2511 else "images.image_"
+            )
+
+            def count_slots(graph):
+                encoder = next(
+                    node
+                    for node in graph.values()
+                    if node["class_type"] == encoder_type
+                    and node["inputs"].get("prompt") == "p"
+                )
+                return sum(
+                    1 for key in encoder["inputs"] if key.startswith(slot_prefix)
+                )
+
+            start = pipeline.build_qwen_keyframe_graph(
+                self.config, backend, "p", None, 123
+            )
+            self.assertEqual(
+                count_slots(start),
+                len(self.config["reference_images"]),
+                backend,
+            )
+            edit = pipeline.build_qwen_keyframe_graph(
+                self.config, backend, "p", self.config["reference_images"][0], 123
+            )
+            self.assertEqual(count_slots(edit), 1, backend)
+
+    def test_qwen_keyframe_canvas_refs_opt_in_keeps_references(self):
+        # The identity-swap workflow (draw an angle plate with 2511, then paint
+        # the reference person's face onto it) needs canvas AND references at
+        # the same time; `keyframe_qwen_canvas_refs` re-enables them.
+        config = dict(self.config)
+        config["keyframe_qwen_canvas_refs"] = True
+        for backend in pipeline.QWEN_BACKENDS:
+            graph = pipeline.build_qwen_keyframe_graph(
+                config, backend, "p", config["reference_images"][0], 123
+            )
+            load_images = [
+                node
+                for node in graph.values()
+                if node["class_type"] == "VHS_LoadImagePath"
+            ]
+            # canvas + every reference photo
+            self.assertEqual(
+                len(load_images),
+                1 + len(config["reference_images"]),
+                backend,
+            )
+
+    def test_qwen_keyframe_canvas_blur_only_when_enabled(self):
+        # `keyframe_qwen_canvas_blur_mp` mushes the canvas before it becomes
+        # the latent, so 2.1 has to re-imagine details and the identity
+        # reference actually steers the face (identity-swap pass). Off by
+        # default: a derived frame that merely continues the action needs the
+        # crisp canvas to keep the previous frame's detail.
+        config = dict(self.config)
+        config["keyframe_qwen_canvas_refs"] = True
+        canvas = config["reference_images"][0]
+
+        plain = pipeline.build_qwen_keyframe_graph(
+            config, pipeline.BACKEND_QWEN21, "p", canvas, 123
+        )
+        self.assertNotIn("26b", plain)
+        self.assertEqual(
+            plain["28"]["inputs"]["images.image_1"][0], "26"
+        )
+
+        config["keyframe_qwen_canvas_blur_mp"] = 0.12
+        mushed = pipeline.build_qwen_keyframe_graph(
+            config, pipeline.BACKEND_QWEN21, "p", canvas, 123
+        )
+        self.assertEqual(mushed["26b"]["class_type"], "ImageScaleToTotalPixels")
+        self.assertEqual(mushed["26b"]["inputs"]["megapixels"], 0.12)
+        self.assertEqual(mushed["26c"]["class_type"], "ImageScale")
+        self.assertEqual(
+            (mushed["26c"]["inputs"]["width"], mushed["26c"]["inputs"]["height"]),
+            pipeline.keyframe_size(config),
+        )
+        self.assertEqual(
+            mushed["28"]["inputs"]["images.image_1"][0], "26c"
+        )
+
+    def test_qwen_keyframe_graph_wires_the_right_models(self):
+        models = {
+            pipeline.BACKEND_QWEN2511: (
+                "UNETLoader",
+                "qwen_image_edit_2511_int8_convrot.safetensors",
+                "TextEncodeQwenImageEditPlus",
+                8,
+            ),
+            pipeline.BACKEND_QWEN21: (
+                "UNETLoader",
+                "qwen_image_2.1_int8_convrot.safetensors",
+                "TextEncodeQwenImage21",
+                8,
+            ),
+        }
+        for backend, (loader, unet, encoder, steps) in models.items():
+            graph = pipeline.build_qwen_keyframe_graph(
+                self.config, backend, "p", None, 123
+            )
+            loaders = [
+                node
+                for node in graph.values()
+                if node["class_type"] == loader
+                and "unet_name" in node["inputs"]
+            ]
+            self.assertTrue(loaders, backend)
+            self.assertEqual(loaders[0]["inputs"]["unet_name"], unet)
+            encoders = [
+                node
+                for node in graph.values()
+                if node["class_type"] == encoder
+                and node["inputs"].get("prompt") == "p"
+            ]
+            self.assertTrue(encoders, backend)
+            self.assertEqual(graph["30"]["inputs"]["steps"], steps)
+            self.assertEqual(graph["30"]["inputs"]["cfg"], 1.0)
+
+    def test_run_keyframe_dispatches_to_the_qwen_builder(self):
+        config = dict(self.config)
+        segment = pipeline.segment_specs(config)[0]
+        (self.temp / "prev.png").write_bytes(b"previous frame")
+        for backend, canvas in (
+            (pipeline.BACKEND_QWEN2511, None),
+            (pipeline.BACKEND_QWEN2511, "prev.png"),
+            (pipeline.BACKEND_QWEN21, None),
+            (pipeline.BACKEND_QWEN21, "prev.png"),
+        ):
+            config["keyframe_backend"] = backend
+            fake_entry = {
+                "outputs": {
+                    "32": {
+                        "images": [
+                            {
+                                "filename": "fake.png",
+                                "subfolder": "",
+                                "type": "output",
+                            }
+                        ]
+                    }
+                }
+            }
+            with mock.patch.object(
+                pipeline, "submit_graph", return_value=("pid", fake_entry)
+            ) as submit:
+                record = pipeline.run_keyframe(
+                    config, segment, 123, first_frame=canvas, prompt="p"
+                )
+            self.assertEqual(submit.call_count, 1)
+            graph = submit.call_args[0][1]
+            self.assertIn("qwen", json.dumps(graph), backend)
+            if canvas is None:
+                self.assertIsNotNone(record["first_frame"])
+                self.assertIsNone(record["last_frame"])
+            else:
+                self.assertIsNone(record["first_frame"])
+                self.assertIsNotNone(record["last_frame"])
+        # The suffix guards against the edit models rendering the identity
+        # references as extra people; it must reach the encoder prompt.
+        config["keyframe_backend"] = pipeline.BACKEND_QWEN21
+        fake_entry = {
+            "outputs": {
+                "32": {
+                    "images": [
+                        {"filename": "fake.png", "subfolder": "", "type": "output"}
+                    ]
+                }
+            }
+        }
+        with mock.patch.object(
+            pipeline,
+            "submit_graph",
+            return_value=("pid", fake_entry),
+        ) as submit:
+            pipeline.run_keyframe(config, segment, 123, first_frame=None, prompt="p")
+        encoder = next(
+            node
+            for node in submit.call_args[0][1].values()
+            if node["class_type"] == "TextEncodeQwenImage21"
+        )
+        self.assertIn("不新增人物", encoder["inputs"]["prompt"])
+
 
 if __name__ == "__main__":
     unittest.main()
