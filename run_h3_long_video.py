@@ -2085,6 +2085,30 @@ def main():
             print("[H3] 请先运行 --stage keyframes 生成并确认关键帧。", flush=True)
             raise SystemExit(2)
 
+    # 关键帧来源不是 H3 时（Qwen 出图 / 只用手动图），不烧 GPU 生成关键帧：
+    # 只把任务标成「等人工放图」，已有的手动帧原样留在 state 里。
+    backend = str(config.get("keyframe_backend") or "h3").strip()
+    if backend != "h3" and args.stage in {"keyframes", "all"}:
+        state["stage"] = args.stage
+        state["phase"] = "keyframes"
+        state["keyframe_backend"] = backend
+        state["awaiting_review"] = True
+        state["review_segments"] = render_end
+        state_path.write_text(
+            json.dumps(state, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(
+            f"[H3] 关键帧来源 = {backend}：跳过 H3 关键帧生成，{render_end} 段等外部图。",
+            flush=True,
+        )
+        print(
+            "[H3] 出好图后在面板上逐张「替换」（或 push 灌进来），"
+            "再点「确认关键帧，生成视频」。",
+            flush=True,
+        )
+        return
+
     keyframes = ensure_keyframe_chain(
         config,
         specs,

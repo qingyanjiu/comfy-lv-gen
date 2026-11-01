@@ -112,6 +112,37 @@ STAGE_TO_FLAG = {
     STAGE_VIDEOS: "videos",
 }
 
+# 关键帧从哪来。前两个值会写进任务 config，runner 看到就不是 "h3" 时跳过 AI 生成，
+# 只把已有（手动 / push 进来的）帧整理成 state，等你在面板上逐张替换。
+BACKEND_H3 = "h3"
+BACKEND_QWEN2511 = "qwen2511"
+BACKEND_QWEN21 = "qwen21"
+BACKEND_MANUAL = "manual"
+KEYFRAME_BACKEND_OPTIONS = [
+    "H3 自己出（默认）",
+    "Qwen-Image-Edit 2511",
+    "Qwen-Image-2.1",
+    "只用手动图",
+]
+KEYFRAME_BACKEND_TO_VALUE = {
+    "H3 自己出（默认）": BACKEND_H3,
+    "Qwen-Image-Edit 2511": BACKEND_QWEN2511,
+    "Qwen-Image-2.1": BACKEND_QWEN21,
+    "只用手动图": BACKEND_MANUAL,
+}
+KEYFRAME_BACKEND_LABELS = {
+    BACKEND_H3: "H3 自己出",
+    BACKEND_QWEN2511: "Qwen-Image-Edit 2511",
+    BACKEND_QWEN21: "Qwen-Image-2.1",
+    BACKEND_MANUAL: "只用手动图",
+}
+# 每种外部后端推荐打开哪张工作流出图，面板直接显示这一句。
+KEYFRAME_BACKEND_HINTS = {
+    BACKEND_QWEN2511: "用 example_workflows/Qwen2511-Reference-Edit.json 出图",
+    BACKEND_QWEN21: "用 example_workflows/Qwen21-Reference-Edit.json 出图",
+    BACKEND_MANUAL: "自己出图或从别的片子截帧",
+}
+
 SAMPLER_OPTIONS = [
     "euler",
     "euler_cfg_pp",
@@ -411,6 +442,12 @@ def _job_name_of(job_id, job_config=None):
         return name
     match = re.match(r"^\d{8}-(.+)$", str(job_id or ""))
     return match.group(1) if match else ""
+
+
+def _keyframe_backend_of(job_config):
+    """任务的关键帧来源，认不出来的值一律当 H3。"""
+    value = str((job_config or {}).get("keyframe_backend") or BACKEND_H3)
+    return value if value in KEYFRAME_BACKEND_LABELS else BACKEND_H3
 
 
 def _dir_size(path):
@@ -856,11 +893,16 @@ def _review_state(status, state, keyframes, segment_total, done_segments):
     button to continue.
     """
     status_name = status.get("status")
+    ready = _keyframes_ready(keyframes, segment_total)
     if state.get("awaiting_review"):
+        # 关键帧外包给外部图时，帧没放齐就不能说「已生成，等待确认」，
+        # 否则面板会催你点一个点了必然报错的按钮。
+        backend = str(state.get("keyframe_backend") or "h3")
+        if backend != "h3" and not ready:
+            return "keyframes"
         return "gate"
     if status_name not in IDLE_STATUSES:
         return None
-    ready = _keyframes_ready(keyframes, segment_total)
     if ready and segment_total and done_segments < segment_total:
         return "resume"
     if not ready and status_name in {"failed", "interrupted"}:
@@ -982,6 +1024,13 @@ if PromptServer is not None:
                     **status,
                     "job_id": job_id,
                     "job_name": _job_name_of(job_id, job_config),
+                    "keyframe_backend": _keyframe_backend_of(job_config),
+                    "keyframe_backend_label": KEYFRAME_BACKEND_LABELS.get(
+                        _keyframe_backend_of(job_config), ""
+                    ),
+                    "keyframe_backend_hint": KEYFRAME_BACKEND_HINTS.get(
+                        _keyframe_backend_of(job_config), ""
+                    ),
                     "script": script,
                     "segments": segments,
                     "completed_segments": len(segments),
@@ -1906,6 +1955,12 @@ class H3LongVideoDirector:
                         "default": "",
                     },
                 ),
+                # 全局配置：整条任务的关键帧从哪来。非 "H3 自己出" 时 runner 跳过
+                # AI 生成，只整理已有帧，等你在面板上替换。
+                "keyframe_backend": (
+                    KEYFRAME_BACKEND_OPTIONS,
+                    {"default": KEYFRAME_BACKEND_OPTIONS[0]},
+                ),
             },
         }
 
@@ -1935,6 +1990,7 @@ class H3LongVideoDirector:
         first_frame=None,
         stage=STAGE_REVIEW,
         job_name="",
+        keyframe_backend=KEYFRAME_BACKEND_OPTIONS[0],
         resume_job_id="",
         **reference_images,
     ):
@@ -2074,6 +2130,9 @@ class H3LongVideoDirector:
                 config["opening_frame"] = opening_frame.as_posix()
             config["stage"] = requested_stage
             config["job_name"] = _sanitize_job_name(job_name)
+            config["keyframe_backend"] = KEYFRAME_BACKEND_TO_VALUE.get(
+                str(keyframe_backend), BACKEND_H3
+            )
             config_path = job_dir / "config.json"
             config_path.write_text(
                 json.dumps(config, indent=2, ensure_ascii=False),
