@@ -1,24 +1,32 @@
 {
   "comfy_url": "http://127.0.0.1:8188",
   "comfy_input_dir": "D:/Comfy-Desktop/ComfyUI-Shared/input",
-  "chain_input_dir": "D:/Comfy-Desktop/ComfyUI-Installs/ComfyUI/ComfyUI/input",
+  "chain_input_dir": "D:/Comfy-Desktop/ComfyUI-Shared/input",
   "comfy_output_dir": "D:/Comfy-Desktop/ComfyUI-Shared/output",
-  "final_output_dir": "D:/Comfy-Desktop/ComfyUI-Installs/ComfyUI/ComfyUI/output",
+  "jobs_dir": "D:/Comfy-Desktop/ComfyUI-Shared/output/h3-long-video/jobs",
+  "final_output_dir": "D:/Comfy-Desktop/ComfyUI-Shared/output",
   "aspect_ratio": "9:16 (Portrait Widescreen)",
-  "megapixels": 0.2,
+  "megapixels": 0.3,
   "fps": 24,
   "steps": 6,
   "sampler": "res_multistep",
   "scheduler": "simple",
-  "two_pass_default": false,
-  "two_pass_steps": 5,
-  "two_pass_denoise": 0.2,
+  "two_pass_default": true,
+  "two_pass_steps": 6,
+  "two_pass_denoise": 0.3,
   "two_pass_scheduler": "simple",
   "two_pass_scale": 2.0,
   "two_pass_fix_opening_frames": 2,
+  "two_pass_blend_frames": 4,
+  "audio_boundary_fade": 0.1,
+  "qa_anchor_ssim_min": 0.55,
+  "qa_face_check": false,
+  "qa_face_sim_min": 0.5,
+  "keyframe_reanchor_every": 0,
+  "keyframe_reanchor_prompt": "身份重锚定：严格回到参考图（Picture 1 / Picture 2）中的同一人物，脸型、五官、发型、肤色和身体比例必须与参考图完全一致，不得继承前帧累积的任何漂移；服装与场景按当前剧情延续。",
   "latent_upscaler_name": "minimax_h3_latent_upscaler_3d_fp16.safetensors",
-  "final_width": 704,
-  "final_height": 1216,
+  "final_width": 832,
+  "final_height": 1472,
   "base_seed": 795140483442838,
   "unet_name": "DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors",
   "clip_name": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
@@ -32,7 +40,7 @@
   "transition_mode": "fade",
   "transition_default_seconds": 1.0,
   "transition_two_pass": false,
-  "keyframe_draft_seconds": 2.0,
+  "keyframe_draft_seconds": 5.0,
   "keyframe_megapixels": 0.6,
   "keyframe_steps": 6,
   "keyframe_ref_image_size": "max",
@@ -44,47 +52,47 @@
   "segments": [
     {
       "seconds": 6.0,
-      "two_pass": false,
+      "two_pass": true,
       "prompt": "同一成年女性从街道正中向镜头缓慢走来。严格保持参考图中的身份、脸型、黑色长发、咖啡棕色校服上衣、百褶短裙、白色短袜和黑色乐福鞋，身高和身体比例不变。9:16完整全身镜头，固定全身机位，摄影机不推进、不后退、不缩放；头顶、裙摆和鞋底始终完整入镜，人物身高约占画面70%且逐帧大小不变。面部平静中性，双唇自然闭合，上下唇轻轻接触，嘴角平直，嘴宽与参考图中的中性表情一致；不微笑、不露牙、不张嘴、不咧嘴、不咬唇，嘴巴绝不放大。安静城市街道，柔和自然日光，轻微环境声、脚步声和呼吸声，无对白、无旁白。"
     },
     {
       "seconds": 6.0,
-      "two_pass": false,
+      "two_pass": true,
       "prompt": "再次采用参考图中的同一成年女性，严格保持一致的脸型、五官、黑色长发、棕色校服上衣、百褶短裙、白袜和黑鞋。延续上一段真实尾帧继续向前走，不得重新摆姿势。摄影机保持与第一帧完全相同的固定全身机位，不推进、不后退、不缩放，人物从头到脚完整入镜且画面占比不变。步伐稳定，双臂自然摆动，头发和裙摆轻微摆动。嘴唇始终自然闭合，上下唇接触，嘴角不向两侧拉伸，嘴宽和闭唇形态保持第一帧不变；不微笑、不露牙、不张嘴。街道背景自然向后移动，轻柔风声和真实脚步声，无对白、无旁白。"
     },
     {
       "seconds": 6.0,
-      "two_pass": false,
+      "two_pass": true,
       "prompt": "同一成年女性，身份和服装严格遵循参考图。延续上一段真实尾帧，经过路边行道树。保持9:16竖屏全身构图，摄影机固定，不推进、不后退、不缩放，头顶、裙摆和鞋底始终完整入镜，人物大小不变。她稍微侧头观察街边，再自然回看前方，身体和脚步连续。面部始终平静中性，双唇闭合，嘴角平直，嘴宽保持第一帧不变；不微笑、不咧嘴、不露牙、不张嘴。斑驳树影和柔和日光自然变化，环境声与脚步声音量自然，无对白、无旁白。"
     },
     {
       "seconds": 6.0,
-      "two_pass": false,
+      "two_pass": true,
       "prompt": "同一成年女性，保持参考图中的脸、发型、棕色校服和百褶短裙。延续上一段真实尾帧沿人行道继续前行。摄影机固定，维持与第一帧完全相同的高度、焦距、机位和全身景别，不推进、不后退、不缩放，头顶和鞋底始终完整入镜，人物大小不变。她自然整理被风吹动的长发，动作轻缓且不遮挡面部。嘴唇保持自然闭合，嘴角平直，嘴宽与上一帧完全一致；保持中性表情，不微笑、不露牙、不张嘴、嘴巴不突然变大。背景建筑和行人适度虚化，内建音频包含柔和风声、鞋底接触路面的声音和轻微呼吸声。"
     },
     {
       "seconds": 6.0,
-      "two_pass": false,
+      "two_pass": true,
       "prompt": "延续上一段真实尾帧，同一成年女性从树影下走入明亮街面。保持同一身份、服装、发型、脸型和身体比例。她微微抬眼看向镜头，步伐持续。面部平静中性，双唇闭合，嘴角平直，嘴宽保持第一帧不变；不微笑、不张嘴、不露牙齿。摄影机固定，不推进、不后退、不缩放，始终保持头顶到鞋底的完整全身景别和相同人物大小。自然日光、远处车辆和街道环境声保持克制的电影质感，无对白、无旁白。"
     },
     {
       "seconds": 6.0,
-      "two_pass": false,
+      "two_pass": true,
       "prompt": "延续上一段真实尾帧，同一成年女性经过街边橱窗。保持9:16全身构图，摄影机固定且不缩放，人物头顶、裙摆和鞋底完整入镜，位于画面中央附近且大小不变。她短暂用余光看向橱窗，又自然转回前方，长发轻轻摆动，裙摆随步伐起伏。嘴型、嘴宽和闭唇形态与第一帧一致，嘴角平直；不微笑、不咧嘴、不露齿、不张嘴。背景反射和光斑自然变化，脚步与环境声连续，无对白、无旁白。"
     },
     {
       "seconds": 6.0,
-      "two_pass": false,
+      "two_pass": true,
       "prompt": "延续上一段真实尾帧，同一成年女性走向一段较窄的人行道。摄影机固定，保持与第一帧相同的高度、焦距和距离，不推进、不后退、不缩放。她自然调整身体方向避开路边设施，动作流畅，不断帧、不跳步；头顶到鞋底始终完整入镜，人物大小不变。双唇始终闭合，嘴角平直，嘴宽保持第一帧不变；保持中性表情，不微笑、不咧嘴、不张嘴。环境声和脚步声保持连续，无对白、无旁白、无音乐演唱。"
     },
     {
       "seconds": 6.0,
-      "two_pass": false,
+      "two_pass": true,
       "prompt": "延续上一段真实尾帧，同一成年女性继续沿街道前行。摄影机固定，不推进、不后退、不缩放，始终保持头顶到鞋底完整入镜。步伐稍放慢，双臂摆幅自然减小。长发和衣摆继续轻微运动，人物在画面中的大小保持不变。她自然眨眼并短暂看向镜头，保持平静的中性表情，双唇闭合、嘴角平直，嘴宽保持第一帧不变；不微笑、不露牙齿、不张嘴。背景远处有少量行人与车流虚影，自然街道环境声连续。"
     },
     {
       "seconds": 6.0,
-      "two_pass": false,
+      "two_pass": true,
       "prompt": "延续上一段真实尾帧，同一成年女性接近街道转角。保持同一全身景别和正面偏侧角度，她自然转身进入新的街道方向，脚步连续，身体重心平稳。摄影机固定，不推进、不后退、不缩放，避免人物变大或构图突变；头顶到鞋底始终完整入镜。脸部、嘴型、服装和发型不漂移，双唇闭合、嘴角平直，嘴宽保持第一帧不变；保持中性表情，不微笑、不露牙、不张嘴。音频为连续环境声和脚步声，无对白。"
     },
     {
@@ -92,5 +100,8 @@
       "two_pass": true,
       "prompt": "延续上一段真实尾帧，同一成年女性在街道转角放慢脚步。保持9:16竖屏完整全身构图，摄影机固定，不推进、不后退、不缩放，头顶与鞋底始终不裁切。她最终停在原地，自然看向镜头，双手放松，长发微动。面部平静中性，双唇自然闭合、嘴角平直，嘴宽与开头第一帧完全一致；不微笑、不露牙、不张嘴。最后两秒人物和镜头都减速停止，人物大小不变。声音逐渐落在轻柔街景环境声和一次呼吸声，自然收尾，无对白和水印。"
     }
-  ]
+  ],
+  "keyframe_camera_continuity": true,
+  "keyframe_camera_prompt": "Tracking shot: the camera moves with her and pulls back as she walks forward, so she keeps exactly the same size in the frame and stays fully visible from head to feet. The background slides past her. Never zoom into her face, never crop her feet or head.",
+  "tail_guard_frames": 2
 }

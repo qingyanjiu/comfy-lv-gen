@@ -3,6 +3,15 @@
 本文档只说明 Director 节点 `storyboard` 输入框中的 JSON。参考图片、模型、
 采样器、分辨率等配置由节点控件或 `config.json` 管理，不要写进这里。
 
+> 想知道每条提示词**该写什么、别写什么**，看 `提示词指南.md`（提示词须知）。
+
+> ⚠️ 这不是唯一一套分镜 JSON。**长视频流水线（`skills/h3-long-video`）用的是另一套**：
+> 那边的分段字段是 `shot` / `frame` / `open_action` / `end_action` / `motion` / `beats` /
+> `amplitude` / `dir` / `gaze`，由 `pipeline.py` 渲染成提示词，字段名和本文不同、互不通用。
+> 写错名字不会报错，只会静默不生效——先确认自己走的是哪条路，再照对应那份文档写。
+> （对照表见 `提示词指南.md` 的 §0.0。）
+
+
 ## 1. 顶层结构
 
 推荐格式：
@@ -45,6 +54,7 @@
 | `start_frame_prompt` | 字符串 | 否 | 使用 `prompt` |
 | `two_pass` | 布尔值 | 否 | 默认 `false`，并受全局二采模式影响 |
 | `hold_composition` | 布尔值 | 否 | 跟随全局 `stabilize_full_body` |
+| `free_end` | 布尔值 | 否 | 默认 `false`；`true` 时本段不生成尾帧，下一段接本段真实末帧 |
 | `continue_from_previous` | 布尔值 | 否 | 跟随全局 `chain_segments` |
 | `transition_seconds` | 数字 | 否 | 跟随全局 `transition_default_seconds` |
 | `transition_prompt` | 字符串 | 否 | 使用内置的分镜转场提示 |
@@ -204,6 +214,27 @@
 - 消耗更多关键帧生成时间。
 
 省略该字段时，使用全局 `stabilize_full_body`。
+
+## 8.5 free_end
+
+```json
+{
+  "seconds": 15,
+  "free_end": true,
+  "prompt": "<女主角>沿步道一路走到木质长椅旁，镜头后退跟拍，全程全身入镜"
+}
+```
+
+作用：本段**不锚尾帧**，让模型自己决定停在哪一帧；下一段（链式）的首帧取本段
+**渲染出来的最后一帧**。
+
+- 用在「位移大、终点没法用一张图概括」的段落：走一段路、上车、推门离开、起身走远。
+- 不要用在「坐下、站定、转身」这类小动作上，那种情况锚尾帧更稳。
+- 用了 `free_end` 就不需要 `end_frame_prompt`（写了也不生效）。
+- 下一段的首帧要等本段渲完才存在，面板上会显示「待定首帧」，属正常状态。
+
+何时该用、实测效果、镜头副作用见 `提示词指南.md` 第 6 节和
+`参数配置.md` 的「自由尾帧 free_end」。
 
 ## 9. continue_from_previous
 
