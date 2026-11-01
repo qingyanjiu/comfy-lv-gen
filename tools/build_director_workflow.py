@@ -169,6 +169,7 @@ def build_workflow(config):
                 director.STAGE_REVIEW,
                 "",
                 "",
+                director.KEYFRAME_BACKEND_OPTIONS[0],
             ],
         },
     ]

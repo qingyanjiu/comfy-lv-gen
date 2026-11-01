@@ -48,6 +48,7 @@ function ensureStyles() {
     .h3-director-notice[data-kind="warn"] { color: #ffd479; }
     .h3-director-notice[data-kind="error"] { color: #ff9a9a; }
     .h3-director-notice[data-kind="ok"] { color: #9ef0b8; }
+    .h3-director-backend { margin: 0 0 8px; padding: 6px 9px; border: 1px solid #5a4a2a; background: #221c12; color: #d8bd7e; border-radius: 4px; font-size: 11px; line-height: 1.5; }
     .h3-director-kf-actions { display: flex; gap: 3px; margin-top: 4px; }
     .h3-director-kf-empty { display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 9 / 16; max-height: 148px; border: 1px dashed #4a4a52; border-radius: 4px; background: #1b1b20; color: #8a8a96; font-size: 11px; text-align: center; padding: 4px; }
     .h3-director-kf-actions button { flex: 1 1 0; min-width: 0; border: 1px solid #555; background: #2a2a2a; color: #eee; border-radius: 3px; padding: 2px 0; font-size: 11px; line-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
@@ -797,6 +798,21 @@ function updatePanel(ui, node, data) {
     .join(" · ");
   ui.error.textContent = data.error || "";
 
+  // 关键帧来源提示：选了 Qwen / 只用手动图时，H3 不生成关键帧，得自己放图。
+  const backend = data.keyframe_backend || "h3";
+  const externalBackend = backend !== "h3";
+  if (ui.backendNote) {
+    if (externalBackend && data.keyframe_backend_label) {
+      ui.backendNote.style.display = "block";
+      ui.backendNote.textContent =
+        `关键帧来源：${data.keyframe_backend_label} · ` +
+        `${data.keyframe_backend_hint || "自己出图"} · ` +
+        "出图后点对应卡片上的「替换」，全部放好再确认生成视频";
+    } else {
+      ui.backendNote.style.display = "none";
+    }
+  }
+
   const scriptList = Array.isArray(data.script) ? data.script : [];
   ui.scriptMap = new Map(scriptList.map((entry) => [Number(entry.index), entry]));
   const keyframeSignature = JSON.stringify(
@@ -889,11 +905,20 @@ function updatePanel(ui, node, data) {
       `首尾帧 ${ratio(data.completed_keyframes || 0)} 齐全 · ` +
       `视频 ${ratio(done)} · 点继续渲染剩下的分段，关键帧不重画`;
   } else if (reviewState === "keyframes") {
-    ui.reviewTitle.textContent = "关键帧还没生成完";
-    ui.go.textContent = "继续生成关键帧";
-    ui.reviewHint.textContent =
-      `只有 ${ratio(data.completed_keyframes || 0)} 有首尾帧 · ` +
-      "点继续补齐缺的帧，已画好的不会重画";
+    if (externalBackend) {
+      ui.reviewTitle.textContent = "等你放关键帧";
+      ui.go.textContent = "关键帧还没放齐";
+      ui.reviewHint.textContent =
+        `已有 ${ratio(data.completed_keyframes || 0)} · ` +
+        `${data.keyframe_backend_label || "外部图"} 出图后逐张「替换」，放齐后才能生成视频`;
+      ui.go.disabled = true;
+    } else {
+      ui.reviewTitle.textContent = "关键帧还没生成完";
+      ui.go.textContent = "继续生成关键帧";
+      ui.reviewHint.textContent =
+        `只有 ${ratio(data.completed_keyframes || 0)} 有首尾帧 · ` +
+        "点继续补齐缺的帧，已画好的不会重画";
+    }
   }
   // Jump to the keyframe tab the moment the gate opens, but never fight the
   // user's manual tab choice afterwards.
@@ -1213,6 +1238,9 @@ function installPanel(node) {
   review.append(reviewTitle, reviewHint, reviewActions);
 
   const keyframes = makeElement("div", "h3-director-keyframes");
+  // 关键帧来源提示条：选了 Qwen / 只用手动图 时告诉用户该开哪张工作流。
+  const backendNote = makeElement("div", "h3-director-backend");
+  backendNote.style.display = "none";
   const transitions = makeElement("div", "h3-director-segments");
   const segments = makeElement("div", "h3-director-segments");
   const error = makeElement("div", "h3-director-error");
@@ -1391,6 +1419,7 @@ function installPanel(node) {
   }
 
   const keyframeTab = tabs.find((tab) => tab.key === "keyframes");
+  if (keyframeTab) keyframeTab.pane.insertBefore(backendNote, editor);
   if (keyframeTab) keyframeTab.pane.insertBefore(editor, keyframes);
 
   const meta = makeElement("div", "h3-director-meta");
@@ -1420,6 +1449,7 @@ function installPanel(node) {
     rerollAll,
     reviewState: "",
     keyframes,
+    backendNote,
     transitions,
     segments,
     final,
@@ -1952,6 +1982,7 @@ function installPanel(node) {
     ui.keyframes.replaceChildren();
     ui.transitions.replaceChildren();
     ui.segments.replaceChildren();
+    if (ui.backendNote) ui.backendNote.style.display = "none";
     ui.review.style.display = "none";
     ui.final.style.display = "none";
     ui.finalEmpty.style.display = "block";

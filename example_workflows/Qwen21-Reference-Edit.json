@@ -1,0 +1,633 @@
+{
+  "id": "b7f2c9a4-31d5-4e78-9a10-6c5d2e8f4b31",
+  "revision": 0,
+  "last_node_id": 50,
+  "last_link_id": 113,
+  "nodes": [
+    {
+      "id": 10,
+      "type": "LoadImage",
+      "pos": [
+        0,
+        -40
+      ],
+      "size": [
+        300,
+        320
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            100
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "image (5).png",
+        "image"
+      ],
+      "title": "image_1 · 画布（决定输出尺寸与主体）"
+    },
+    {
+      "id": 11,
+      "type": "LoadImage",
+      "pos": [
+        0,
+        340
+      ],
+      "size": [
+        300,
+        320
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            101
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "image (6)_face_crop.png",
+        "image"
+      ],
+      "title": "image_2 · 身份/服装参考"
+    },
+    {
+      "id": 12,
+      "type": "LoadImage",
+      "pos": [
+        0,
+        720
+      ],
+      "size": [
+        300,
+        320
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            102
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "image (6)_face_crop.png",
+        "image"
+      ],
+      "title": "image_3 · 可选：另一角度 / 鞋包"
+    },
+    {
+      "id": 20,
+      "type": "CLIPLoader",
+      "pos": [
+        0,
+        1100
+      ],
+      "size": [
+        320,
+        106
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            103
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPLoader"
+      },
+      "widgets_values": [
+        "qwen3vl_8b_int8_convrot.safetensors",
+        "qwen_image",
+        "default"
+      ],
+      "title": "文本编码器 Qwen3-VL 8B（type=qwen_image）"
+    },
+    {
+      "id": 21,
+      "type": "VAELoader",
+      "pos": [
+        0,
+        1240
+      ],
+      "size": [
+        320,
+        58
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            104,
+            113
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "qwen_image_2.1_vae_bf16.safetensors"
+      ],
+      "title": "2.1 专用 VAE（不能换回老 qwen_image_vae）"
+    },
+    {
+      "id": 22,
+      "type": "UNETLoader",
+      "pos": [
+        0,
+        1330
+      ],
+      "size": [
+        360,
+        82
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            110
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UNETLoader"
+      },
+      "widgets_values": [
+        "qwen_image_2.1_int8_convrot.safetensors",
+        "default"
+      ]
+    },
+    {
+      "id": 23,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        400,
+        1330
+      ],
+      "size": [
+        360,
+        82
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 110
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            111
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "qwen_image_2.1_turbo_lora_avg_rank_178_bf16.safetensors",
+        1.0
+      ],
+      "title": "Turbo LoRA（8 步加速，cfg=1）"
+    },
+    {
+      "id": 24,
+      "type": "QwenImage21Cache",
+      "pos": [
+        800,
+        1330
+      ],
+      "size": [
+        300,
+        106
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 111
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            112
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "QwenImage21Cache"
+      },
+      "widgets_values": [
+        "auto",
+        "default"
+      ],
+      "title": "前缀缓存（显存不够就改 cpu）"
+    },
+    {
+      "id": 40,
+      "type": "TextEncodeQwenImage21",
+      "pos": [
+        360,
+        -40
+      ],
+      "size": [
+        460,
+        420
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 103
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 104
+        },
+        {
+          "name": "images.image_1",
+          "type": "IMAGE",
+          "link": 100
+        },
+        {
+          "name": "images.image_2",
+          "type": "IMAGE",
+          "link": 101
+        },
+        {
+          "name": "images.image_3",
+          "type": "IMAGE",
+          "link": 102
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": [
+            105
+          ]
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "links": [
+            106
+          ]
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": [
+            107
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TextEncodeQwenImage21"
+      },
+      "widgets_values": [
+        "保持图1中人物的身份、脸型、五官、发型和身体比例完全不变，姿势和镜头角度也不变。参考图2，把图1人物的服装换成图2的款式和颜色，衣物的褶皱、材质和光影要自然贴合身体。其余部分（裤子、鞋、背景、构图、光位）保持图1不变。9:16 竖屏完整全身构图，头顶、身体和鞋底完整入镜，面部平静中性，双唇自然闭合。",
+        "",
+        1024
+      ],
+      "title": "提示词 + 参考图（resolution 决定画布大小）"
+    },
+    {
+      "id": 30,
+      "type": "KSampler",
+      "pos": [
+        880,
+        -40
+      ],
+      "size": [
+        320,
+        262
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 112
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 105
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 106
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 107
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            108
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        20261101,
+        "fixed",
+        8,
+        1.0,
+        "euler",
+        "simple",
+        1.0
+      ],
+      "title": "8 步 / cfg=1（cfg 抬高会过锐）"
+    },
+    {
+      "id": 31,
+      "type": "VAEDecode",
+      "pos": [
+        1240,
+        -40
+      ],
+      "size": [
+        220,
+        46
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 108
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 113
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            109
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 32,
+      "type": "SaveImage",
+      "pos": [
+        1500,
+        -40
+      ],
+      "size": [
+        420,
+        480
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 109
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "qwen21_edit"
+      ]
+    },
+    {
+      "id": 50,
+      "type": "MarkdownNote",
+      "pos": [
+        880,
+        320
+      ],
+      "size": [
+        620,
+        520
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "## Qwen-Image-2.1 参考图编辑（8 步 Turbo）\n\n和 `Qwen2511-Reference-Edit.json` 平级，**两者可以互相替换**：同一个任务在 Director 的「关键帧来源」里选哪个，就用哪张工作流出图。\n\n### 输入约定（和 2511 不一样，注意顺序）\n\n- **image_1 是画布**：输出尺寸、构图、主体姿势都跟着它走。要 9:16 竖屏全身，就放一张 9:16 全身图。\n- **image_2 / image_3 是素材**：身份、服装、鞋包、另一角度，最多能接 10 张。\n- 想加第 4 张：在 TextEncodeQwenImage21 的 `images` 上点「+」再连一根线。\n\n### 必看参数\n\n| 项 | 值 | 说明 |\n|---|---|---|\n| resolution | 1024 | 约 1MP，按 image_1 比例算尺。**别填 0**——0 等于原图尺寸，一张 12MP 的图会让速度从 0.3s/it 掉到 6s/it |\n| steps | 8 | 配 Turbo LoRA；不挂 LoRA 时用 25（官方 pipeline 40） |\n| cfg | 1.0 | 官方路径。**cfg=1 时 negative 不生效**，别指望负向提示词 |\n| sampler | euler / simple | 官方推荐组合 |\n| QwenImage21Cache | auto / default | 显存紧就改 device=cpu，dtype=int8 |\n\n### 提示词写法（官方三段式）\n\n1. **先说不变**：身份、脸型、五官、发型、身体比例、姿势、镜头角度；\n2. **再说改什么**：指明来自第几张图（「参考图2」）；\n3. **最后说融合**：光照、褶皱、材质、背景怎么自然接上。\n\n### 和 2511 的三个区别\n\n- **VAE 不能换**：老的 `qwen_image_vae.safetensors` 是 3 通道，解不了 2.1 的 4 通道输出。\n- **输出尺寸跟着 image_1**（2511 是跟着 EmptyLatent）；这里没用 EmptyLatent，latent 直接来自 TextEncodeQwenImage21。\n- **许可**：Qwen Research License，非商用。2511 是 Apache 系，可商用。\n"
+      ]
+    }
+  ],
+  "links": [
+    [
+      100,
+      10,
+      0,
+      40,
+      2,
+      "IMAGE"
+    ],
+    [
+      101,
+      11,
+      0,
+      40,
+      3,
+      "IMAGE"
+    ],
+    [
+      102,
+      12,
+      0,
+      40,
+      4,
+      "IMAGE"
+    ],
+    [
+      103,
+      20,
+      0,
+      40,
+      0,
+      "CLIP"
+    ],
+    [
+      104,
+      21,
+      0,
+      40,
+      1,
+      "VAE"
+    ],
+    [
+      105,
+      40,
+      0,
+      30,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      106,
+      40,
+      1,
+      30,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      107,
+      40,
+      2,
+      30,
+      3,
+      "LATENT"
+    ],
+    [
+      108,
+      30,
+      0,
+      31,
+      0,
+      "LATENT"
+    ],
+    [
+      109,
+      31,
+      0,
+      32,
+      0,
+      "IMAGE"
+    ],
+    [
+      110,
+      22,
+      0,
+      23,
+      0,
+      "MODEL"
+    ],
+    [
+      111,
+      23,
+      0,
+      24,
+      0,
+      "MODEL"
+    ],
+    [
+      112,
+      24,
+      0,
+      30,
+      0,
+      "MODEL"
+    ],
+    [
+      113,
+      21,
+      0,
+      31,
+      1,
+      "VAE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.75,
+      "offset": [
+        120,
+        160
+      ]
+    }
+  },
+  "version": 0.4
+}

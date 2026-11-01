@@ -1,6 +1,19 @@
-# Qwen-Image-Edit 2511 多图参考改图（4 步加速）
+# Qwen 改图（2511 与 2.1）
 
-两个工作流：
+两条编辑线并存，**可以互相替换**：同一张原图、同一套参考图，换张工作流就行。
+在 Director 面板里用「关键帧来源」这个全局配置选哪条线（见 `面板交互设计.md` D11）。
+
+| 工作流 | 模型 | 步数 | 什么时候用 |
+| --- | --- | --- | --- |
+| `example_workflows/Qwen2511-Reference-Edit.json` | Qwen-Image-Edit 2511（20B） | 4（Lightning LoRA） | 默认。生态最稳、有大量角度 LoRA、Apache 许可可商用 |
+| `example_workflows/Qwen2511-MultiAngle-Edit.json` | 同上 + 多角度 LoRA | 4 | 要转视角 |
+| `example_workflows/Qwen21-Reference-Edit.json` | Qwen-Image-2.1（7B） | 8（Turbo LoRA） | 要喂 4～10 张参考图、要 mask 局部改、或显存吃紧 |
+
+都是扁平结构，主画布上直接能改提示词、步数、seed，没有子图。
+
+下面先讲 2511（主线），2.1 见文末。
+
+## 2511 的两个工作流
 
 | 文件 | 用途 |
 | --- | --- |
@@ -179,3 +192,102 @@ RTX 5060 Ti 8 GB 显存 + 25 GB 内存，19 GB 的主模型走内存换页。
 
 以上“带笑”这条是实跑验证过的：用一张露牙笑的头像当唯一身份参考时，4 步档的成图嘴角会轻微上扬，
 接第三张中性脸后明显收敛。
+
+---
+
+# Qwen-Image-2.1 版（8 步 Turbo）
+
+`example_workflows/Qwen21-Reference-Edit.json`。2026-09-20 开源，**文生图和编辑合在一个模型里**，
+视觉部分 7B（比 2511 的 20B 小一半多），官方定位是「小模强效」。ComfyUI 0.42+ 已内置
+`TextEncodeQwenImage21` / `QwenImage21Cache`，**不需要装任何自定义节点**。
+
+## 需要的三个模型文件
+
+放到 `ComfyUI-Shared/models/` 对应子目录（都在 `Comfy-Org/Qwen-Image-2.1` 这个重打包仓库里）：
+
+| 文件 | 目录 | 大小 |
+| --- | --- | --- |
+| `qwen_image_2.1_int8_convrot.safetensors` | `diffusion_models/` | 6.8 GB |
+| `qwen3vl_8b_int8_convrot.safetensors` | `text_encoders/` | 8.8 GB |
+| `qwen_image_2.1_vae_bf16.safetensors` | `vae/` | 645 MB |
+| `qwen_image_2.1_turbo_lora_avg_rank_178_bf16.safetensors` | `loras/` | 872 MB（8 步加速） |
+
+⚠️ **老的 `qwen_image_vae.safetensors` 不能用**：它是 3 通道，解不了 2.1 的 4 通道输出。
+⚠️ `CLIPLoader` 的 `type` 必须选 `qwen_image`，编码器选 **qwen3vl 8b**（不是 qwen3.5 的 prompt enhancer，
+选错会出纯噪声）。
+
+## 输入约定（和 2511 不一样）
+
+| 输入 | 作用 |
+| --- | --- |
+| `images.image_1` | **画布**：输出尺寸、构图、主体姿势跟着它走 |
+| `images.image_2` … `image_10` | 参考素材：服装、鞋包、另一角度、道具 |
+| `resolution` | 约等于总像素预算，默认 1024（≈1MP），按 image_1 的比例算边长 |
+
+想加第 4 张参考图：在 `TextEncodeQwenImage21` 的 `images` 上点「+」再连一根线。
+
+## 参数
+
+| 项 | 值 | 说明 |
+| --- | --- | --- |
+| `steps` | **8** | 配 Turbo LoRA；不挂 LoRA 时 25（官方 pipeline 40） |
+| `cfg` | **1.0** | 官方路径。**cfg=1 时 negative 完全不生效** |
+| `sampler` / `scheduler` | `euler` / `simple` | 官方推荐组合 |
+| `denoise` | 1.0 | 编辑不是重绘，别降 |
+| `resolution` | 1024 | **别填 0**：0 = 保持 image_1 原尺寸，12MP 的图会让速度从 0.3s/it 掉到 6s/it |
+| `QwenImage21Cache` | `auto` / `default` | 显存紧就 `device=cpu`、`dtype=int8`（缓存减半，精度基本无损） |
+
+## 提示词写法（官方三段式）
+
+跟 2511 那种「图1/图2」自由写法不同，2.1 按这个顺序写最稳：
+
+1. **先说不变**：身份、脸型、五官、发型、身体比例、姿势、镜头角度；
+2. **再说改什么**：明确来自第几张图（「参考图2的服装」）；
+3. **最后说融合**：光照、褶皱、材质、背景怎么自然接上。
+
+模板已经预填在工作流的 `TextEncodeQwenImage21` 里，直接改。
+
+## 和 2511 的四个区别
+
+| | 2511 | 2.1 |
+| --- | --- | --- |
+| 参考图上限 | 3 张 | 10 张 |
+| 局部编辑 | 只能靠提示词描述 | 圈选 / 画笔 / 独立 mask |
+| 输出尺寸由谁决定 | `EmptyLatentImage` 的宽高 | `TextEncodeQwenImage21` 输出的 latent（跟着 image_1） |
+| 许可 | Apache 系，可商用 | **Qwen Research License，非商用** |
+
+## 常见问题
+
+| 现象 | 原因 / 处理 |
+| --- | --- |
+| 加载报 `Unknown model architecture` | 那是 GGUF 节点的问题，本工作流用 safetensors 直读，不涉及 |
+| 出图全是噪点 | 文本编码器选错了，必须是 `qwen3vl_8b_*`，`type` 必须 `qwen_image` |
+| 解码报通道数不对 | VAE 用了老的 `qwen_image_vae.safetensors`，换 `qwen_image_2.1_vae_bf16` |
+| 尺寸不对 / 变成正方形 | 检查 image_1 是不是 9:16；`resolution` 填 0 时会严格跟原图尺寸 |
+| 很慢 | 先看 `resolution` 是不是 0，再确认 Turbo LoRA 有没有生效（steps=8） |
+| 8 步细节糊 | 换 25 步（去掉 Turbo LoRA），或把 `resolution` 提到 1536 |
+
+## 本机实测（2026-11-01，RTX 5060 Ti 8GB）
+
+| 项 | 实测值 |
+| --- | --- |
+| 单张耗时 | **39 秒**（8 步，1MP，含首次加载 6.8G 生成器 + 8.7G 编码器） |
+| 输出尺寸 | 736×1440（image_1 是 200×394 时按 1MP 换算，比例跟住 image_1） |
+| 输出格式 | **RGBA**，但 alpha 全 255（没有透明像素），下游读图不受影响 |
+| 对比 2511 | 2511 是 4 步约 60 秒/张，2.1 反而更快——模型小 3 倍，不用反复换页 |
+
+验证用的是 API 直提（`/prompt`），说明 `images.image_1` 这套 autogrow 键名和
+`TextEncodeQwenImage21` 的输出接法是通的。
+
+## 怎么 A/B 对比两代
+
+同一张原图、同一条提示词、同样的 9:16，各跑一次：
+
+1. 打开 `Qwen2511-Reference-Edit.json`：4 步 / cfg 1.0，记下耗时；
+2. 打开 `Qwen21-Reference-Edit.json`：8 步 Turbo / cfg 1.0 / resolution 1024，记下耗时；
+3. 并排比四件事：**脸像不像**（最重要）、服装褶皱细节、构图有没有跑（头顶/鞋底还在不在）、耗时。
+
+两个工作流的 SaveImage 前缀不同（`Qwen2511_reference_edit` vs `qwen21_edit`），输出不会混。
+
+比完再决定 Director 里的 `keyframe_backend` 常驻选哪个——它只是个记录 + 跳过 H3 关键帧的开关，
+不会自动帮你调模型，所以**先手动试，再定默认值**。
