@@ -236,7 +236,7 @@
         "Node name for S&R": "LoraLoaderModelOnly"
       },
       "widgets_values": [
-        "qwen_image_2.1_turbo_lora_avg_rank_178_bf16.safetensors",
+        "Qwen-功能2.1\\Qwen-Image-2.1-LR-8step-lora-r128.safetensors",
         1.0
       ],
       "title": "Turbo LoRA（8 步加速，cfg=1）"

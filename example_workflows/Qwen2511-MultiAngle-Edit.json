@@ -1,894 +1,894 @@
 {
- "id": "8f2a51c4-2511-4a2e-9b1d-qwen2511refedit",
- "revision": 0,
- "last_node_id": 33,
- "last_link_id": 121,
- "nodes": [
-  {
-   "id": 1,
-   "type": "MarkdownNote",
-   "pos": [
-    -520,
-    -40
-   ],
-   "size": [
-    460,
-    720
-   ],
-   "flags": {},
-   "order": 0,
-   "mode": 0,
-   "inputs": [],
-   "outputs": [],
-   "properties": {
-    "Node name for S&R": "MarkdownNote"
-   },
-   "widgets_values": [
-    "## Qwen-Image-Edit 2511 + 多角度 LoRA\n\n**image 1**：要改的原图（姿势/场景基准，输出尺寸跟随它）\n**image 2**：身份参考（脸型、五官、发型）\n**image 3**：可选，同人另一角度或中性表情，用来补信息\n\n### 转视角怎么用\n\n这个 LoRA **不需要触发词**，用英文相机指令写进正向提示词即可，一次只写一条最稳：\n\n- `Rotate the camera 45 degrees to the left.` / `... to the right.`\n- `Turn the camera to a top-down view.`\n- `Turn the camera to a wide-angle lens.` / `Turn the camera to a close-up.`\n- `Move the camera forward.` / `left.` / `right.` / `down.`\n\n### 参数\n\n- 4 步 Lightning + 多角度 LoRA 串联，steps=4、cfg=1.0、euler/simple。\n- 角度转不动 → Ctrl+B 绕过 Lightning，steps 改 20、cfg 改 4.0。\n- 多角度 LoRA 权重默认 1.0，转头太猛可降到 0.7–0.8。\n\n### 注意\n\n- 这只是\"转镜头\"，不是换场景；背景会跟着视角一起变。\n- 从正脸转到全背面会超纲，45° 左右最稳。\n"
-   ]
-  },
-  {
-   "id": 2,
-   "type": "MarkdownNote",
-   "pos": [
-    -520,
-    700
-   ],
-   "size": [
-    420,
-    300
-   ],
-   "flags": {},
-   "order": 1,
-   "mode": 0,
-   "inputs": [],
-   "outputs": [],
-   "properties": {
-    "Node name for S&R": "MarkdownNote"
-   },
-   "widgets_values": [
-    "### 显存说明\n\n本机 8 GB 显存 + 25 GB 内存，19 GB 的主模型走内存换页。\n实测 720×1456、4 步、`--lowvram`：**约 60 秒 / 张**，没有 OOM。\n\n分辨率越高越慢；1 MP 以内基本都是一分钟级，不需要换 GGUF。\n"
-   ]
-  },
-  {
-   "id": 10,
-   "type": "LoadImage",
-   "pos": [
-    0,
-    -40
-   ],
-   "size": [
-    300,
-    320
-   ],
-   "flags": {},
-   "order": 2,
-   "mode": 0,
-   "inputs": [],
-   "outputs": [
+  "id": "8f2a51c4-2511-4a2e-9b1d-qwen2511refedit",
+  "revision": 0,
+  "last_node_id": 33,
+  "last_link_id": 121,
+  "nodes": [
     {
-     "name": "IMAGE",
-     "type": "IMAGE",
-     "links": [
-      100
-     ]
+      "id": 1,
+      "type": "MarkdownNote",
+      "pos": [
+        -520,
+        -40
+      ],
+      "size": [
+        460,
+        720
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "MarkdownNote"
+      },
+      "widgets_values": [
+        "## Qwen-Image-Edit 2511 + 多角度 LoRA\n\n**image 1**：要改的原图（姿势/场景基准，输出尺寸跟随它）\n**image 2**：身份参考（脸型、五官、发型）\n**image 3**：可选，同人另一角度或中性表情，用来补信息\n\n### 转视角怎么用\n\n这个 LoRA **不需要触发词**，用英文相机指令写进正向提示词即可，一次只写一条最稳：\n\n- `Rotate the camera 45 degrees to the left.` / `... to the right.`\n- `Turn the camera to a top-down view.`\n- `Turn the camera to a wide-angle lens.` / `Turn the camera to a close-up.`\n- `Move the camera forward.` / `left.` / `right.` / `down.`\n\n### 参数\n\n- 8 步 Lightning + 多角度 LoRA 串联，steps=8、cfg=1.0、euler/simple。\n- 角度转不动 → Ctrl+B 绕过 Lightning，steps 改 20、cfg 改 4.0。\n- 多角度 LoRA 权重默认 1.0，转头太猛可降到 0.7–0.8。\n\n### 注意\n\n- 这只是\"转镜头\"，不是换场景；背景会跟着视角一起变。\n- 从正脸转到全背面会超纲，45° 左右最稳。\n"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "MarkdownNote",
+      "pos": [
+        -520,
+        700
+      ],
+      "size": [
+        420,
+        300
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "MarkdownNote"
+      },
+      "widgets_values": [
+        "### 显存说明\n\n本机 8 GB 显存 + 25 GB 内存，19 GB 的主模型走内存换页。\n实测 720×1456、8 步、`--lowvram`：**约 60–85 秒 / 张**，没有 OOM。\n\n分辨率越高越慢；1 MP 以内基本都是一分钟级，不需要换 GGUF。\n"
+      ]
+    },
+    {
+      "id": 10,
+      "type": "LoadImage",
+      "pos": [
+        0,
+        -40
+      ],
+      "size": [
+        300,
+        320
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            100
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "image (5).png",
+        "image"
+      ],
+      "title": "image 1 · 目标图"
+    },
+    {
+      "id": 11,
+      "type": "LoadImage",
+      "pos": [
+        0,
+        340
+      ],
+      "size": [
+        300,
+        320
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            103
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "image (6)_face_crop.png",
+        "image"
+      ],
+      "title": "image 2 · 身份参考"
+    },
+    {
+      "id": 12,
+      "type": "LoadImage",
+      "pos": [
+        0,
+        720
+      ],
+      "size": [
+        300,
+        320
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            104
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "image (6)_face_crop.png",
+        "image"
+      ],
+      "title": "image 3 · 可选参考"
+    },
+    {
+      "id": 26,
+      "type": "FluxKontextImageScale",
+      "pos": [
+        360,
+        20
+      ],
+      "size": [
+        280,
+        46
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 100
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            101,
+            102
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "FluxKontextImageScale"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 27,
+      "type": "VAEEncode",
+      "pos": [
+        680,
+        20
+      ],
+      "size": [
+        230,
+        46
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pixels",
+          "type": "IMAGE",
+          "link": 101
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 116
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            115
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEEncode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 28,
+      "type": "TextEncodeQwenImageEditPlus",
+      "pos": [
+        360,
+        120
+      ],
+      "size": [
+        420,
+        220
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 105
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 106
+        },
+        {
+          "name": "image1",
+          "type": "IMAGE",
+          "link": 102
+        },
+        {
+          "name": "image2",
+          "type": "IMAGE",
+          "link": 103
+        },
+        {
+          "name": "image3",
+          "type": "IMAGE",
+          "link": 104
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            113
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TextEncodeQwenImageEditPlus"
+      },
+      "widgets_values": [
+        "把图1中人物的脸和发型替换成图2中的人物。Rotate the camera 45 degrees to the left. 允许人物的身体和头部跟随镜头视角自然转向，但保持同一场景、同一服装、同一背景风格，不要换成别的场景。只改变身份、脸型、五官和发型，不要复制图2的背景和服装。双唇自然闭合、嘴角平直，不微笑、不露牙、不张嘴。真实摄影，自然皮肤纹理，不新增人物，画面中只有一个人，无文字水印。"
+      ],
+      "title": "正向提示词（改这里）"
+    },
+    {
+      "id": 29,
+      "type": "TextEncodeQwenImageEditPlus",
+      "pos": [
+        360,
+        380
+      ],
+      "size": [
+        420,
+        120
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 107
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 108
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            114
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TextEncodeQwenImageEditPlus"
+      },
+      "widgets_values": [
+        ""
+      ],
+      "title": "负向提示词（cfg=1 时无效，留空）"
+    },
+    {
+      "id": 20,
+      "type": "UNETLoader",
+      "pos": [
+        360,
+        560
+      ],
+      "size": [
+        400,
+        82
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            109
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UNETLoader"
+      },
+      "widgets_values": [
+        "qwen_image_edit_2511_int8_convrot.safetensors",
+        "default"
+      ]
+    },
+    {
+      "id": 21,
+      "type": "ModelSamplingAuraFlow",
+      "pos": [
+        800,
+        560
+      ],
+      "size": [
+        300,
+        58
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 109
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            110
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ModelSamplingAuraFlow"
+      },
+      "widgets_values": [
+        3.1
+      ]
+    },
+    {
+      "id": 22,
+      "type": "CFGNorm",
+      "pos": [
+        800,
+        650
+      ],
+      "size": [
+        300,
+        82
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 110
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            111
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CFGNorm"
+      },
+      "widgets_values": [
+        1,
+        false
+      ]
+    },
+    {
+      "id": 23,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        800,
+        760
+      ],
+      "size": [
+        400,
+        82
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 111
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            112
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors",
+        1.0
+      ],
+      "title": "4 步加速 LoRA（Ctrl+B 可绕过）"
+    },
+    {
+      "id": 24,
+      "type": "CLIPLoader",
+      "pos": [
+        800,
+        880
+      ],
+      "size": [
+        400,
+        106
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            105,
+            107
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPLoader"
+      },
+      "widgets_values": [
+        "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+        "qwen_image",
+        "default"
+      ]
+    },
+    {
+      "id": 25,
+      "type": "VAELoader",
+      "pos": [
+        800,
+        1020
+      ],
+      "size": [
+        400,
+        58
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            106,
+            108,
+            116,
+            118
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "qwen_image_vae.safetensors"
+      ]
+    },
+    {
+      "id": 30,
+      "type": "KSampler",
+      "pos": [
+        1260,
+        120
+      ],
+      "size": [
+        320,
+        262
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 121
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 113
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 114
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 115
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            117
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        20261031,
+        "fixed",
+        8,
+        1.0,
+        "euler",
+        "simple",
+        1.0
+      ]
+    },
+    {
+      "id": 31,
+      "type": "VAEDecode",
+      "pos": [
+        1620,
+        120
+      ],
+      "size": [
+        220,
+        46
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 117
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 118
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            119
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 32,
+      "type": "SaveImage",
+      "pos": [
+        1620,
+        220
+      ],
+      "size": [
+        480,
+        500
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 119
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "Qwen2511_multiangle_edit",
+        "png"
+      ]
+    },
+    {
+      "id": 33,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        1240,
+        760
+      ],
+      "size": [
+        400,
+        82
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 112
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            121
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "Qwen-Edit-2509-Multiple-angles.safetensors",
+        1.0
+      ],
+      "title": "多角度 LoRA（相机控制，Ctrl+B 可绕过）"
     }
-   ],
-   "properties": {
-    "Node name for S&R": "LoadImage"
-   },
-   "widgets_values": [
-    "image (5).png",
-    "image"
-   ],
-   "title": "image 1 · 目标图"
-  },
-  {
-   "id": 11,
-   "type": "LoadImage",
-   "pos": [
-    0,
-    340
-   ],
-   "size": [
-    300,
-    320
-   ],
-   "flags": {},
-   "order": 3,
-   "mode": 0,
-   "inputs": [],
-   "outputs": [
-    {
-     "name": "IMAGE",
-     "type": "IMAGE",
-     "links": [
-      103
-     ]
-    }
-   ],
-   "properties": {
-    "Node name for S&R": "LoadImage"
-   },
-   "widgets_values": [
-    "image (6)_face_crop.png",
-    "image"
-   ],
-   "title": "image 2 · 身份参考"
-  },
-  {
-   "id": 12,
-   "type": "LoadImage",
-   "pos": [
-    0,
-    720
-   ],
-   "size": [
-    300,
-    320
-   ],
-   "flags": {},
-   "order": 4,
-   "mode": 0,
-   "inputs": [],
-   "outputs": [
-    {
-     "name": "IMAGE",
-     "type": "IMAGE",
-     "links": [
-      104
-     ]
-    }
-   ],
-   "properties": {
-    "Node name for S&R": "LoadImage"
-   },
-   "widgets_values": [
-    "image (6)_face_crop.png",
-    "image"
-   ],
-   "title": "image 3 · 可选参考"
-  },
-  {
-   "id": 26,
-   "type": "FluxKontextImageScale",
-   "pos": [
-    360,
-    20
-   ],
-   "size": [
-    280,
-    46
-   ],
-   "flags": {},
-   "order": 5,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "image",
-     "type": "IMAGE",
-     "link": 100
-    }
-   ],
-   "outputs": [
-    {
-     "name": "IMAGE",
-     "type": "IMAGE",
-     "links": [
+  ],
+  "links": [
+    [
+      100,
+      10,
+      0,
+      26,
+      0,
+      "IMAGE"
+    ],
+    [
       101,
-      102
-     ]
-    }
-   ],
-   "properties": {
-    "Node name for S&R": "FluxKontextImageScale"
-   },
-   "widgets_values": []
-  },
-  {
-   "id": 27,
-   "type": "VAEEncode",
-   "pos": [
-    680,
-    20
-   ],
-   "size": [
-    230,
-    46
-   ],
-   "flags": {},
-   "order": 6,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "pixels",
-     "type": "IMAGE",
-     "link": 101
-    },
-    {
-     "name": "vae",
-     "type": "VAE",
-     "link": 116
-    }
-   ],
-   "outputs": [
-    {
-     "name": "LATENT",
-     "type": "LATENT",
-     "links": [
-      115
-     ]
-    }
-   ],
-   "properties": {
-    "Node name for S&R": "VAEEncode"
-   },
-   "widgets_values": []
-  },
-  {
-   "id": 28,
-   "type": "TextEncodeQwenImageEditPlus",
-   "pos": [
-    360,
-    120
-   ],
-   "size": [
-    420,
-    220
-   ],
-   "flags": {},
-   "order": 7,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "clip",
-     "type": "CLIP",
-     "link": 105
-    },
-    {
-     "name": "vae",
-     "type": "VAE",
-     "link": 106
-    },
-    {
-     "name": "image1",
-     "type": "IMAGE",
-     "link": 102
-    },
-    {
-     "name": "image2",
-     "type": "IMAGE",
-     "link": 103
-    },
-    {
-     "name": "image3",
-     "type": "IMAGE",
-     "link": 104
-    }
-   ],
-   "outputs": [
-    {
-     "name": "CONDITIONING",
-     "type": "CONDITIONING",
-     "links": [
-      113
-     ]
-    }
-   ],
-   "properties": {
-    "Node name for S&R": "TextEncodeQwenImageEditPlus"
-   },
-   "widgets_values": [
-    "把图1中人物的脸和发型替换成图2中的人物。Rotate the camera 45 degrees to the left. 允许人物的身体和头部跟随镜头视角自然转向，但保持同一场景、同一服装、同一背景风格，不要换成别的场景。只改变身份、脸型、五官和发型，不要复制图2的背景和服装。双唇自然闭合、嘴角平直，不微笑、不露牙、不张嘴。真实摄影，自然皮肤纹理，不新增人物，画面中只有一个人，无文字水印。"
-   ],
-   "title": "正向提示词（改这里）"
-  },
-  {
-   "id": 29,
-   "type": "TextEncodeQwenImageEditPlus",
-   "pos": [
-    360,
-    380
-   ],
-   "size": [
-    420,
-    120
-   ],
-   "flags": {},
-   "order": 8,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "clip",
-     "type": "CLIP",
-     "link": 107
-    },
-    {
-     "name": "vae",
-     "type": "VAE",
-     "link": 108
-    }
-   ],
-   "outputs": [
-    {
-     "name": "CONDITIONING",
-     "type": "CONDITIONING",
-     "links": [
-      114
-     ]
-    }
-   ],
-   "properties": {
-    "Node name for S&R": "TextEncodeQwenImageEditPlus"
-   },
-   "widgets_values": [
-    ""
-   ],
-   "title": "负向提示词（cfg=1 时无效，留空）"
-  },
-  {
-   "id": 20,
-   "type": "UNETLoader",
-   "pos": [
-    360,
-    560
-   ],
-   "size": [
-    400,
-    82
-   ],
-   "flags": {},
-   "order": 9,
-   "mode": 0,
-   "inputs": [],
-   "outputs": [
-    {
-     "name": "MODEL",
-     "type": "MODEL",
-     "links": [
-      109
-     ]
-    }
-   ],
-   "properties": {
-    "Node name for S&R": "UNETLoader"
-   },
-   "widgets_values": [
-    "qwen_image_edit_2511_int8_convrot.safetensors",
-    "default"
-   ]
-  },
-  {
-   "id": 21,
-   "type": "ModelSamplingAuraFlow",
-   "pos": [
-    800,
-    560
-   ],
-   "size": [
-    300,
-    58
-   ],
-   "flags": {},
-   "order": 10,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "model",
-     "type": "MODEL",
-     "link": 109
-    }
-   ],
-   "outputs": [
-    {
-     "name": "MODEL",
-     "type": "MODEL",
-     "links": [
-      110
-     ]
-    }
-   ],
-   "properties": {
-    "Node name for S&R": "ModelSamplingAuraFlow"
-   },
-   "widgets_values": [
-    3.1
-   ]
-  },
-  {
-   "id": 22,
-   "type": "CFGNorm",
-   "pos": [
-    800,
-    650
-   ],
-   "size": [
-    300,
-    82
-   ],
-   "flags": {},
-   "order": 11,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "model",
-     "type": "MODEL",
-     "link": 110
-    }
-   ],
-   "outputs": [
-    {
-     "name": "model",
-     "type": "MODEL",
-     "links": [
-      111
-     ]
-    }
-   ],
-   "properties": {
-    "Node name for S&R": "CFGNorm"
-   },
-   "widgets_values": [
-    1,
-    false
-   ]
-  },
-  {
-   "id": 23,
-   "type": "LoraLoaderModelOnly",
-   "pos": [
-    800,
-    760
-   ],
-   "size": [
-    400,
-    82
-   ],
-   "flags": {},
-   "order": 12,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "model",
-     "type": "MODEL",
-     "link": 111
-    }
-   ],
-   "outputs": [
-    {
-     "name": "MODEL",
-     "type": "MODEL",
-     "links": [
-      112
-     ]
-    }
-   ],
-   "properties": {
-    "Node name for S&R": "LoraLoaderModelOnly"
-   },
-   "widgets_values": [
-    "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
-    1.0
-   ],
-   "title": "4 步加速 LoRA（Ctrl+B 可绕过）"
-  },
-  {
-   "id": 24,
-   "type": "CLIPLoader",
-   "pos": [
-    800,
-    880
-   ],
-   "size": [
-    400,
-    106
-   ],
-   "flags": {},
-   "order": 13,
-   "mode": 0,
-   "inputs": [],
-   "outputs": [
-    {
-     "name": "CLIP",
-     "type": "CLIP",
-     "links": [
+      26,
+      0,
+      27,
+      0,
+      "IMAGE"
+    ],
+    [
+      102,
+      26,
+      0,
+      28,
+      2,
+      "IMAGE"
+    ],
+    [
+      103,
+      11,
+      0,
+      28,
+      3,
+      "IMAGE"
+    ],
+    [
+      104,
+      12,
+      0,
+      28,
+      4,
+      "IMAGE"
+    ],
+    [
       105,
-      107
-     ]
-    }
-   ],
-   "properties": {
-    "Node name for S&R": "CLIPLoader"
-   },
-   "widgets_values": [
-    "qwen_2.5_vl_7b_fp8_scaled.safetensors",
-    "qwen_image",
-    "default"
-   ]
-  },
-  {
-   "id": 25,
-   "type": "VAELoader",
-   "pos": [
-    800,
-    1020
-   ],
-   "size": [
-    400,
-    58
-   ],
-   "flags": {},
-   "order": 14,
-   "mode": 0,
-   "inputs": [],
-   "outputs": [
-    {
-     "name": "VAE",
-     "type": "VAE",
-     "links": [
+      24,
+      0,
+      28,
+      0,
+      "CLIP"
+    ],
+    [
       106,
+      25,
+      0,
+      28,
+      1,
+      "VAE"
+    ],
+    [
+      107,
+      24,
+      0,
+      29,
+      0,
+      "CLIP"
+    ],
+    [
       108,
+      25,
+      0,
+      29,
+      1,
+      "VAE"
+    ],
+    [
+      109,
+      20,
+      0,
+      21,
+      0,
+      "MODEL"
+    ],
+    [
+      110,
+      21,
+      0,
+      22,
+      0,
+      "MODEL"
+    ],
+    [
+      111,
+      22,
+      0,
+      23,
+      0,
+      "MODEL"
+    ],
+    [
+      112,
+      23,
+      0,
+      33,
+      0,
+      "MODEL"
+    ],
+    [
+      113,
+      28,
+      0,
+      30,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      114,
+      29,
+      0,
+      30,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      115,
+      27,
+      0,
+      30,
+      3,
+      "LATENT"
+    ],
+    [
       116,
-      118
-     ]
+      25,
+      0,
+      27,
+      1,
+      "VAE"
+    ],
+    [
+      117,
+      30,
+      0,
+      31,
+      0,
+      "LATENT"
+    ],
+    [
+      118,
+      25,
+      0,
+      31,
+      1,
+      "VAE"
+    ],
+    [
+      119,
+      31,
+      0,
+      32,
+      0,
+      "IMAGE"
+    ],
+    [
+      121,
+      33,
+      0,
+      30,
+      0,
+      "MODEL"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 1.0,
+      "offset": [
+        620,
+        320
+      ]
     }
-   ],
-   "properties": {
-    "Node name for S&R": "VAELoader"
-   },
-   "widgets_values": [
-    "qwen_image_vae.safetensors"
-   ]
   },
-  {
-   "id": 30,
-   "type": "KSampler",
-   "pos": [
-    1260,
-    120
-   ],
-   "size": [
-    320,
-    262
-   ],
-   "flags": {},
-   "order": 15,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "model",
-     "type": "MODEL",
-     "link": 121
-    },
-    {
-     "name": "positive",
-     "type": "CONDITIONING",
-     "link": 113
-    },
-    {
-     "name": "negative",
-     "type": "CONDITIONING",
-     "link": 114
-    },
-    {
-     "name": "latent_image",
-     "type": "LATENT",
-     "link": 115
-    }
-   ],
-   "outputs": [
-    {
-     "name": "LATENT",
-     "type": "LATENT",
-     "links": [
-      117
-     ]
-    }
-   ],
-   "properties": {
-    "Node name for S&R": "KSampler"
-   },
-   "widgets_values": [
-    20261031,
-    "fixed",
-    4,
-    1.0,
-    "euler",
-    "simple",
-    1.0
-   ]
-  },
-  {
-   "id": 31,
-   "type": "VAEDecode",
-   "pos": [
-    1620,
-    120
-   ],
-   "size": [
-    220,
-    46
-   ],
-   "flags": {},
-   "order": 16,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "samples",
-     "type": "LATENT",
-     "link": 117
-    },
-    {
-     "name": "vae",
-     "type": "VAE",
-     "link": 118
-    }
-   ],
-   "outputs": [
-    {
-     "name": "IMAGE",
-     "type": "IMAGE",
-     "links": [
-      119
-     ]
-    }
-   ],
-   "properties": {
-    "Node name for S&R": "VAEDecode"
-   },
-   "widgets_values": []
-  },
-  {
-   "id": 32,
-   "type": "SaveImage",
-   "pos": [
-    1620,
-    220
-   ],
-   "size": [
-    480,
-    500
-   ],
-   "flags": {},
-   "order": 17,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "images",
-     "type": "IMAGE",
-     "link": 119
-    }
-   ],
-   "outputs": [],
-   "properties": {
-    "Node name for S&R": "SaveImage"
-   },
-   "widgets_values": [
-    "Qwen2511_multiangle_edit",
-    "png"
-   ]
-  },
-  {
-   "id": 33,
-   "type": "LoraLoaderModelOnly",
-   "pos": [
-    1240,
-    760
-   ],
-   "size": [
-    400,
-    82
-   ],
-   "flags": {},
-   "order": 13,
-   "mode": 0,
-   "inputs": [
-    {
-     "name": "model",
-     "type": "MODEL",
-     "link": 112
-    }
-   ],
-   "outputs": [
-    {
-     "name": "MODEL",
-     "type": "MODEL",
-     "links": [
-      121
-     ],
-     "slot_index": 0
-    }
-   ],
-   "properties": {
-    "Node name for S&R": "LoraLoaderModelOnly"
-   },
-   "widgets_values": [
-    "Qwen-Edit-2509-Multiple-angles.safetensors",
-    1.0
-   ],
-   "title": "多角度 LoRA（相机控制，Ctrl+B 可绕过）"
-  }
- ],
- "links": [
-  [
-   100,
-   10,
-   0,
-   26,
-   0,
-   "IMAGE"
-  ],
-  [
-   101,
-   26,
-   0,
-   27,
-   0,
-   "IMAGE"
-  ],
-  [
-   102,
-   26,
-   0,
-   28,
-   2,
-   "IMAGE"
-  ],
-  [
-   103,
-   11,
-   0,
-   28,
-   3,
-   "IMAGE"
-  ],
-  [
-   104,
-   12,
-   0,
-   28,
-   4,
-   "IMAGE"
-  ],
-  [
-   105,
-   24,
-   0,
-   28,
-   0,
-   "CLIP"
-  ],
-  [
-   106,
-   25,
-   0,
-   28,
-   1,
-   "VAE"
-  ],
-  [
-   107,
-   24,
-   0,
-   29,
-   0,
-   "CLIP"
-  ],
-  [
-   108,
-   25,
-   0,
-   29,
-   1,
-   "VAE"
-  ],
-  [
-   109,
-   20,
-   0,
-   21,
-   0,
-   "MODEL"
-  ],
-  [
-   110,
-   21,
-   0,
-   22,
-   0,
-   "MODEL"
-  ],
-  [
-   111,
-   22,
-   0,
-   23,
-   0,
-   "MODEL"
-  ],
-  [
-   112,
-   23,
-   0,
-   33,
-   0,
-   "MODEL"
-  ],
-  [
-   113,
-   28,
-   0,
-   30,
-   1,
-   "CONDITIONING"
-  ],
-  [
-   114,
-   29,
-   0,
-   30,
-   2,
-   "CONDITIONING"
-  ],
-  [
-   115,
-   27,
-   0,
-   30,
-   3,
-   "LATENT"
-  ],
-  [
-   116,
-   25,
-   0,
-   27,
-   1,
-   "VAE"
-  ],
-  [
-   117,
-   30,
-   0,
-   31,
-   0,
-   "LATENT"
-  ],
-  [
-   118,
-   25,
-   0,
-   31,
-   1,
-   "VAE"
-  ],
-  [
-   119,
-   31,
-   0,
-   32,
-   0,
-   "IMAGE"
-  ],
-  [
-   121,
-   33,
-   0,
-   30,
-   0,
-   "MODEL"
-  ]
- ],
- "groups": [],
- "config": {},
- "extra": {
-  "ds": {
-   "scale": 1.0,
-   "offset": [
-    620,
-    320
-   ]
-  }
- },
- "version": 0.4
+  "version": 0.4
 }

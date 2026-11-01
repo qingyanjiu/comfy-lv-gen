@@ -45,6 +45,8 @@
   "keyframe_steps": 6,
   "keyframe_ref_image_size": "max",
   "keyframe_backend": "h3",
+  "keyframe_width": 608,
+  "keyframe_height": 1056,
   "reference_images": [
     "image.png",
     "image (5).png"

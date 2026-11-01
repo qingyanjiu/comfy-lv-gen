@@ -905,7 +905,7 @@ function updatePanel(ui, node, data) {
       `首尾帧 ${ratio(data.completed_keyframes || 0)} 齐全 · ` +
       `视频 ${ratio(done)} · 点继续渲染剩下的分段，关键帧不重画`;
   } else if (reviewState === "keyframes") {
-    if (externalBackend) {
+    if (backend === "manual") {
       ui.reviewTitle.textContent = "等你放关键帧";
       ui.go.textContent = "关键帧还没放齐";
       ui.reviewHint.textContent =
@@ -913,6 +913,7 @@ function updatePanel(ui, node, data) {
         `${data.keyframe_backend_label || "外部图"} 出图后逐张「替换」，放齐后才能生成视频`;
       ui.go.disabled = true;
     } else {
+      // h3 和两个 Qwen 后端都是 runner 自动出图，缺帧只是还没跑完。
       ui.reviewTitle.textContent = "关键帧还没生成完";
       ui.go.textContent = "继续生成关键帧";
       ui.reviewHint.textContent =
