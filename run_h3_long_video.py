@@ -8,21 +8,70 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import requests
 
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "config.json"
-GRAPH_VERSION = 5
+# 6: tail_guard_frames -- cached clips rendered before it contain the corrupt
+# last frame, so they must not be reused on the strength of the old signature.
+GRAPH_VERSION = 6
+
+DEFAULT_KEYFRAME_REANCHOR_PROMPT = (
+    "身份重锚定：严格回到参考图（Picture 1 / Picture 2）中的同一人物，"
+    "脸型、五官、发型、肤色和身体比例必须与参考图完全一致，"
+    "不得继承前帧累积的任何漂移；服装与场景按当前剧情延续。"
+)
+
+# The end keyframe is generated as the *last frame of a very short draft*
+# (``keyframe_draft_seconds``) that starts from this segment's first frame, and
+# the draft has no idea how long the real segment is. Told nothing about the
+# camera, it pays for the target pose by changing the lens: the subject drifts
+# closer and the framing collapses to a chest-up portrait. A *static* camera lock
+# makes it worse (a fixed camera plus walking toward it must zoom in), so the
+# default asks for continuity instead: keep the shot size and the full body by
+# dollying with the subject. Verified A/B on a 15 s approach shot -- static lock
+# gave a chest-up frame, this gives a matching full-body frame.
+DEFAULT_KEYFRAME_CAMERA_PROMPT = (
+    "Tracking shot: the camera moves with her and pulls back as she walks "
+    "forward, so she keeps exactly the same size in the frame and stays fully "
+    "visible from head to feet. The background slides past her. Never zoom "
+    "into her face, never crop her feet or head."
+)
 
 
-def h3_frame_count(seconds):
+def h3_frame_count(seconds, tail_guard=0):
+    """Latent length to ask H3 for, in frames.
+
+    H3's latent timeline is chunked in 17-frame blocks and must start at 5
+    (valid lengths are 5, 22, 39, ...), so the requested duration is rounded
+    up to the next valid length.
+
+    ``tail_guard`` asks for that many *extra* frames beyond what will be kept.
+    It exists because the last frame of a clip whose length lands exactly on a
+    valid value comes back corrupted: a vertical smeared ghost, made by the
+    model blending the tail of the clip with itself. Normally that frame is
+    harmless because it falls past ``output_frames`` and gets trimmed, but when
+    ``h3_frame_count(seconds) == output_frames(seconds)`` there is nothing to
+    trim, so the ghost becomes the visible last frame -- and, worse, the frame
+    that node 38 saves as the next segment's start anchor. Verified on an 8 s
+    clip (192 frames, exact fit): frame 191 was a ghost, frame 190 was clean,
+    and the next segment started from that ghost.
+    """
     requested = max(5, math.ceil(float(seconds) * 24))
+    if tail_guard:
+        requested += int(tail_guard)
     while requested % 17 != 5:
         requested += 1
     return requested
+
+
+def tail_guard_frames(config):
+    return max(0, int(config.get("tail_guard_frames", 2) or 0))
 
 
 def output_frames(seconds):
@@ -80,10 +129,14 @@ def segment_specs(config):
             index > 0 and not effective_continue and transition_seconds <= 0
         ):
             raise RuntimeError(f"Segment {index + 1} has an invalid transition duration")
+        free_end = segment.get("free_end")
+        if free_end is not None:
+            free_end = bool(free_end)
         specs.append(
             {
                 "seconds": seconds,
                 "two_pass": bool(segment.get("two_pass", config.get("two_pass_default", False))),
+                "free_end": bool(free_end),
                 "prompt": prompt,
                 "end_frame_prompt": end_frame_prompt or prompt,
                 "start_frame_prompt": start_frame_prompt or prompt,
@@ -131,6 +184,16 @@ def validate_config(config):
     opening_frame = config.get("opening_frame")
     if opening_frame and not Path(input_image_path(config, opening_frame)).is_file():
         raise RuntimeError(f"Opening frame not found: {opening_frame}")
+    if config.get("single_clip"):
+        for key, label in (
+            ("fixed_first_frame", "Fixed first frame"),
+            ("fixed_last_frame", "Fixed last frame"),
+        ):
+            image = config.get(key)
+            if not image:
+                raise RuntimeError(f"{label} is required for a single clip")
+            if not Path(input_image_path(config, image)).is_file():
+                raise RuntimeError(f"{label} not found: {image}")
 
 
 def generation_signature(config, segment, source_prompt_id):
@@ -142,6 +205,21 @@ def generation_signature(config, segment, source_prompt_id):
         "final_output_dir",
         "output_prefix",
         "segments",
+        # Post-processing / QA options never change the ComfyUI graph itself,
+        # so they must not invalidate the generation cache. The re-anchor text
+        # is already captured inside the keyframe prompt it modifies.
+        "two_pass_blend_frames",
+        "audio_boundary_fade",
+        "qa_anchor_ssim_min",
+        "qa_face_check",
+        "qa_face_sim_min",
+        "keyframe_reanchor_every",
+        "keyframe_reanchor_prompt",
+        # Video-only prompt decoration: it changes the segment prompt itself,
+        # which the signature already captures, so toggling it must not throw
+        # away the keyframes (that would silently re-render every anchor).
+        "video_camera_continuity",
+        "video_camera_prompt",
     }
     global_settings = {key: value for key, value in config.items() if key not in ignored}
     payload = {
@@ -165,7 +243,7 @@ def input_image_path(config, image):
 
 
 def build_graph(config, prompt, first_frame, last_frame, seed, seconds, two_pass):
-    generated_frames = h3_frame_count(seconds)
+    generated_frames = h3_frame_count(seconds, tail_guard_frames(config))
     final_frames = output_frames(seconds)
     node = {}
 
@@ -183,7 +261,7 @@ def build_graph(config, prompt, first_frame, last_frame, seed, seconds, two_pass
         )
     if last_frame:
         add(
-            "5",
+            "11",
             "VHS_LoadImagePath",
             image=input_image_path(config, last_frame),
             custom_width=0,
@@ -238,7 +316,7 @@ def build_graph(config, prompt, first_frame, last_frame, seed, seconds, two_pass
     if first_frame:
         h3_inputs["first_frame"] = ["1", 0]
     if last_frame:
-        h3_inputs["last_frame"] = ["5", 0]
+        h3_inputs["last_frame"] = ["11", 0]
     for i in range(len(config["reference_images"])):
         h3_inputs[f"ref_images.ref_image_{i}"] = [str(2 + i), 0]
     add("30", "VRGDG_MiniMaxH3ImageReferenceToVideo", **h3_inputs)
@@ -350,7 +428,7 @@ def build_graph(config, prompt, first_frame, last_frame, seed, seconds, two_pass
 
 
 def build_keyframe_graph(config, prompt, first_frame, seed, seconds):
-    generated_frames = h3_frame_count(seconds)
+    generated_frames = h3_frame_count(seconds, tail_guard_frames(config))
     final_frames = output_frames(seconds)
     node = {}
 
@@ -464,10 +542,37 @@ def build_keyframe_graph(config, prompt, first_frame, seed, seconds):
     return node
 
 
+def _request_with_retry(method, url, *, retries=3, **kwargs):
+    """request() with exponential backoff on network errors and 5xx replies."""
+    last_error = None
+    for attempt in range(retries):
+        try:
+            response = requests.request(method, url, **kwargs)
+            if response.status_code >= 500 and attempt < retries - 1:
+                raise requests.RequestException(
+                    f"HTTP {response.status_code}: {response.text[:200]}"
+                )
+            return response
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt < retries - 1:
+                delay = 2 ** attempt
+                print(
+                    f"[H3] {method} {url} failed ({exc}); retrying in {delay}s",
+                    flush=True,
+                )
+                time.sleep(delay)
+    raise last_error
+
+
 def wait_for_prompt(base_url, prompt_id, timeout):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        response = requests.get(f"{base_url}/history/{prompt_id}", timeout=30)
+        response = _request_with_retry(
+            "GET",
+            f"{base_url}/history/{prompt_id}",
+            timeout=30,
+        )
         response.raise_for_status()
         history = response.json()
         entry = history.get(prompt_id)
@@ -486,7 +591,8 @@ def resolve_output(config, item):
 
 def submit_graph(config, graph, label):
     client_id = str(uuid.uuid4())
-    response = requests.post(
+    response = _request_with_retry(
+        "POST",
         f"{config['comfy_url']}/prompt",
         json={"prompt": graph, "client_id": client_id},
         timeout=60,
@@ -561,6 +667,89 @@ def run_segment(
     }
 
 
+def run_single_clip(config, segment, state_path):
+    first_frame = config["fixed_first_frame"]
+    last_frame = config["fixed_last_frame"]
+    record = run_segment(
+        config,
+        segment,
+        0,
+        first_frame,
+        last_frame,
+        seed=int(config["base_seed"]),
+        log_label="Single clip",
+    )
+    record["video"] = str(
+        normalize_video_resolution(
+            config,
+            record["video"],
+            record["prompt_id"],
+        )
+    )
+    record["start_frame"] = first_frame
+    record["end_frame"] = last_frame
+    state = {
+        "phase": "single_clip",
+        "segments": [record],
+    }
+    state_path.write_text(
+        json.dumps(state, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return record
+
+
+def end_keyframe_prompt(config, prompt, segment_index):
+    """Final prompt used for an AI-generated end keyframe.
+
+    Two optional blocks are appended, in this order: identity re-anchor (only
+    every ``keyframe_reanchor_every`` segments) and the camera-continuity note.
+    The camera note goes last because the sampler weights the tail the most.
+    """
+    text = prompt
+    reanchor_every = int(config.get("keyframe_reanchor_every", 0) or 0)
+    if reanchor_every > 0 and (segment_index + 1) % reanchor_every == 0:
+        note = str(
+            config.get("keyframe_reanchor_prompt", DEFAULT_KEYFRAME_REANCHOR_PROMPT)
+        ).strip()
+        if note:
+            text = f"{text}\n\n{note}"
+    if bool(config.get("keyframe_camera_continuity", True)):
+        camera = str(
+            config.get(
+                "keyframe_camera_prompt", DEFAULT_KEYFRAME_CAMERA_PROMPT
+            )
+        ).strip()
+        if camera:
+            text = f"{text}\n\n{camera}"
+    return text
+
+
+def video_prompt_spec(config, spec):
+    """Return a copy of ``spec`` with the camera note applied to its prompt.
+
+    The keyframe prompt gets the camera note so the *anchor* keeps the shot
+    size; the video prompt gets nothing, which is why a 15 s walk towards the
+    camera progressively tightens into a waist-up shot even when both anchors
+    are full body. Appending the same note to the segment prompt keeps the
+    framing stable for the whole clip. Off by default because it changes the
+    generation cache and the look of every existing storyboard.
+    """
+    if not bool(config.get("video_camera_continuity", False)):
+        return spec
+    note = str(
+        config.get("video_camera_prompt")
+        or config.get("keyframe_camera_prompt")
+        or DEFAULT_KEYFRAME_CAMERA_PROMPT
+    ).strip()
+    if not note:
+        return spec
+    prompt = str(spec.get("prompt") or "")
+    if note in prompt:
+        return spec
+    return {**spec, "prompt": f"{prompt}\n\n{note}"}
+
+
 def run_keyframe(config, segment, seed, first_frame=None, prompt=None, label=None):
     seconds = float(config.get("keyframe_draft_seconds", 2.0))
     keyframe_prompt = prompt or segment["prompt"]
@@ -593,6 +782,120 @@ def find_ffmpeg():
     return ffmpeg
 
 
+def find_ffprobe():
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe:
+        return ffprobe
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        for name in ("ffprobe.exe", "ffprobe"):
+            bundled = Path(ffmpeg).with_name(name)
+            if bundled.is_file():
+                return str(bundled)
+    try:
+        import imageio_ffmpeg
+
+        ffmpeg = Path(imageio_ffmpeg.get_ffmpeg_exe())
+        for name in ("ffprobe.exe", "ffprobe"):
+            bundled = ffmpeg.with_name(name)
+            if bundled.is_file():
+                return str(bundled)
+    except Exception:
+        pass
+    raise RuntimeError("ffprobe was not found; install ffmpeg with ffprobe support")
+
+
+def probe_video_size(video):
+    try:
+        import cv2
+
+        capture = cv2.VideoCapture(str(video))
+        try:
+            if capture.isOpened():
+                width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                if width > 0 and height > 0:
+                    return width, height
+        finally:
+            capture.release()
+    except Exception:
+        pass
+
+    result = subprocess.run(
+        [
+            find_ffprobe(),
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "json",
+            str(video),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    streams = json.loads(result.stdout).get("streams", [])
+    if not streams:
+        raise RuntimeError(f"No video stream found in {video}")
+    return int(streams[0]["width"]), int(streams[0]["height"])
+
+
+def normalize_video_resolution(config, video, prompt_id):
+    video = Path(video)
+    width = int(config["final_width"])
+    height = int(config["final_height"])
+    if probe_video_size(video) == (width, height):
+        return video
+
+    output = (
+        Path(config.get("final_output_dir", config["comfy_output_dir"]))
+        / config["output_prefix"]
+        / f"single_{prompt_id[:8]}_{width}x{height}.mp4"
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            find_ffmpeg(),
+            "-y",
+            "-i",
+            str(video),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            "-vf",
+            f"scale={width}:{height}:flags=lanczos",
+            "-r",
+            "24",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "16",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            str(output),
+        ],
+        check=True,
+    )
+    print(
+        f"[H3] Normalized single clip to {width}x{height}: {output}",
+        flush=True,
+    )
+    return output
+
+
 def repair_two_pass_opening(
     config,
     video,
@@ -610,7 +913,13 @@ def repair_two_pass_opening(
         / f"segment_{prompt_id[:8]}_two_pass.mp4"
     )
     output.parent.mkdir(parents=True, exist_ok=True)
-    filter_complex = build_two_pass_repair_filter(width, height, fix_frames)
+    blend_frames = int(config.get("two_pass_blend_frames", 4))
+    filter_complex = build_two_pass_repair_filter(
+        width,
+        height,
+        fix_frames,
+        blend_frames,
+    )
     subprocess.run(
         [
             ffmpeg,
@@ -652,14 +961,212 @@ def repair_two_pass_opening(
     return output
 
 
-def build_two_pass_repair_filter(width, height, fix_frames):
+def repair_blend_weight(fix_frames, blend_frames, frame_index):
+    """Weight of the *generated* footage for frame ``frame_index``.
+
+    0.0 = the frame is the static anchor image, 1.0 = pure generated footage.
+    The first ``fix_frames`` frames are pinned to the anchor, then the anchor
+    fades out linearly over ``blend_frames`` frames. Everything after that is
+    generated footage for the rest of the clip -- getting this ramp backwards
+    (which is what shipped first) turned every two-pass segment into a still
+    image, i.e. a slideshow instead of a video.
+    """
+    if fix_frames < 0:
+        fix_frames = 0
+    if blend_frames <= 0:
+        return 0.0 if frame_index < fix_frames else 1.0
+    ratio = (frame_index - fix_frames) / float(blend_frames)
+    return max(0.0, min(1.0, ratio))
+
+
+def build_two_pass_repair_filter(width, height, fix_frames, blend_frames=0):
+    if blend_frames <= 0:
+        return (
+            f"[0:v]scale={width}:{height},setsar=1,"
+            f"trim=end_frame={fix_frames},setpts=PTS-STARTPTS[a];"
+            f"[1:v]scale={width}:{height},setsar=1,"
+            f"trim=start_frame={fix_frames},setpts=PTS-STARTPTS[b];"
+            "[a][b]concat=n=2:v=1:a=0,format=yuv420p[v]"
+        )
+    # Linear ramp from the static anchor to the generated footage: the first
+    # fix_frames frames stay fully on the anchor, then the anchor fades out
+    # over blend_frames frames (weight of B goes 0 -> 1). The quoted expression
+    # keeps the commas inside clip() safe from the filtergraph parser.
+    weight = f"clip((N-{fix_frames})/{blend_frames},0,1)"
     return (
-        f"[0:v]scale={width}:{height},setsar=1,"
-        f"trim=end_frame={fix_frames},setpts=PTS-STARTPTS[a];"
-        f"[1:v]scale={width}:{height},setsar=1,"
-        f"trim=start_frame={fix_frames},setpts=PTS-STARTPTS[b];"
-        "[a][b]concat=n=2:v=1:a=0,format=yuv420p[v]"
+        f"[0:v]scale={width}:{height},setsar=1,format=yuv420p[a];"
+        f"[1:v]scale={width}:{height},setsar=1,format=yuv420p[b];"
+        f"[a][b]blend=shortest=1:all_expr='A*(1-{weight})+B*{weight}',"
+        "format=yuv420p[v]"
     )
+
+
+def rebuild_two_pass_postprocess(config, state, state_path, fix_frames):
+    """Re-run the two-pass opening repair for every recorded segment.
+
+    The raw model output is kept in ``state["segments"][i]["raw_video"]``, so a
+    post-processing bug (like the inverted blend ramp that froze every clip)
+    can be fixed without burning GPU time again: rebuild the repaired files
+    from the raws and let the normal stitch step produce a new final video.
+    """
+    if fix_frames <= 0:
+        print(
+            "[H3] two_pass_fix_opening_frames=0，没有需要重建的开头帧；"
+            "将直接用现有分段重新拼接。",
+            flush=True,
+        )
+        return 0
+    anchors = {
+        int(item.get("segment", 0)): item.get("start_frame")
+        for item in state.get("keyframes", [])
+    }
+    rebuilt = 0
+    for segment in sorted(
+        state.get("segments", []), key=lambda value: value.get("segment", 0)
+    ):
+        if not segment.get("two_pass"):
+            continue
+        raw = Path(segment.get("raw_video") or "")
+        if not raw.is_file():
+            print(
+                f"[H3] 段 {segment.get('segment')}: 缺少 raw_video（{raw}），跳过重建。",
+                flush=True,
+            )
+            continue
+        anchor = segment.get("start_keyframe") or anchors.get(
+            int(segment.get("segment", 0))
+        )
+        if not anchor or not Path(anchor).is_file():
+            print(
+                f"[H3] 段 {segment.get('segment')}: 找不到开头锚点帧，跳过重建。",
+                flush=True,
+            )
+            continue
+        prompt_id = str(segment.get("prompt_id") or f"seg{segment.get('segment')}")
+        video = repair_two_pass_opening(
+            config,
+            raw,
+            anchor,
+            prompt_id,
+            float(segment["seconds"]),
+            fix_frames,
+        )
+        segment["video"] = str(video)
+        rebuilt += 1
+        print(f"[H3] 段 {segment.get('segment')}: 已重建 {video}", flush=True)
+    state_path.write_text(
+        json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return rebuilt
+
+
+def manual_keyframe(overrides, segment, side):
+    """Return the user-supplied keyframe path for a segment side, if any.
+
+    The review gate lets a human replace an AI keyframe after it has been
+    rendered. Those overrides live in ``state["keyframe_overrides"]`` and always
+    win over both cached and freshly generated frames.
+    """
+    if not overrides:
+        return None
+    entry = overrides.get(str(segment))
+    if entry is None:
+        entry = overrides.get(segment)
+    if not isinstance(entry, dict):
+        return None
+    path = entry.get(side)
+    if not path:
+        return None
+    candidate = Path(path)
+    if not candidate.is_file():
+        return None
+    return candidate.as_posix()
+
+
+def keyframe_attempt(attempts, segment, side):
+    """How many times a human has asked for this keyframe to be re-rolled."""
+    if not attempts:
+        return 0
+    entry = attempts.get(str(segment))
+    if entry is None:
+        entry = attempts.get(segment)
+    if not isinstance(entry, dict):
+        return 0
+    try:
+        return max(0, int(entry.get(side, 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def keyframe_source(signature):
+    """Human-readable origin of a cached keyframe signature."""
+    text = str(signature or "")
+    for prefix in (
+        "manual",
+        "explicit",
+        "hold",
+        "opening-draft",
+        "free",
+        "from-video",
+        "pending-video",
+    ):
+        if text.startswith(f"{prefix}:"):
+            return prefix
+    return "ai"
+
+
+def previous_video_tail(state, segment_number):
+    """Last frame of the previous segment's rendered video, if it is on disk.
+
+    Used by ``free_end`` chains: a segment without an end anchor hands its real
+    last frame to the next segment, so that segment starts from rendered footage
+    instead of a short draft that cannot reach the target pose.
+    """
+    record = next(
+        (
+            item
+            for item in state.get("segments", [])
+            if int(item.get("segment", 0)) == int(segment_number) - 1
+        ),
+        None,
+    )
+    if not record:
+        return None
+    for key in ("last_frame", "next_frame"):
+        path = record.get(key)
+        if path and Path(path).is_file():
+            return str(path)
+    return None
+
+
+def missing_keyframes(state, count):
+    """Segment numbers whose start/end keyframe is absent from disk."""
+    existing = {
+        int(item["segment"]): item
+        for item in state.get("keyframes", [])
+        if "segment" in item
+    }
+    missing = []
+    for index in range(1, int(count) + 1):
+        item = existing.get(index)
+        if not item:
+            missing.append(index)
+            continue
+        for side in ("start", "end"):
+            # ``free`` ends have no anchor at all; ``pending-video`` frames are
+            # filled in during the video stage from the previous segment's last
+            # rendered frame, so they must not block the videos stage here.
+            if item.get(f"{side}_source") in {
+                "free",
+                "pending-video",
+                "from-video",
+            }:
+                continue
+            path = Path(item.get(f"{side}_frame") or "")
+            if not str(path) or not path.is_file():
+                missing.append(index)
+                break
+    return sorted(set(missing))
 
 
 def ensure_keyframe_chain(
@@ -673,6 +1180,8 @@ def ensure_keyframe_chain(
 ):
     count = len(specs) if max_segments is None else min(len(specs), max_segments)
     draft_seconds = float(config.get("keyframe_draft_seconds", 2.0))
+    overrides = state.get("keyframe_overrides") or {}
+    attempts = state.get("keyframe_attempts") or {}
     existing = {
         int(item["segment"]): item
         for item in state.get("keyframes", [])
@@ -693,7 +1202,55 @@ def ensure_keyframe_chain(
             index > 0 and should_continue_from_previous(config, spec)
         )
 
-        if index == 0 or not continues_from_previous:
+        # A ``free_end`` predecessor has no end anchor, so this segment cannot
+        # inherit a frame from it: it starts from the previous *rendered* video's
+        # last frame. That frame only exists after the video stage has run, hence
+        # the pending state (the panel shows "待定首帧" until then).
+        previous_is_free = bool(
+            (
+                previous
+                and (
+                    previous.get("end_frame") in (None, "")
+                    or previous.get("end_source") == "free"
+                )
+            )
+            or (index > 0 and specs[index - 1].get("free_end"))
+        )
+        manual_start = manual_keyframe(overrides, index + 1, "start")
+        if manual_start:
+            start_frame = manual_start
+            start_prompt_id = None
+            start_signature = f"manual:{manual_start}"
+            if index == 0:
+                opening_draft_last_frame = None
+                opening_draft_prompt_id = None
+            print(
+                f"[H3] Segment {index + 1}: using replaced start keyframe "
+                f"{manual_start}",
+                flush=True,
+            )
+        elif continues_from_previous and previous_is_free:
+            video_tail = previous_video_tail(state, index + 1)
+            if video_tail:
+                start_frame = video_tail
+                start_prompt_id = None
+                start_signature = f"from-video:{Path(video_tail).as_posix()}"
+                print(
+                    f"[H3] Segment {index + 1}: start frame taken from the "
+                    f"previous segment's last rendered frame: {video_tail}",
+                    flush=True,
+                )
+            else:
+                start_frame = None
+                start_prompt_id = None
+                start_signature = f"pending-video:{index + 1}"
+                print(
+                    f"[H3] Segment {index + 1}: start frame is pending — the "
+                    "previous segment ends freely, so it will be taken from that "
+                    "render's last frame during the video stage.",
+                    flush=True,
+                )
+        elif index == 0 or not continues_from_previous:
             start_spec = {
                 "seconds": draft_seconds,
                 "two_pass": False,
@@ -725,7 +1282,9 @@ def ensure_keyframe_chain(
                 record = run_keyframe(
                     config,
                     spec,
-                    int(config["base_seed"]) + 900000,
+                    int(config["base_seed"])
+                    + 900000
+                    + keyframe_attempt(attempts, index + 1, "start") * 101,
                     first_frame=None,
                     prompt=spec["start_frame_prompt"],
                     label=(
@@ -740,16 +1299,49 @@ def ensure_keyframe_chain(
                     opening_draft_last_frame = record["last_frame"]
                     opening_draft_prompt_id = record["prompt_id"]
 
+        # An empty cached signature means the human asked for a re-roll: the
+        # frame must be rendered again instead of being reused or shortcut.
+        reroll_start = bool(previous) and previous.get("start_sha1") == ""
+        reroll_end = bool(previous) and previous.get("end_sha1") == ""
         hold_composition = should_anchor_last_frame(config, spec)
-        if hold_composition:
+        manual_end = manual_keyframe(overrides, index + 1, "end")
+        if manual_end:
+            end_frame = manual_end
+            end_prompt_id = None
+            end_signature = f"manual:{manual_end}"
+            print(
+                f"[H3] Segment {index + 1}: using replaced end keyframe "
+                f"{manual_end}",
+                flush=True,
+            )
+        elif hold_composition:
             end_frame = start_frame
             end_prompt_id = start_prompt_id
             end_signature = f"hold:{start_signature}"
+        elif spec.get("free_end"):
+            # No end anchor at all: the segment is free to end wherever the
+            # action takes it, and its rendered last frame becomes the next
+            # segment's start. This is what makes long travels ("walk 10 m to
+            # the bench") work -- anchoring them to a 5 s draft only produced
+            # cropped, drifting frames.
+            end_frame = None
+            end_prompt_id = None
+            end_signature = f"free:{start_signature}"
+            print(
+                f"[H3] Segment {index + 1}: free end (no end keyframe); the "
+                "rendered video decides where it stops.",
+                flush=True,
+            )
+        elif start_frame is None:
+            end_frame = None
+            end_prompt_id = None
+            end_signature = f"pending-video:end:{index + 1}"
         elif (
             index == 0
             and spec["end_frame_prompt"] == spec["prompt"]
             and opening_draft_last_frame
             and Path(opening_draft_last_frame).is_file()
+            and not reroll_end
         ):
             end_frame = opening_draft_last_frame
             end_prompt_id = opening_draft_prompt_id
@@ -759,10 +1351,22 @@ def ensure_keyframe_chain(
                 flush=True,
             )
         else:
+            end_prompt = end_keyframe_prompt(config, spec["end_frame_prompt"], index)
+            if end_prompt != spec["end_frame_prompt"]:
+                extras = []
+                if int(config.get("keyframe_reanchor_every", 0) or 0) > 0:
+                    extras.append("identity re-anchor")
+                if bool(config.get("keyframe_camera_continuity", True)):
+                    extras.append("camera continuity")
+                print(
+                    f"[H3] Segment {index + 1}: end keyframe prompt carries "
+                    + " + ".join(extras),
+                    flush=True,
+                )
             end_spec = {
                 "seconds": draft_seconds,
                 "two_pass": False,
-                "prompt": spec["end_frame_prompt"],
+                "prompt": end_prompt,
             }
             end_signature = generation_signature(
                 config,
@@ -786,7 +1390,10 @@ def ensure_keyframe_chain(
                 record = run_keyframe(
                     config,
                     spec,
-                    int(config["base_seed"]) + 700000 + index * 2,
+                    int(config["base_seed"])
+                    + 700000
+                    + index * 2
+                    + keyframe_attempt(attempts, index + 1, "end") * 101,
                     first_frame=start_frame,
                     prompt=spec["end_frame_prompt"],
                     label=f"End keyframe {index + 1}",
@@ -805,6 +1412,9 @@ def ensure_keyframe_chain(
             "continue_from_previous": continues_from_previous,
             "opening_draft_last_frame": opening_draft_last_frame,
             "opening_draft_prompt_id": opening_draft_prompt_id,
+            "start_source": keyframe_source(start_signature),
+            "end_source": keyframe_source(end_signature),
+            "free_end": bool(spec.get("free_end")),
         }
         ordered.append(item)
         merged = [
@@ -860,28 +1470,93 @@ def build_fade_filters(boundaries):
 
 def stitch_segments(
     config,
-    videos,
+    playlist,
     work_dir=HERE,
     total_seconds=None,
     fade_boundaries=None,
+    audio_fade_boundaries=None,
 ):
+    """Concatenate segment videos into the final long video.
+
+    playlist is an ordered list of ``(path, seconds)`` tuples.
+    ``fade_boundaries`` are video fade points (story cuts only); they force a
+    full video re-encode. ``audio_fade_boundaries`` are short audio
+    micro-fades applied at every boundary to remove clicks; they do not
+    change the timeline, so A/V sync never drifts.
+    """
     ffmpeg = find_ffmpeg()
     concat_file = Path(work_dir) / "concat.txt"
     concat_file.write_text(
-        "".join(f"file '{Path(path).as_posix()}'\n" for path in videos),
+        "".join(f"file '{Path(path).as_posix()}'\n" for path, _ in playlist),
         encoding="utf-8",
     )
     output = Path(config.get("final_output_dir", config["comfy_output_dir"])) / config["output_prefix"] / "long_video.mp4"
     output.parent.mkdir(parents=True, exist_ok=True)
     if total_seconds is None:
-        total_seconds = sum(float(item["seconds"]) for item in config["segments"])
+        total_seconds = sum(float(seconds) for _, seconds in playlist)
     width = int(config.get("final_width", 704))
     height = int(config.get("final_height", 1216))
     fade_boundaries = fade_boundaries or []
-    video_fade_filters, audio_fade_filters = build_fade_filters(fade_boundaries)
-    video_filter = f"scale={width}:{height}:flags=lanczos"
-    if video_fade_filters:
-        video_filter += "," + ",".join(video_fade_filters)
+    audio_fade_boundaries = audio_fade_boundaries or []
+    video_fade_filters, _ = build_fade_filters(fade_boundaries)
+    _, audio_fade_filters = build_fade_filters(audio_fade_boundaries)
+
+    def encode_full():
+        video_filter = f"scale={width}:{height}:flags=lanczos"
+        if video_fade_filters:
+            video_filter += "," + ",".join(video_fade_filters)
+        command = [
+            ffmpeg,
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_file),
+            "-t",
+            str(total_seconds),
+            "-vf",
+            video_filter,
+            "-r",
+            "24",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+        ]
+        if audio_fade_filters:
+            command.extend(["-af", ",".join(audio_fade_filters)])
+        command.extend(
+            [
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-movflags",
+                "+faststart",
+                str(output),
+            ]
+        )
+        subprocess.run(
+            command,
+            check=True,
+        )
+
+    try:
+        needs_scale = probe_video_size(playlist[0][0]) != (width, height)
+    except Exception:
+        needs_scale = True
+    if video_fade_filters or needs_scale:
+        encode_full()
+        return output
+
+    # Zero-loss video pass: stream-copy the H.264 track straight through and
+    # only re-encode audio when boundary micro-fades are requested.
     command = [
         ffmpeg,
         "-y",
@@ -893,45 +1568,412 @@ def stitch_segments(
         str(concat_file),
         "-t",
         str(total_seconds),
-        "-vf",
-        video_filter,
-        "-r",
-        "24",
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
         "-c:v",
-        "libx264",
-        "-preset",
-        "medium",
-        "-crf",
-        "18",
-        "-pix_fmt",
-        "yuv420p",
+        "copy",
     ]
     if audio_fade_filters:
         command.extend(["-af", ",".join(audio_fade_filters)])
-    command.extend(
-        [
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            "-movflags",
-            "+faststart",
-            str(output),
-        ]
-    )
-    subprocess.run(
-        command,
-        check=True,
-    )
+        command.extend(["-c:a", "aac", "-b:a", "192k"])
+    else:
+        command.extend(["-c:a", "copy"])
+    command.extend(["-movflags", "+faststart", str(output)])
+    try:
+        subprocess.run(
+            command,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, RuntimeError, OSError):
+        print(
+            "[H3] Stream-copy concat failed; falling back to a full re-encode.",
+            flush=True,
+        )
+        encode_full()
     return output
+
+
+_FACE_APP = None
+
+
+def _read_video_frames(video, samples=3):
+    """Sample first / middle / last frames of a video as BGR arrays."""
+    try:
+        import cv2
+    except ImportError:
+        return None
+    capture = cv2.VideoCapture(str(video))
+    try:
+        total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total <= 0:
+            return None
+        indexes = sorted({0, total // 2, total - 1})[:samples]
+        frames = {}
+        for target in indexes:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, target)
+            ok, frame = capture.read()
+            if not ok:
+                return None
+            frames[target] = frame
+        return frames
+    finally:
+        capture.release()
+
+
+def _box_sum(values, k=8):
+    integral = np.pad(values, ((1, 0), (1, 0))).cumsum(0).cumsum(1)
+    return (
+        integral[k:, k:]
+        - integral[:-k, k:]
+        - integral[k:, :-k]
+        + integral[:-k, :-k]
+    )
+
+
+def _cover_crop(image, target_w, target_h):
+    """Resize + centre-crop `image` so it covers `target_w x target_h`."""
+    import cv2
+
+    height, width = image.shape[:2]
+    scale = max(target_w / width, target_h / height)
+    new_w = max(target_w, int(round(width * scale)))
+    new_h = max(target_h, int(round(height * scale)))
+    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    offset_x = (new_w - target_w) // 2
+    offset_y = (new_h - target_h) // 2
+    return resized[
+        offset_y : offset_y + target_h, offset_x : offset_x + target_w
+    ]
+
+
+def _match_anchor_to_frame(anchor, frame):
+    """Align a (usually high-res) anchor keyframe to a decoded video frame.
+
+    Anchor keyframes are rendered at `keyframe_megapixels` and do not always
+    share the video's aspect ratio (e.g. 608x1056 keyframe vs 288x544 frame).
+    Comparing them directly with SSIM penalises sharpness difference, aspect
+    mismatch and sub-pixel composition shifts rather than real content drift.
+    We therefore cover-crop the anchor to the frame's aspect, blur both and
+    compare them on a coarse 96x96 grid so SSIM tracks coarse content.
+
+    Calibrated on job 20261030_143853_304cf442: same-segment pairs score
+    0.60-0.97 while cross-segment pairs stay below 0.16, so the 0.55 default
+    threshold separates real drift from benign composition offset.
+    """
+    import cv2
+
+    height, width = frame.shape[:2]
+    matched = _cover_crop(anchor, width, height)
+    blur = (5, 5)
+    matched = cv2.GaussianBlur(matched, blur, 4.0)
+    frame_blurred = cv2.GaussianBlur(frame, blur, 4.0)
+    coarse_a = cv2.resize(matched, (96, 96), interpolation=cv2.INTER_AREA)
+    coarse_b = cv2.resize(frame_blurred, (96, 96), interpolation=cv2.INTER_AREA)
+    return coarse_a, coarse_b
+
+
+def compute_ssim(image_a, image_b, k=8):
+    """Local SSIM on grayscale 256x256 versions of two BGR frames."""
+    try:
+        import cv2
+    except ImportError:
+        return None
+
+    def grayscale(image):
+        if image.ndim == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        return cv2.resize(image, (256, 256)).astype(np.float64)
+
+    a = grayscale(image_a)
+    b = grayscale(image_b)
+    mu_a = _box_sum(a, k) / (k * k)
+    mu_b = _box_sum(b, k) / (k * k)
+    var_a = _box_sum(a * a, k) / (k * k) - mu_a ** 2
+    var_b = _box_sum(b * b, k) / (k * k) - mu_b ** 2
+    cov_ab = _box_sum(a * b, k) / (k * k) - mu_a * mu_b
+    c1 = (0.01 * 255) ** 2
+    c2 = (0.03 * 255) ** 2
+    ssim_map = ((2 * mu_a * mu_b + c1) * (2 * cov_ab + c2)) / (
+        (mu_a ** 2 + mu_b ** 2 + c1) * (var_a + var_b + c2)
+    )
+    return float(np.clip(ssim_map, -1.0, 1.0).mean())
+
+
+def _face_similarity(reference_path, frame):
+    """Cosine similarity between the largest faces in reference and frame.
+
+    Requires the optional `insightface` package; returns None when it is not
+    installed so the rest of the QA report still works.
+    """
+    global _FACE_APP
+    try:
+        import cv2
+        from insightface.app import FaceAnalysis
+    except ImportError:
+        return None
+    try:
+        if _FACE_APP is None:
+            _FACE_APP = FaceAnalysis(
+                name="buffalo_l", providers=["CPUExecutionProvider"]
+            )
+            _FACE_APP.prepare(ctx_id=0, det_size=(640, 640))
+        reference = cv2.imread(str(reference_path))
+        if reference is None:
+            return None
+
+        def largest_face(faces):
+            if not faces:
+                return None
+            return max(
+                faces,
+                key=lambda face: (face.bbox[2] - face.bbox[0])
+                * (face.bbox[3] - face.bbox[1]),
+            )
+
+        reference_face = largest_face(_FACE_APP.get(reference))
+        frame_face = largest_face(_FACE_APP.get(frame))
+        if reference_face is None or frame_face is None:
+            return None
+        return float(
+            np.dot(reference_face.normed_embedding, frame_face.normed_embedding)
+        )
+    except Exception as exc:
+        print(f"[H3] Face check skipped: {type(exc).__name__}: {exc}", flush=True)
+        return None
+
+
+def _video_motion_profile(video, samples_per_second=2):
+    """Measure how much of a clip actually moves.
+
+    A wrong post-processing ramp once turned every two-pass segment into a
+    still image with sound; SSIM against the anchors cannot see that (the
+    first/last frames can still be wildly different), so the QA report gets an
+    explicit "static_video" flag driven by consecutive-frame differences.
+    """
+    try:
+        import cv2
+    except ImportError:
+        return None
+    capture = cv2.VideoCapture(str(video))
+    try:
+        fps = capture.get(cv2.CAP_PROP_FPS) or 24.0
+        step = max(1, int(round(fps / max(samples_per_second, 1))))
+        prev = None
+        diffs = []
+        index = 0
+        while True:
+            if not capture.grab():
+                break
+            if index % step == 0:
+                ok, frame = capture.retrieve()
+                if not ok:
+                    break
+                small = cv2.resize(frame, (96, 96), interpolation=cv2.INTER_AREA)
+                gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype("float32")
+                if prev is not None:
+                    diffs.append(float(np.abs(gray - prev).mean()))
+                prev = gray
+            index += 1
+    finally:
+        capture.release()
+    if not diffs:
+        return None
+    values = np.asarray(diffs, dtype="float32")
+    return {
+        "samples": int(values.size),
+        "median_diff": round(float(np.median(values)), 3),
+        "static_ratio": round(float((values < 1.0).mean()), 3),
+    }
+
+
+def build_qa_report(config, state, state_path):
+    """Compare decoded segment frames against their anchor keyframes."""
+    report_path = state_path.parent / "qa_report.json"
+    report = {
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "available": False,
+        "segments": [],
+    }
+    entries = []
+    for record in sorted(
+        state.get("segments", []), key=lambda item: item.get("segment", 0)
+    ):
+        video = Path(record.get("video", ""))
+        entry = {
+            "segment": record.get("segment"),
+            "video": str(video),
+        }
+        frames = None
+        if video.is_file():
+            frames = _read_video_frames(video)
+            if frames is not None:
+                report["available"] = True
+        entries.append((entry, frames))
+    report["segments"] = [entry for entry, _ in entries]
+    if not report["available"]:
+        report_path.write_text(
+            json.dumps(report, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(
+            "[H3] QA skipped: opencv (cv2) is not available in this environment.",
+            flush=True,
+        )
+        return report
+
+    ssim_min = float(config.get("qa_anchor_ssim_min", 0.55))
+    face_check = bool(config.get("qa_face_check", False))
+    face_min = float(config.get("qa_face_sim_min", 0.50))
+    static_ratio_max = float(config.get("qa_static_ratio_max", 0.90))
+    reference_path = config["reference_images"][0]
+    flagged = []
+    for entry, frames in entries:
+        segment = entry.get("segment")
+        record = next(
+            (
+                item
+                for item in state.get("segments", [])
+                if item.get("segment") == segment
+            ),
+            {},
+        )
+        if frames is None:
+            entry["flags"] = ["frames_unreadable"]
+            flagged.append((segment, entry["flags"]))
+            continue
+        indexes = sorted(frames)
+        start_key = record.get("start_keyframe")
+        end_key = record.get("end_keyframe")
+        if start_key and Path(start_key).is_file():
+            import cv2
+
+            anchor = cv2.imread(str(start_key))
+            if anchor is not None:
+                aligned, frame = _match_anchor_to_frame(
+                    anchor, frames[indexes[0]]
+                )
+                entry["first_frame_ssim"] = compute_ssim(aligned, frame)
+        if end_key and Path(end_key).is_file():
+            import cv2
+
+            anchor = cv2.imread(str(end_key))
+            if anchor is not None:
+                aligned, frame = _match_anchor_to_frame(
+                    anchor, frames[indexes[-1]]
+                )
+                entry["last_frame_ssim"] = compute_ssim(aligned, frame)
+        if face_check:
+            entry["identity_similarity"] = _face_similarity(
+                input_image_path(config, reference_path),
+                frames[indexes[len(indexes) // 2]],
+            )
+        flags = []
+        first_ssim = entry.get("first_frame_ssim")
+        last_ssim = entry.get("last_frame_ssim")
+        if first_ssim is not None and first_ssim < ssim_min:
+            flags.append("first_frame_drift")
+        if last_ssim is not None and last_ssim < ssim_min:
+            flags.append("last_frame_drift")
+        identity = entry.get("identity_similarity")
+        if identity is not None and identity < face_min:
+            flags.append("identity_drift")
+        motion = _video_motion_profile(Path(entry.get("video", "")))
+        if motion:
+            entry["motion"] = motion
+            if motion["static_ratio"] >= static_ratio_max:
+                flags.append("static_video")
+        entry["flags"] = flags
+        if flags:
+            flagged.append((segment, flags))
+    report["thresholds"] = {
+        "anchor_ssim_min": ssim_min,
+        "face_check": face_check,
+        "face_sim_min": face_min,
+        "static_ratio_max": static_ratio_max,
+    }
+    report["flagged"] = [
+        {"segment": segment, "flags": flags} for segment, flags in flagged
+    ]
+    report_path.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    if flagged:
+        summary = ", ".join(
+            f"segment {segment}: {','.join(flags)}" for segment, flags in flagged
+        )
+        print(f"[H3] QA flagged {summary}; see {report_path}", flush=True)
+    else:
+        print(f"[H3] QA passed for all segments; see {report_path}", flush=True)
+    return report
+
+
+def _all_segments_current(config, specs, state):
+    """True when every segment in state matches its generation signature."""
+    records = {
+        int(item["segment"]): item
+        for item in state.get("segments", [])
+        if "segment" in item
+    }
+    for index, spec in enumerate(specs):
+        record = records.get(index + 1)
+        if not record or not Path(record.get("video", "")).is_file():
+            return False
+        expected = generation_signature(
+            config, spec, record.get("source_prompt_id", "")
+        )
+        if record.get("generation_sha1") != expected:
+            return False
+    return True
 
 
 def main():
     parser = argparse.ArgumentParser(description="Generate chained MiniMax H3 long videos.")
     parser.add_argument("--config", default=str(CONFIG_PATH), help="Path to a config.json file.")
     parser.add_argument("--limit", type=int, default=0, help="Only render the first N missing segments.")
+    parser.add_argument(
+        "--from-segment",
+        type=int,
+        default=1,
+        help="1-based index of the first segment to (re)render.",
+    )
+    parser.add_argument(
+        "--to-segment",
+        type=int,
+        default=0,
+        help="1-based index of the last segment to render; 0 means all.",
+    )
     parser.add_argument("--no-stitch", action="store_true", help="Do not concatenate the completed segments.")
     parser.add_argument("--force", action="store_true", help="Regenerate completed segments.")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Override config base_seed for this run (segment i uses seed + i, "
+            "keyframe drafts use seed + 700000 + 2*i). Without this flag the "
+            "base_seed from config.json is reused, so every run is identical."
+        ),
+    )
+    parser.add_argument(
+        "--random-seed",
+        action="store_true",
+        help="Use a fresh random base seed for this run (same behaviour as the Director UI's randomize_seed).",
+    )
+    parser.add_argument(
+        "--stage",
+        choices=["all", "keyframes", "videos", "reencode"],
+        default="all",
+        help=(
+            "all: keyframes then videos; keyframes: render the keyframe chain "
+            "and stop for human review; videos: reuse the reviewed keyframes "
+            "and only render the segment videos; reencode: rebuild the two-pass "
+            "post-processing (opening repair + concat) from the raw model "
+            "outputs already on disk, without touching ComfyUI."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Build one API workflow without submitting it.")
     parser.add_argument("--dump-graphs", type=Path, help="Write one-pass and two-pass API graph examples.")
     parser.add_argument("--anchor-image", help="Image to use when dumping a two-pass graph example.")
@@ -941,6 +1983,16 @@ def main():
     state_path = config_path.parent / ".state.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     validate_config(config)
+    if args.seed is not None and args.random_seed:
+        parser.error("--seed and --random-seed are mutually exclusive.")
+    if args.seed is not None:
+        config["base_seed"] = int(args.seed)
+        print(f"[H3] Using CLI seed override: base_seed={config['base_seed']}", flush=True)
+    elif args.random_seed:
+        import secrets
+
+        config["base_seed"] = secrets.randbits(50)
+        print(f"[H3] Using random base seed: {config['base_seed']}", flush=True)
     specs = segment_specs(config)
     segment_count = len(specs)
     if args.dump_graphs:
@@ -982,8 +2034,8 @@ def main():
         graph = build_graph(
             config,
             specs[0]["prompt"],
-            None,
-            None,
+            config.get("fixed_first_frame") if config.get("single_clip") else None,
+            config.get("fixed_last_frame") if config.get("single_clip") else None,
             int(config["base_seed"]),
             specs[0]["seconds"],
             specs[0]["two_pass"],
@@ -996,21 +2048,79 @@ def main():
     state = {}
     if state_path.exists():
         state = json.loads(state_path.read_text(encoding="utf-8"))
+    if config.get("single_clip"):
+        segment = run_single_clip(config, specs[0], state_path)
+        print(f"[H3] Single clip: {segment['video']}", flush=True)
+        return
+    if args.stage == "reencode":
+        rebuilt = rebuild_two_pass_postprocess(
+            config,
+            state,
+            state_path,
+            int(config.get("two_pass_fix_opening_frames", 0)),
+        )
+        print(
+            f"[H3] 后处理重建完成：{rebuilt} 段，接下来只做拼接（不重新渲染）。",
+            flush=True,
+        )
+        # Everything below reuses the records that are already on disk, so the
+        # normal stitch/QA path runs without submitting a single new prompt.
+        args.stage = "videos"
     segments = state.setdefault("segments", [])
-    render_count = segment_count
+    render_start = max(1, int(args.from_segment or 1))
+    render_end = segment_count
+    if args.to_segment:
+        render_end = min(max(int(args.to_segment), render_start), segment_count)
     if args.limit:
-        render_count = min(render_count, args.limit)
+        render_end = min(render_end, args.limit)
+
+    if args.stage == "videos":
+        missing = missing_keyframes(state, render_end)
+        if missing:
+            print(
+                "[H3] 关键帧缺失，无法直接进入视频阶段。缺失段："
+                + ", ".join(str(index) for index in missing),
+                flush=True,
+            )
+            print("[H3] 请先运行 --stage keyframes 生成并确认关键帧。", flush=True)
+            raise SystemExit(2)
 
     keyframes = ensure_keyframe_chain(
         config,
         specs,
         state,
         state_path,
-        max_segments=render_count,
+        max_segments=render_end,
         force=args.force,
     )
+    state["stage"] = args.stage
+    if args.stage == "keyframes":
+        state["phase"] = "keyframes"
+        state["awaiting_review"] = True
+        state["review_segments"] = render_end
+        state_path.write_text(
+            json.dumps(state, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(
+            f"[H3] 关键帧阶段完成：{len(keyframes)}/{render_end} 段，等待人工确认。",
+            flush=True,
+        )
+        for item in keyframes:
+            print(
+                f"[H3]   段 {item['segment']}  "
+                f"首帧({item.get('start_source', 'ai')}) {item['start_frame']}",
+                flush=True,
+            )
+            print(
+                f"[H3]          "
+                f"尾帧({item.get('end_source', 'ai')}) {item['end_frame']}",
+                flush=True,
+            )
+        return
+    state["awaiting_review"] = False
     state["phase"] = "videos"
-    state["keyframe_total"] = render_count
+    state["keyframe_total"] = render_end
     transition_mode = str(config.get("transition_mode", "fade")).lower()
     required_transitions = {
         index + 1
@@ -1031,14 +2141,16 @@ def main():
         encoding="utf-8",
     )
 
-    playlist_paths = []
+    playlist = []
     transitions = state.setdefault("transitions", [])
-    completed_segments = 0
-    for index, keyframe in enumerate(keyframes):
+    for index in range(render_start - 1, render_end):
+        keyframe = keyframes[index]
+        spec = specs[index]
         if (
             transition_mode == "generated"
             and index > 0
             and not keyframe.get("continue_from_previous", True)
+            and (keyframes[index - 1].get("end_frame") and keyframe.get("start_frame"))
         ):
             previous_keyframe = keyframes[index - 1]
             transition_spec = {
@@ -1073,7 +2185,9 @@ def main():
                 and existing_transition.get("source_prompt_id")
                 == transition_source
             ):
-                playlist_paths.append(existing_transition["video"])
+                playlist.append(
+                    (existing_transition["video"], transition_spec["seconds"])
+                )
             else:
                 transition_record = run_segment(
                     config,
@@ -1099,16 +2213,19 @@ def main():
                     json.dumps(state, indent=2, ensure_ascii=False),
                     encoding="utf-8",
                 )
-                playlist_paths.append(transition_record["video"])
+                playlist.append(
+                    (transition_record["video"], transition_spec["seconds"])
+                )
 
         existing = next((x for x in segments if x.get("segment") == index + 1), None)
         source_key = (
             f"{keyframe.get('start_prompt_id')}:"
             f"{keyframe.get('end_prompt_id')}"
         )
+        video_spec = video_prompt_spec(config, specs[index])
         expected_signature = generation_signature(
             config,
-            specs[index],
+            video_spec,
             source_key,
         )
         if (
@@ -1118,47 +2235,60 @@ def main():
             and existing.get("generation_sha1") == expected_signature
             and existing.get("source_prompt_id") == source_key
         ):
-            playlist_paths.append(existing["video"])
-            completed_segments += 1
+            playlist.append((existing["video"], spec["seconds"]))
             continue
+        # A segment that follows a ``free_end`` one has no stored start frame:
+        # take the previous render's last frame (that is exactly what the free
+        # end produced) instead of failing or regenerating a draft.
+        resolved_start = keyframe.get("start_frame")
+        if not resolved_start:
+            resolved_start = previous_video_tail(state, index + 1)
+            if not resolved_start:
+                raise RuntimeError(
+                    f"段 {index + 1} 的首帧要等上一段渲染完成后才能确定；"
+                    "请按顺序渲染（先用 --from-segment 补上一段），不要跳过。"
+                )
+            print(
+                f"[H3] Segment {index + 1}: start frame resolved from the "
+                f"previous render: {resolved_start}",
+                flush=True,
+            )
         segment = run_segment(
             config,
-            specs[index],
+            video_spec,
             index,
-            keyframe["start_frame"],
-            keyframe["end_frame"],
+            resolved_start,
+            keyframe.get("end_frame"),
         )
         segment["source_prompt_id"] = source_key
         segment["generation_sha1"] = expected_signature
-        segment["start_keyframe"] = keyframe["start_frame"]
-        segment["end_keyframe"] = keyframe["end_frame"]
+        segment["start_keyframe"] = resolved_start
+        segment["end_keyframe"] = keyframe.get("end_frame")
         segments = [x for x in segments if x.get("segment") != index + 1]
         segments.append(segment)
         segments.sort(key=lambda x: x["segment"])
         state["segments"] = segments
         state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
-        playlist_paths.append(segment["video"])
-        completed_segments += 1
+        playlist.append((segment["video"], spec["seconds"]))
+
+    try:
+        build_qa_report(config, state, state_path)
+    except Exception as exc:
+        print(f"[H3] QA report failed: {type(exc).__name__}: {exc}", flush=True)
 
     if args.no_stitch:
         return
-    if completed_segments != segment_count:
+    if not _all_segments_current(config, specs, state):
         print(
-            f"[H3] {completed_segments}/{segment_count} segments are ready; "
-            "the final video will be created after the remaining chain is rendered.",
+            f"[H3] Rendered segments {render_start}-{render_end}; "
+            "the final video will be created once every segment matches "
+            "its current configuration.",
             flush=True,
         )
         return
-    if playlist_paths:
-        total_seconds = sum(spec["seconds"] for spec in specs)
+    if playlist:
         fade_boundaries = []
-        if transition_mode == "generated":
-            total_seconds += sum(
-                spec["transition_seconds"]
-                for index, spec in enumerate(specs)
-                if index > 0 and not should_continue_from_previous(config, spec)
-            )
-        elif transition_mode == "fade":
+        if transition_mode == "fade":
             elapsed = 0.0
             for index, spec in enumerate(specs[:-1]):
                 elapsed += spec["seconds"]
@@ -1167,12 +2297,24 @@ def main():
                     fade_boundaries.append(
                         (elapsed, next_spec["transition_seconds"])
                     )
+        audio_fade = float(config.get("audio_boundary_fade", 0.1))
+        audio_boundaries = []
+        if audio_fade > 0:
+            elapsed = 0.0
+            for path, seconds in playlist[:-1]:
+                elapsed += float(seconds)
+                if not any(
+                    abs(elapsed - boundary) < 0.01
+                    for boundary, _ in fade_boundaries
+                ):
+                    audio_boundaries.append((elapsed, audio_fade))
         output = stitch_segments(
             config,
-            playlist_paths,
+            playlist,
             config_path.parent,
-            total_seconds=total_seconds,
+            total_seconds=sum(float(seconds) for _, seconds in playlist),
             fade_boundaries=fade_boundaries,
+            audio_fade_boundaries=audio_boundaries,
         )
         print(f"[H3] Final video: {output}", flush=True)
 

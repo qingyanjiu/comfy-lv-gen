@@ -8,6 +8,7 @@ from pathlib import Path
 
 import run_h3_long_video as pipeline
 import director
+from tools import build_director_workflow
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -24,6 +25,52 @@ class GraphTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def test_tail_guard_leaves_spare_frames_on_exact_lengths(self):
+        # 8 s is the pathological case: ceil(8*24) = 192 already satisfies the
+        # 5-mod-17 rule, so without a guard the corrupt final frame would be
+        # published as the clip's last frame.
+        self.assertEqual(pipeline.h3_frame_count(8), 192)
+        self.assertEqual(pipeline.output_frames(8), 192)
+        guarded = pipeline.h3_frame_count(8, 2)
+        self.assertEqual(guarded, 209)
+        self.assertGreaterEqual(guarded - pipeline.output_frames(8), 2)
+
+        # Durations that already round up keep their length, so the guard costs
+        # nothing in the common case.
+        for seconds in (5, 6, 9, 12, 15):
+            self.assertEqual(
+                pipeline.h3_frame_count(seconds, 2),
+                pipeline.h3_frame_count(seconds),
+                f"{seconds}s should not grow",
+            )
+
+    def test_build_graph_never_publishes_the_corrupt_tail_frame(self):
+        segment = pipeline.segment_specs(self.config)[0]
+        graph = pipeline.build_graph(
+            self.config,
+            segment["prompt"],
+            None,
+            None,
+            123,
+            8,
+            False,
+        )
+        generated = graph["30"]["inputs"]["length"]
+        published = graph["40"]["inputs"]["length"]
+        self.assertEqual(published, pipeline.output_frames(8))
+        self.assertGreater(generated, published)
+        # Node 38 saves the frame that becomes the next segment's start anchor,
+        # so it must point inside the published range.
+        self.assertEqual(graph["38"]["inputs"]["batch_index"], published - 1)
+
+        # Turning the guard off restores the old (buggy) behaviour, which is
+        # what the regression is being pinned against.
+        self.config["tail_guard_frames"] = 0
+        unguarded = pipeline.build_graph(
+            self.config, segment["prompt"], None, None, 123, 8, False
+        )
+        self.assertEqual(unguarded["30"]["inputs"]["length"], 192)
 
     def test_first_segment_has_no_reference_as_fixed_opening(self):
         segment = pipeline.segment_specs(self.config)[0]
@@ -201,6 +248,42 @@ class GraphTests(unittest.TestCase):
         self.assertIn("trim=end_frame=2", filter_complex)
         self.assertIn("trim=start_frame=2", filter_complex)
 
+    def test_two_pass_repair_blends_anchor_into_opening(self):
+        filter_complex = pipeline.build_two_pass_repair_filter(
+            720, 1280, 2, blend_frames=4
+        )
+        self.assertIn("[0:v]scale=720:1280", filter_complex)
+        self.assertIn("[1:v]scale=720:1280", filter_complex)
+        self.assertIn("blend=shortest=1:all_expr=", filter_complex)
+        # The anchor weight must decrease with the frame index, so the clip
+        # hands over to the generated footage and *stays* there.
+        self.assertIn("clip((N-2)/4,0,1)", filter_complex)
+        self.assertNotIn("concat=n=2", filter_complex)
+
+    def test_stitch_reuses_signature_for_unchanged_segments(self):
+        import copy as copy_module
+
+        config = copy_module.deepcopy(self.config)
+        config["segments"] = [
+            {"seconds": 5, "two_pass": False, "prompt": "single"}
+        ]
+        specs = pipeline.segment_specs(config)
+        record = {
+            "segment": 1,
+            "video": (self.temp / "missing.mp4").as_posix(),
+            "source_prompt_id": "abc",
+            "generation_sha1": pipeline.generation_signature(
+                config, specs[0], "abc"
+            ),
+        }
+        state = {"segments": [record]}
+        self.assertFalse(pipeline._all_segments_current(config, specs, state))
+        record["video"] = (self.temp / "present.mp4").as_posix()
+        (self.temp / "present.mp4").write_bytes(b"video")
+        self.assertTrue(pipeline._all_segments_current(config, specs, state))
+        record["generation_sha1"] = "stale"
+        self.assertFalse(pipeline._all_segments_current(config, specs, state))
+
     def test_default_transition_mode_is_fade(self):
         self.assertEqual(self.config["transition_mode"], "fade")
 
@@ -248,7 +331,7 @@ class GraphTests(unittest.TestCase):
             segment["seconds"],
             False,
         )
-        self.assertEqual(graph["27"]["inputs"]["megapixels"], 0.2)
+        self.assertEqual(graph["27"]["inputs"]["megapixels"], self.config["megapixels"])
         self.assertEqual(graph["34"]["inputs"]["steps"], 6)
         self.assertEqual(graph["30"]["inputs"]["ref_image_size"], "match")
 
@@ -419,28 +502,701 @@ class GraphTests(unittest.TestCase):
             ["walking forward", "standing at the mirror"],
         )
 
-    def test_dorm_bus_shopping_example_is_exactly_one_minute(self):
-        storyboard = json.loads(
-            (REPO / "examples" / "dorm_bus_shopping_60s.json").read_text(
+    def _fake_keyframe_factory(self, prefix, calls=None, seeds=None):
+        def fake_keyframe(
+            config,
+            segment,
+            seed,
+            first_frame=None,
+            prompt=None,
+            label=None,
+        ):
+            number = len(calls) if calls is not None else len(seeds)
+            first = self.temp / f"{prefix}_first_{number}.png"
+            last = self.temp / f"{prefix}_last_{number}.png"
+            first.write_bytes(b"first")
+            last.write_bytes(b"last")
+            if calls is not None:
+                calls.append((seed, first_frame, prompt, label))
+            if seeds is not None:
+                seeds.append(seed)
+            return {
+                "prompt_id": f"{prefix}-{number}",
+                "first_frame": str(first),
+                "last_frame": str(last),
+            }
+
+        return fake_keyframe
+
+    def test_keyframe_chain_uses_manual_override(self):
+        config = copy.deepcopy(self.config)
+        config["segments"] = [
+            {
+                "seconds": 5,
+                "two_pass": False,
+                "hold_composition": False,
+                "prompt": "segment one",
+            }
+        ]
+        specs = pipeline.segment_specs(config)
+        manual_end = self.temp / "manual_end.png"
+        manual_end.write_bytes(b"manual")
+        state = {"keyframe_overrides": {"1": {"end": manual_end.as_posix()}}}
+        calls = []
+        with mock.patch.object(
+            pipeline,
+            "run_keyframe",
+            side_effect=self._fake_keyframe_factory("override", calls=calls),
+        ):
+            keyframes = pipeline.ensure_keyframe_chain(
+                config,
+                specs,
+                state,
+                self.temp / "override_state.json",
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(keyframes[0]["end_frame"], manual_end.as_posix())
+        self.assertEqual(keyframes[0]["end_source"], "manual")
+        self.assertEqual(state["keyframes"][0]["end_source"], "manual")
+
+    def test_keyframe_reroll_regenerates_with_a_fresh_seed(self):
+        config = copy.deepcopy(self.config)
+        config["segments"] = [
+            {
+                "seconds": 5,
+                "two_pass": False,
+                "hold_composition": False,
+                "prompt": "segment one",
+            }
+        ]
+        specs = pipeline.segment_specs(config)
+        stale_start = self.temp / "stale_start.png"
+        stale_end = self.temp / "stale_end.png"
+        stale_start.write_bytes(b"start")
+        stale_end.write_bytes(b"end")
+        state = {
+            "keyframes": [
+                {
+                    "segment": 1,
+                    "start_frame": stale_start.as_posix(),
+                    "end_frame": stale_end.as_posix(),
+                    "start_sha1": "stale",
+                    "end_sha1": "",
+                }
+            ],
+            "keyframe_attempts": {"1": {"end": 2}},
+        }
+        seeds = []
+        with mock.patch.object(
+            pipeline,
+            "run_keyframe",
+            side_effect=self._fake_keyframe_factory("reroll", seeds=seeds),
+        ):
+            pipeline.ensure_keyframe_chain(
+                config,
+                specs,
+                state,
+                self.temp / "reroll_state.json",
+            )
+        self.assertEqual(len(seeds), 2)
+        self.assertEqual(
+            seeds[1],
+            int(config["base_seed"]) + 700000 + 2 * 101,
+        )
+
+    def test_manual_keyframe_and_source_helpers(self):
+        target = self.temp / "user.png"
+        target.write_bytes(b"user")
+        overrides = {"2": {"start": target.as_posix()}}
+        self.assertEqual(
+            pipeline.manual_keyframe(overrides, 2, "start"),
+            target.as_posix(),
+        )
+        self.assertIsNone(pipeline.manual_keyframe(overrides, 2, "end"))
+        self.assertIsNone(pipeline.manual_keyframe({}, 2, "start"))
+        self.assertEqual(pipeline.keyframe_source("manual:/x.png"), "manual")
+        self.assertEqual(pipeline.keyframe_source("hold:abc"), "hold")
+        self.assertEqual(pipeline.keyframe_source("deadbeef"), "ai")
+
+    def test_two_pass_repair_ramp_pins_then_hands_over_to_footage(self):
+        # Frame 0..fix_frames-1 = the static anchor, then the anchor fades out
+        # over blend_frames frames and the generated footage owns the clip.
+        # The first version of this ramp was inverted: it faded *to* the anchor
+        # and pinned it forever, so every two-pass segment became a slideshow.
+        weights = [pipeline.repair_blend_weight(2, 4, n) for n in range(10)]
+        self.assertEqual(weights[:3], [0.0, 0.0, 0.0])
+        self.assertAlmostEqual(weights[3], 0.25)
+        self.assertAlmostEqual(weights[4], 0.5)
+        self.assertAlmostEqual(weights[5], 0.75)
+        self.assertEqual(weights[6:], [1.0, 1.0, 1.0, 1.0])
+
+        graph = pipeline.build_two_pass_repair_filter(832, 1472, 2, 4)
+        self.assertIn("clip((N-2)/4,0,1)", graph)
+        self.assertNotIn("2+4-N", graph)
+
+    def test_two_pass_repair_without_blend_trims_the_anchor(self):
+        graph = pipeline.build_two_pass_repair_filter(832, 1472, 2, 0)
+        self.assertIn("trim=end_frame=2", graph)
+        self.assertIn("trim=start_frame=2", graph)
+        self.assertIn("concat=n=2", graph)
+        self.assertEqual(pipeline.repair_blend_weight(2, 0, 1), 0.0)
+        self.assertEqual(pipeline.repair_blend_weight(2, 0, 2), 1.0)
+
+    def test_end_keyframe_prompt_keeps_the_camera_continuous_by_default(self):
+        cfg = {"keyframe_reanchor_every": 0}
+        prompt = pipeline.end_keyframe_prompt(cfg, "she sits down", 0)
+        self.assertTrue(prompt.startswith("she sits down"))
+        self.assertIn(pipeline.DEFAULT_KEYFRAME_CAMERA_PROMPT, prompt)
+        self.assertNotIn(pipeline.DEFAULT_KEYFRAME_REANCHOR_PROMPT, prompt)
+
+    def test_end_keyframe_prompt_reanchors_only_on_selected_segments(self):
+        cfg = {"keyframe_reanchor_every": 2, "keyframe_camera_continuity": False}
+        # Re-anchor fires on segment 2, 4, ... (1-based), lock is off.
+        self.assertEqual(
+            pipeline.end_keyframe_prompt(cfg, "p", 0), "p"
+        )
+        second = pipeline.end_keyframe_prompt(cfg, "p", 1)
+        self.assertIn(pipeline.DEFAULT_KEYFRAME_REANCHOR_PROMPT, second)
+        self.assertNotIn(pipeline.DEFAULT_KEYFRAME_CAMERA_PROMPT, second)
+        # The camera note is appended after the re-anchor so it wins the tail weighting.
+        combined = pipeline.end_keyframe_prompt(
+            {"keyframe_reanchor_every": 1, "keyframe_camera_continuity": True}, "p", 0
+        )
+        self.assertLess(
+            combined.index(pipeline.DEFAULT_KEYFRAME_REANCHOR_PROMPT),
+            combined.index(pipeline.DEFAULT_KEYFRAME_CAMERA_PROMPT),
+        )
+
+    def test_end_keyframe_prompt_honours_custom_camera_text(self):
+        prompt = pipeline.end_keyframe_prompt(
+            {
+                "keyframe_camera_continuity": True,
+                "keyframe_camera_prompt": "same lens please",
+                "keyframe_reanchor_every": 0,
+            },
+            "p",
+            0,
+        )
+        self.assertTrue(prompt.endswith("same lens please"))
+
+    def _free_end_config(self):
+        config = copy.deepcopy(self.config)
+        config["segments"] = [
+            {
+                "seconds": 15,
+                "two_pass": False,
+                "hold_composition": False,
+                "free_end": True,
+                "prompt": "she walks all the way to the bench",
+            },
+            {
+                "seconds": 6,
+                "two_pass": False,
+                "hold_composition": False,
+                "prompt": "she sits down",
+            },
+        ]
+        return config
+
+    def test_video_only_options_do_not_invalidate_the_keyframes(self):
+        spec = {"seconds": 15, "two_pass": True, "prompt": "she walks"}
+        base = dict(self.config)
+        base.pop("video_camera_continuity", None)
+        base.pop("video_camera_prompt", None)
+        toggled = dict(base)
+        toggled["video_camera_continuity"] = True
+        toggled["video_camera_prompt"] = "Tracking shot, keep the full body."
+        self.assertEqual(
+            pipeline.generation_signature(base, spec, "kf"),
+            pipeline.generation_signature(toggled, spec, "kf"),
+        )
+        # ... but the segment prompt itself does change the video signature.
+        self.assertNotEqual(
+            pipeline.generation_signature(base, spec, "kf"),
+            pipeline.generation_signature(
+                base, pipeline.video_prompt_spec(toggled, spec), "kf"
+            ),
+        )
+
+    def test_video_prompt_carries_the_camera_note_only_when_enabled(self):
+        spec = {"seconds": 15, "two_pass": True, "prompt": "she walks to the bench"}
+        off = {"video_camera_continuity": False}
+        self.assertIs(pipeline.video_prompt_spec(off, spec), spec)
+
+        on = {
+            "video_camera_continuity": True,
+            "video_camera_prompt": "Tracking shot, keep the full body in frame.",
+        }
+        patched = pipeline.video_prompt_spec(on, spec)
+        self.assertEqual(
+            patched["prompt"],
+            "she walks to the bench\n\nTracking shot, keep the full body in frame.",
+        )
+        # The original spec is untouched, so the keyframe prompt is unaffected.
+        self.assertEqual(spec["prompt"], "she walks to the bench")
+        self.assertTrue(patched["two_pass"])
+
+        # Applying it twice must not stack the note.
+        again = pipeline.video_prompt_spec(on, patched)
+        self.assertEqual(again["prompt"], patched["prompt"])
+
+        # An empty note leaves the prompt alone.
+        self.assertIs(
+            pipeline.video_prompt_spec(
+                {"video_camera_continuity": True, "video_camera_prompt": "  "}, spec
+            ),
+            spec,
+        )
+
+    def test_free_end_segment_skips_the_end_keyframe(self):
+        config = self._free_end_config()
+        specs = pipeline.segment_specs(config)
+        self.assertTrue(specs[0]["free_end"])
+        self.assertFalse(specs[1]["free_end"])
+
+        calls = []
+
+        def fake_keyframe(
+            config, segment, seed, first_frame=None, prompt=None, label=None
+        ):
+            number = len(calls)
+            first = self.temp / f"free_first_{number}.png"
+            last = self.temp / f"free_last_{number}.png"
+            first.write_bytes(b"first")
+            last.write_bytes(b"last")
+            calls.append((first_frame, prompt))
+            return {
+                "prompt_id": f"free-{number}",
+                "first_frame": str(first),
+                "last_frame": str(last),
+            }
+
+        state = {}
+        with mock.patch.object(pipeline, "run_keyframe", side_effect=fake_keyframe):
+            keyframes = pipeline.ensure_keyframe_chain(
+                config, specs, state, self.temp / "free_state.json"
+            )
+
+        # Only the opening start frame is rendered: no end draft at all.
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(keyframes[0]["end_frame"])
+        self.assertEqual(keyframes[0]["end_source"], "free")
+        self.assertTrue(keyframes[0]["free_end"])
+        # The next segment cannot inherit a frame from a free end.
+        self.assertIsNone(keyframes[1]["start_frame"])
+        self.assertEqual(keyframes[1]["start_source"], "pending-video")
+        self.assertIsNone(keyframes[1]["end_frame"])
+
+    def test_free_end_hands_its_rendered_tail_to_the_next_segment(self):
+        config = self._free_end_config()
+        specs = pipeline.segment_specs(config)
+        tail = self.temp / "seg1_last_frame.png"
+        tail.write_bytes(b"tail")
+        state = {
+            "segments": [
+                {
+                    "segment": 1,
+                    "video": str(self.temp / "seg1.mp4"),
+                    "last_frame": str(tail),
+                    "next_frame": str(tail),
+                }
+            ]
+        }
+
+        def fake_keyframe(
+            config, segment, seed, first_frame=None, prompt=None, label=None
+        ):
+            first = self.temp / "only_start.png"
+            first.write_bytes(b"first")
+            return {
+                "prompt_id": "opening",
+                "first_frame": str(first),
+                "last_frame": str(self.temp / "opening_last.png"),
+            }
+
+        with mock.patch.object(pipeline, "run_keyframe", side_effect=fake_keyframe):
+            keyframes = pipeline.ensure_keyframe_chain(
+                config, specs, state, self.temp / "free_tail_state.json"
+            )
+
+        self.assertEqual(keyframes[1]["start_frame"], str(tail))
+        self.assertEqual(keyframes[1]["start_source"], "from-video")
+        # Once the start is known, the next segment gets a real end keyframe.
+        self.assertIsNotNone(keyframes[1]["end_frame"])
+
+    def test_missing_keyframes_ignores_free_and_pending_frames(self):
+        tail = self.temp / "tail.png"
+        tail.write_bytes(b"tail")
+        state = {
+            "keyframes": [
+                {
+                    "segment": 1,
+                    "start_frame": tail.as_posix(),
+                    "end_frame": None,
+                    "start_source": "ai",
+                    "end_source": "free",
+                },
+                {
+                    "segment": 2,
+                    "start_frame": None,
+                    "end_frame": None,
+                    "start_source": "pending-video",
+                    "end_source": "pending-video",
+                },
+            ]
+        }
+        self.assertEqual(pipeline.missing_keyframes(state, 2), [])
+
+    def test_missing_keyframes_lists_absent_segments(self):
+        existing = self.temp / "exists.png"
+        existing.write_bytes(b"frame")
+        state = {
+            "keyframes": [
+                {
+                    "segment": 1,
+                    "start_frame": existing.as_posix(),
+                    "end_frame": existing.as_posix(),
+                },
+                {
+                    "segment": 2,
+                    "start_frame": (self.temp / "gone.png").as_posix(),
+                    "end_frame": existing.as_posix(),
+                },
+            ]
+        }
+        self.assertEqual(pipeline.missing_keyframes(state, 3), [2, 3])
+        self.assertEqual(pipeline.missing_keyframes(state, 1), [])
+
+    def test_job_keyframes_expose_pending_reroll_state(self):
+        frame = self.temp / "kf.png"
+        frame.write_bytes(b"frame")
+        job_dir = self.temp / "job"
+        job_dir.mkdir()
+        (job_dir / ".state.json").write_text(
+            json.dumps(
+                {
+                    "keyframes": [
+                        {
+                            "segment": 1,
+                            "start_frame": frame.as_posix(),
+                            "end_frame": frame.as_posix(),
+                            "start_sha1": "aaaaaaaa1111",
+                            "end_sha1": "",
+                        }
+                    ],
+                    "keyframe_attempts": {"1": {"end": 3}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        keyframes = director._job_keyframes(job_dir, "job")
+        self.assertEqual(len(keyframes), 1)
+        item = keyframes[0]
+        self.assertFalse(item["start_pending"])
+        self.assertTrue(item["end_pending"])
+        self.assertEqual(item["start_attempt"], 0)
+        self.assertEqual(item["end_attempt"], 3)
+        # The URL carries a version token so a regenerated or replaced frame is
+        # never served from the browser cache.
+        self.assertIn("?v=", item["start_url"])
+        self.assertIn("?v=", item["end_url"])
+        self.assertNotEqual(item["start_url"], item["end_url"])
+
+    def test_previous_video_tail_prefers_the_rendered_last_frame(self):
+        tail = self.temp / "prev_tail.png"
+        tail.write_bytes(b"tail")
+        state = {
+            "segments": [
+                {"segment": 1, "last_frame": str(self.temp / "gone.png")},
+                {"segment": 2, "last_frame": str(tail)},
+            ]
+        }
+        # Asking for segment 3 looks at the record of segment 2.
+        self.assertEqual(
+            pipeline.previous_video_tail(state, 3), str(tail)
+        )
+        # Missing records / files return None so the caller can raise.
+        self.assertIsNone(pipeline.previous_video_tail(state, 2))
+        self.assertIsNone(pipeline.previous_video_tail({}, 2))
+
+    def _write_job_keyframes(self, count=2, *, pending=()):
+        """Create a job dir whose keyframe frames all exist on disk."""
+        job_dir = self.temp / f"job_{count}_{len(pending)}"
+        job_dir.mkdir(exist_ok=True)
+        records = []
+        for index in range(1, count + 1):
+            frame = job_dir / f"kf{index}.png"
+            frame.write_bytes(f"frame{index}".encode("utf-8"))
+            records.append(
+                {
+                    "segment": index,
+                    "start_frame": frame.as_posix(),
+                    "end_frame": frame.as_posix(),
+                    "start_sha1": "" if ("start", index) in pending else f"s{index}",
+                    "end_sha1": "" if ("end", index) in pending else f"e{index}",
+                }
+            )
+        (job_dir / ".state.json").write_text(
+            json.dumps({"keyframes": records}), encoding="utf-8"
+        )
+        return job_dir
+
+    def test_job_keyframes_keeps_free_end_cards_with_a_placeholder(self):
+        start = self.temp / "free_start.png"
+        start.write_bytes(b"start")
+        job_dir = self.temp / "free_job"
+        job_dir.mkdir()
+        (job_dir / ".state.json").write_text(
+            json.dumps(
+                {
+                    "keyframes": [
+                        {
+                            "segment": 1,
+                            "start_frame": start.as_posix(),
+                            "end_frame": None,
+                            "start_sha1": "s1",
+                            "end_sha1": "free:s1",
+                            "start_source": "ai",
+                            "end_source": "free",
+                            "free_end": True,
+                        },
+                        {
+                            "segment": 2,
+                            "start_frame": None,
+                            "end_frame": None,
+                            "start_sha1": "pending-video:2",
+                            "end_sha1": "pending-video:end:2",
+                            "start_source": "pending-video",
+                            "end_source": "pending-video",
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        keyframes = director._job_keyframes(job_dir, "job")
+        self.assertEqual(len(keyframes), 2)
+        first, second = keyframes
+        self.assertTrue(first["start_available"])
+        self.assertFalse(first["end_available"])
+        self.assertIsNone(first["end_url"])
+        self.assertEqual(first["end_source"], "free")
+        self.assertTrue(first["free_end"])
+        self.assertFalse(second["start_available"])
+        self.assertIsNone(second["start_url"])
+        self.assertEqual(second["start_source"], "pending-video")
+
+    def test_keyframes_ready_requires_every_frame_on_disk(self):
+        job_dir = self._write_job_keyframes(2)
+        keyframes = director._job_keyframes(job_dir, "job")
+        self.assertTrue(director._keyframes_ready(keyframes, 2))
+        # Fewer frames than the storyboard asks for is not "ready".
+        self.assertFalse(director._keyframes_ready(keyframes, 3))
+        self.assertFalse(director._keyframes_ready([], 2))
+
+        pending_dir = self._write_job_keyframes(2, pending=[("end", 2)])
+        pending = director._job_keyframes(pending_dir, "job")
+        self.assertFalse(director._keyframes_ready(pending, 2))
+
+    def test_segment_total_falls_back_to_state_then_keyframes(self):
+        keyframes = [{"index": 1}, {"index": 2}]
+        self.assertEqual(director._segment_total({"segments": [{}, {}]}, {}, keyframes), 2)
+        self.assertEqual(
+            director._segment_total({}, {"review_segments": 5}, keyframes), 5
+        )
+        self.assertEqual(
+            director._segment_total({}, {"keyframe_total": 4}, keyframes), 4
+        )
+        self.assertEqual(director._segment_total({}, {}, keyframes), 2)
+        self.assertEqual(director._segment_total({}, {}, []), 0)
+
+    def test_review_state_offers_resume_when_keyframes_are_complete(self):
+        # The reported bug: a reloaded job that died while rendering videos has
+        # a complete keyframe set but awaiting_review == False. It must still
+        # offer a button instead of leaving the panel with no action.
+        job_dir = self._write_job_keyframes(2)
+        keyframes = director._job_keyframes(job_dir, "job")
+        status = {"status": "interrupted"}
+        self.assertEqual(
+            director._review_state(status, {}, keyframes, 2, 0), "resume"
+        )
+        # Legacy jobs (no awaiting_review flag at all) behave the same way.
+        self.assertEqual(
+            director._review_state({"status": "completed"}, {}, keyframes, 2, 1),
+            "resume",
+        )
+        # Nothing left to render -> no banner.
+        self.assertIsNone(
+            director._review_state({"status": "completed"}, {}, keyframes, 2, 2)
+        )
+        # A live worker must never be told to continue.
+        self.assertIsNone(
+            director._review_state({"status": "running"}, {}, keyframes, 2, 0)
+        )
+
+    def test_review_state_keeps_the_gate_and_offers_keyframe_recovery(self):
+        job_dir = self._write_job_keyframes(2)
+        keyframes = director._job_keyframes(job_dir, "job")
+        self.assertEqual(
+            director._review_state(
+                {"status": "awaiting_review"},
+                {"awaiting_review": True},
+                keyframes,
+                2,
+                0,
+            ),
+            "gate",
+        )
+        # Failed before any keyframe existed -> offer to finish the keyframes.
+        self.assertEqual(
+            director._review_state({"status": "failed"}, {}, [], 3, 0),
+            "keyframes",
+        )
+        # A job that never ran keeps whatever ComfyUI's own queue button does.
+        self.assertIsNone(
+            director._review_state({"status": "unknown"}, {}, [], 3, 0)
+        )
+
+    def test_chained_start_frame_is_served_from_the_previous_end(self):
+        first_start = self.temp / "s1.png"
+        shared = self.temp / "shared.png"
+        last = self.temp / "e2.png"
+        for path in (first_start, shared, last):
+            path.write_bytes(path.name.encode("utf-8"))
+        job_dir = self.temp / "job"
+        job_dir.mkdir()
+        (job_dir / ".state.json").write_text(
+            json.dumps(
+                {
+                    "keyframes": [
+                        {
+                            "segment": 1,
+                            "start_frame": first_start.as_posix(),
+                            "end_frame": shared.as_posix(),
+                            "start_sha1": "s1sig",
+                            "end_sha1": "sharedsig",
+                            "continue_from_previous": False,
+                        },
+                        {
+                            "segment": 2,
+                            "start_frame": shared.as_posix(),
+                            "end_frame": last.as_posix(),
+                            "start_sha1": "sharedsig",
+                            "end_sha1": "endsig",
+                            "continue_from_previous": True,
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        keyframes = director._job_keyframes(job_dir, "job")
+        self.assertEqual(len(keyframes), 2)
+        self.assertFalse(keyframes[0]["start_inherited"])
+        # Segment 2's start frame is literally segment 1's end frame, so it must
+        # be served through that segment: re-rendering the upstream end frame
+        # then updates this card immediately instead of leaving a stale copy.
+        self.assertTrue(keyframes[1]["start_inherited"])
+        self.assertEqual(keyframes[1]["start_url"], keyframes[0]["end_url"])
+
+    def test_non_chained_start_frame_keeps_its_own_media_url(self):
+        own_start = self.temp / "own.png"
+        own_end = self.temp / "own_end.png"
+        for path in (own_start, own_end):
+            path.write_bytes(path.name.encode("utf-8"))
+        job_dir = self.temp / "job"
+        job_dir.mkdir()
+        (job_dir / ".state.json").write_text(
+            json.dumps(
+                {
+                    "keyframes": [
+                        {
+                            "segment": 1,
+                            "start_frame": own_start.as_posix(),
+                            "end_frame": own_end.as_posix(),
+                            "start_sha1": "asig",
+                            "end_sha1": "bsig",
+                            "continue_from_previous": False,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        item = director._job_keyframes(job_dir, "job")[0]
+        self.assertFalse(item["start_inherited"])
+        self.assertIn("/keyframe/1/start", item["start_url"])
+
+    def test_cut_boundary_keeps_both_frames_independent(self):
+        first_start = self.temp / "cut_s1.png"
+        first_end = self.temp / "cut_e1.png"
+        cut_start = self.temp / "cut_s2.png"
+        cut_end = self.temp / "cut_e2.png"
+        for path in (first_start, first_end, cut_start, cut_end):
+            path.write_bytes(path.name.encode("utf-8"))
+        job_dir = self.temp / "job"
+        job_dir.mkdir()
+        (job_dir / ".state.json").write_text(
+            json.dumps(
+                {
+                    "keyframes": [
+                        {
+                            "segment": 1,
+                            "start_frame": first_start.as_posix(),
+                            "end_frame": first_end.as_posix(),
+                            "start_sha1": "s1",
+                            "end_sha1": "e1",
+                            "continue_from_previous": False,
+                        },
+                        {
+                            "segment": 2,
+                            "start_frame": cut_start.as_posix(),
+                            "end_frame": cut_end.as_posix(),
+                            "start_sha1": "s2",
+                            "end_sha1": "e2",
+                            "continue_from_previous": False,
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        keyframes = director._job_keyframes(job_dir, "job")
+        # A cut renders its own opening frame; it must never be folded into the
+        # previous segment's end frame.
+        self.assertFalse(keyframes[1]["chain"])
+        self.assertFalse(keyframes[1]["start_inherited"])
+        self.assertNotEqual(keyframes[1]["start_url"], keyframes[0]["end_url"])
+        self.assertIn("/keyframe/2/start", keyframes[1]["start_url"])
+
+    def test_director_node_exposes_stage_controls(self):
+        inputs = director.H3LongVideoDirector.INPUT_TYPES()
+        self.assertIn("stage", inputs["optional"])
+        self.assertIn("resume_job_id", inputs["optional"])
+        self.assertEqual(
+            inputs["optional"]["stage"][0],
+            [director.STAGE_REVIEW, director.STAGE_ALL, director.STAGE_VIDEOS],
+        )
+        self.assertEqual(
+            director.STAGE_TO_FLAG[director.STAGE_REVIEW],
+            "keyframes",
+        )
+        self.assertEqual(director.STAGE_TO_FLAG[director.STAGE_VIDEOS], "videos")
+        self.assertEqual(director.STAGE_TO_FLAG[director.STAGE_ALL], "all")
+
+    def test_director_workflow_carries_the_stage_widget(self):
+        workflow = json.loads(
+            (REPO / "example_workflows" / "H3-Long-Video-Director.json").read_text(
                 encoding="utf-8"
             )
         )
-        self.assertEqual(len(storyboard["segments"]), 12)
-        self.assertEqual(
-            sum(segment["seconds"] for segment in storyboard["segments"]),
-            60.0,
+        node = next(
+            item
+            for item in workflow["nodes"]
+            if item["type"] == "H3LongVideoDirector"
         )
-        self.assertTrue(
-            all(segment["two_pass"] is False for segment in storyboard["segments"])
-        )
-        self.assertFalse(storyboard["segments"][1]["hold_composition"])
-        self.assertTrue(
-            all("<女主角>" in segment["prompt"] for segment in storyboard["segments"])
-        )
-        self.assertIn("浅灰色居家短袖", storyboard["segments"][0]["prompt"])
-        for segment in storyboard["segments"][1:]:
-            self.assertNotIn("浅蓝色短款针织开衫", segment["prompt"])
-            self.assertNotIn("深棕色高腰百褶裙", segment["prompt"])
+        self.assertEqual(node["widgets_values"][15], director.STAGE_REVIEW)
+        self.assertEqual(node["widgets_values"][16], "")
 
     def test_director_workflow_links_reference_images(self):
         workflow = json.loads(
@@ -480,6 +1236,95 @@ class GraphTests(unittest.TestCase):
             director_node["widgets_values"][13], self.config["base_seed"]
         )
         self.assertTrue(director_node["widgets_values"][14])
+
+    def test_single_clip_graph_uses_fixed_first_last_and_nine_references(self):
+        config = copy.deepcopy(self.config)
+        config["reference_images"] = [
+            f"reference_{index}.png" for index in range(1, 10)
+        ]
+        for name in config["reference_images"]:
+            (self.temp / name).write_bytes(b"test image placeholder")
+        graph = pipeline.build_graph(
+            config,
+            "single prompt",
+            config["reference_images"][0],
+            config["reference_images"][1],
+            123,
+            5,
+            False,
+        )
+        self.assertEqual(graph["1"]["class_type"], "VHS_LoadImagePath")
+        self.assertEqual(graph["11"]["class_type"], "VHS_LoadImagePath")
+        self.assertEqual(graph["30"]["inputs"]["first_frame"], ["1", 0])
+        self.assertEqual(graph["30"]["inputs"]["last_frame"], ["11", 0])
+        for index in range(9):
+            self.assertEqual(
+                graph["30"]["inputs"][f"ref_images.ref_image_{index}"],
+                [str(2 + index), 0],
+            )
+
+    def test_single_clip_runner_skips_keyframe_generation(self):
+        config = copy.deepcopy(self.config)
+        config["single_clip"] = True
+        config["fixed_first_frame"] = (self.temp / "first.png").as_posix()
+        config["fixed_last_frame"] = (self.temp / "last.png").as_posix()
+        segment = pipeline.segment_specs(config)[0]
+        state_path = self.temp / "single_state.json"
+        expected = {
+            "segment": 1,
+            "prompt_id": "1234567890",
+            "video": "output.mp4",
+            "seconds": 5,
+            "two_pass": False,
+        }
+        with mock.patch.object(
+            pipeline,
+            "run_segment",
+            return_value=dict(expected),
+        ) as run_segment, mock.patch.object(
+            pipeline,
+            "normalize_video_resolution",
+            side_effect=lambda config, video, prompt_id: Path(video),
+        ):
+            record = pipeline.run_single_clip(config, segment, state_path)
+
+        run_segment.assert_called_once()
+        args = run_segment.call_args.args
+        self.assertEqual(args[3], config["fixed_first_frame"])
+        self.assertEqual(args[4], config["fixed_last_frame"])
+        self.assertEqual(record["start_frame"], config["fixed_first_frame"])
+        self.assertEqual(record["end_frame"], config["fixed_last_frame"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(state["phase"], "single_clip")
+        self.assertEqual(len(state["segments"]), 1)
+
+    def test_single_clip_node_has_no_storyboard_json_and_exposes_nine_refs(self):
+        inputs = director.H3SingleClipDirector.INPUT_TYPES()
+        self.assertIn("first_frame", inputs["required"])
+        self.assertIn("last_frame", inputs["required"])
+        self.assertIn("reference_1", inputs["required"])
+        self.assertNotIn("storyboard", inputs["required"])
+        for index in range(2, 10):
+            self.assertIn(f"reference_{index}", inputs["optional"])
+
+    def test_single_clip_workflow_is_direct_prompt_only(self):
+        workflow = build_director_workflow.build_single_clip_workflow(self.config)
+        node = next(
+            item
+            for item in workflow["nodes"]
+            if item["type"] == "H3SingleClipDirector"
+        )
+        images = [
+            item for item in workflow["nodes"] if item["type"] == "LoadImage"
+        ]
+        self.assertEqual(len(images), 11)
+        self.assertEqual(len(workflow["links"]), 4)
+        self.assertEqual(node["inputs"][0]["name"], "first_frame")
+        self.assertEqual(node["inputs"][1]["name"], "last_frame")
+        self.assertEqual(node["inputs"][10]["name"], "reference_9")
+        self.assertNotIn("segments", node["widgets_values"][0])
+        self.assertEqual(node["widgets_values"][1], 5.0)
+        self.assertFalse(node["widgets_values"][10])
 
 
 if __name__ == "__main__":

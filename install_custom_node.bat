@@ -27,5 +27,6 @@ if errorlevel 1 (
 )
 
 echo Installed. Restart ComfyUI, then open:
-echo workflows\H3-Long-Video-Director.json
+echo H3-Single-Clip-FirstLastRefs.json (single prompt, fixed first/last frames)
+echo H3-Long-Video-Director.json (multi-segment storyboard, optional)
 pause
