@@ -18,3 +18,6 @@ __pycache__/
 
 # 一次性排障脚本（_ 开头）
 scripts/_*.py
+
+# 实验对照截图，不入库
+assets/lab_*.png
