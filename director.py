@@ -1966,13 +1966,15 @@ class H3LongVideoDirector:
                     "FLOAT",
                     {"default": 0.2, "min": 0.05, "max": 4.0, "step": 0.01},
                 ),
+                # 和 resolution 的默认档保持一致（832x1472 = 一采 416x736 × 二采 2 倍），
+                # 免得下拉显示 832、两个 INT 却写着 720 看起来自相矛盾。
                 "final_width": (
                     "INT",
-                    {"default": 720, "min": 256, "max": 4096, "step": 8},
+                    {"default": 832, "min": 256, "max": 4096, "step": 8},
                 ),
                 "final_height": (
                     "INT",
-                    {"default": 1280, "min": 256, "max": 4096, "step": 8},
+                    {"default": 1472, "min": 256, "max": 4096, "step": 8},
                 ),
                 "two_pass_mode": (
                     ["跟随每段 JSON", "全部一采", "全部二采"],
@@ -2317,13 +2319,15 @@ class H3SingleClipDirector:
                     "FLOAT",
                     {"default": 0.2, "min": 0.05, "max": 4.0, "step": 0.01},
                 ),
+                # 默认值必须自己就合法：选「自定义」时用的就是这两个数，
+                # 以前是 704x1216（比例 0.5789，跟 9:16 差 2.9%），不动数字直接报错。
                 "final_width": (
                     "INT",
-                    {"default": 704, "min": 256, "max": 4096, "step": 8},
+                    {"default": 832, "min": 256, "max": 4096, "step": 8},
                 ),
                 "final_height": (
                     "INT",
-                    {"default": 1216, "min": 256, "max": 4096, "step": 8},
+                    {"default": 1472, "min": 256, "max": 4096, "step": 8},
                 ),
                 "ref_image_size": (
                     ["match", "max"],
