@@ -944,6 +944,25 @@ DEFAULT_QWEN_KEYFRAME_SUFFIX = (
     "真实摄影，自然皮肤纹理，无文字水印。"
 )
 
+# 关键帧的负面提示词（config: keyframe_qwen_negative_prompt）。cfg>1 时
+# KSampler 才会读 negative，所以这串要配合 keyframe_qwen_cfg>=2 才有意义；
+# cfg=1.0（蒸馏 LoRA 档）时它整个被跳过。措辞是用户 2026-11-03 给的清单，
+# 后面补了几类 Qwen 编辑模型常见的翻车：文字水印、多人、脸部变形、画面发糊。
+DEFAULT_KEYFRAME_NEGATIVE_PROMPT = (
+    "姿势不符，动作扭曲，肢体错位，手部畸形，手指异常，多余的手臂，多余的腿，"
+    "服装不符，凭空添加的帽子，凭空添加的头饰，多余的包包，凭空出现的手袋，"
+    "多余的外套，多余的配饰，未指定的饰品，串色，布料穿模，"
+    "文字，水印，logo，画面模糊，第二个人，多余的人物，人群，"
+    "脸部变形，五官扭曲，多人同框"
+)
+
+
+def qwen_keyframe_negative_prompt(config):
+    value = config.get("keyframe_qwen_negative_prompt")
+    if value is None:
+        return DEFAULT_KEYFRAME_NEGATIVE_PROMPT
+    return str(value).strip()
+
 # 三条全局锁，和 skill 的 Q21_FIRST_TMPL / Q21_LAST_TMPL 用同一套措辞。
 # storyboard 里的一句话很难同时压住头发走向、人物大小和色温，模型每次总会
 # 在其中一项上漂：头发散开、人物被推近、白背心发黄或整体偏冷。所以单独写成
@@ -1143,7 +1162,7 @@ def build_qwen_keyframe_graph(config, backend, prompt, canvas, seed, preset=None
             "TextEncodeQwenImageEditPlus",
             clip=["24", 0],
             vae=["25", 0],
-            prompt="",
+            prompt=qwen_keyframe_negative_prompt(config),
         )
         model = [model_src, 0]
         vae = ["25", 0]
@@ -1244,7 +1263,7 @@ def build_qwen_keyframe_graph(config, backend, prompt, canvas, seed, preset=None
             clip=["20", 0],
             vae=["21", 0],
             prompt=prompt,
-            negative_prompt="",
+            negative_prompt=qwen_keyframe_negative_prompt(config),
             resolution=0,
             **encoder_images,
         )

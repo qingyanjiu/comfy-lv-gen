@@ -121,6 +121,8 @@
   "tail_guard_frames": 2,
   "keyframe_locks": true,
   "keyframe_qwen_megapixels": 1.05,
+  "keyframe_qwen_cfg": 3.0,
+  "keyframe_qwen_negative_prompt": "姿势不符，动作扭曲，肢体错位，手部畸形，手指异常，多余的手臂，多余的腿，服装不符，凭空添加的帽子，凭空添加的头饰，多余的包包，凭空出现的手袋，多余的外套，多余的配饰，未指定的饰品，串色，布料穿模，文字，水印，logo，画面模糊，第二个人，多余的人物，人群，脸部变形，五官扭曲，多人同框",
   "resolution_presets": {
     "832x1472（9:16 默认）": [
       832,

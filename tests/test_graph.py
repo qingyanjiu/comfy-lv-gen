@@ -1540,7 +1540,15 @@ class GraphTests(unittest.TestCase):
             ]
             self.assertTrue(encoders, backend)
             self.assertEqual(graph["30"]["inputs"]["steps"], steps)
-            self.assertEqual(graph["30"]["inputs"]["cfg"], 1.0)
+            # cfg 走 config：keyframe_qwen_cfg 未设时用预设值（蒸馏档 1.0）。
+            self.assertEqual(
+                graph["30"]["inputs"]["cfg"],
+                float(
+                    self.config.get("keyframe_qwen_cfg")
+                    if self.config.get("keyframe_qwen_cfg") is not None
+                    else 1.0
+                ),
+            )
             loras = [
                 node
                 for node in graph.values()
