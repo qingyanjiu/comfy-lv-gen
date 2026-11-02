@@ -11,7 +11,7 @@
   "steps": 6,
   "sampler": "res_multistep",
   "scheduler": "simple",
-  "two_pass_default": true,
+  "two_pass_default": false,
   "two_pass_steps": 6,
   "two_pass_denoise": 0.3,
   "two_pass_scheduler": "simple",
