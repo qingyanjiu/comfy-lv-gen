@@ -1,0 +1,20 @@
+# 运行产物：状态、预览、备份，都不入库
+*.state.json
+*.state.json.*bak
+*.bak*
+*.director.json
+*.director.workflow.json
+*.prompts.html
+*.prexpo.png
+*.log
+
+# 成片与素材不进 git（体积大，都在 ComfyUI-Shared/output 下）
+*.mp4
+*.mov
+
+backups/
+__pycache__/
+*.pyc
+
+# 一次性排障脚本（_ 开头）
+scripts/_*.py
