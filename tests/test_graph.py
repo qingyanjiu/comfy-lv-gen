@@ -1814,6 +1814,74 @@ class KeyframeAlignTests(unittest.TestCase):
         missing = (self.temp / "nope.png").as_posix()
         self.assertEqual(pipeline.align_frame_to_target(self.config, missing), missing)
 
+    @staticmethod
+    def _write_video_with_still_tail(path, moving=30, still=40, fps=24, size=(64, 64)):
+        import cv2
+        import numpy as np
+
+        width, height = size
+        # 高对比棋盘格 + 整帧平移：动作段帧差 ≈ 30+，远超静止阈值 1.0；
+        # 小圆点在 64x64 下移动的整体 diff 不足 1.0，测不出区别。
+        grid_y, grid_x = np.mgrid[0:height, 0:width]
+        base = np.where(((grid_x // 8 + grid_y // 8) % 2) == 0, 255, 0).astype(np.uint8)
+        base = np.stack([base] * 3, axis=-1)
+        writer = cv2.VideoWriter(
+            str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size
+        )
+        for i in range(moving):
+            writer.write(np.roll(base, i * 2, axis=1))
+        for _ in range(still):
+            writer.write(base)
+        writer.release()
+        return moving + still
+
+    def test_static_tail_frames_counts_the_frozen_ending(self):
+        video = self.temp / "clip.mp4"
+        total = self._write_video_with_still_tail(video)
+        tail, frames = pipeline.static_tail_frames(video)
+        self.assertEqual(frames, total)
+        self.assertGreaterEqual(tail, 35)
+        self.assertLessEqual(tail, 45)
+
+    def test_trim_static_tail_cuts_only_the_frozen_ending(self):
+        video = self.temp / "clip.mp4"
+        total = self._write_video_with_still_tail(video)
+        config = {
+            "fps": 24,
+            "trim_static_tail": True,
+            "trim_static_tail_threshold": 1.0,
+            "trim_static_tail_keep": 6,
+            "trim_static_tail_min_seconds": 0.5,
+        }
+        trimmed = pipeline.trim_static_tail(config, [(video.as_posix(), total / 24.0)], self.temp)
+        self.assertEqual(len(trimmed), 1)
+        path, seconds = trimmed[0]
+        self.assertTrue(path.endswith(".trim.mp4"))
+        # 动作 30 帧 + keep 6 帧 = 36 帧（约 1.5s），绝不能剪进动作区。
+        self.assertGreater(seconds, 30 / 24.0)
+        self.assertLess(seconds, 40 / 24.0)
+
+    def test_trim_static_tail_disabled_or_healthy_video_is_untouched(self):
+        video = self.temp / "clip.mp4"
+        total = self._write_video_with_still_tail(video, moving=60, still=4)
+        playlist = [(video.as_posix(), total / 24.0)]
+        config = {"fps": 24, "trim_static_tail": True}
+        # 只静 4 帧 < 0.5s 门槛 → 原样返回
+        self.assertEqual(pipeline.trim_static_tail(config, playlist, self.temp), playlist)
+        config["trim_static_tail"] = False
+        video2 = self.temp / "clip2.mp4"
+        self._write_video_with_still_tail(video2)
+        playlist2 = [(video2.as_posix(), 70 / 24.0)]
+        self.assertEqual(pipeline.trim_static_tail(config, playlist2, self.temp), playlist2)
+
+    def test_trim_options_never_invalidate_the_generation_cache(self):
+        base = {"fps": 24, "prompt": "x", "segments": []}
+        with_extra = dict(base, trim_static_tail=True, trim_static_tail_keep=6)
+        self.assertEqual(
+            pipeline.generation_signature(base, {}, "pid"),
+            pipeline.generation_signature(with_extra, {}, "pid"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
