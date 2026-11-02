@@ -114,5 +114,12 @@
   "keyframe_outpaint_lora": "Qwen-功能2.1\\Qwen21-图像扩展qwen-image-2.1-outpaint-v2.safetensors",
   "tail_guard_frames": 2,
   "keyframe_locks": true,
-  "keyframe_qwen_megapixels": 1.05
+  "keyframe_qwen_megapixels": 1.05,
+  "resolution_presets": {
+    "832x1472（9:16 默认）": [832, 1472],
+    "720x1280（9:16 标清）": [720, 1280],
+    "1080x1920（9:16 高清）": [1080, 1920],
+    "480x854（9:16 省显存）": [480, 854]
+  },
+  "resolution_default": "832x1472（9:16 默认）"
 }
