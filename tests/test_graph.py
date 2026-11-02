@@ -1862,9 +1862,36 @@ class KeyframeAlignTests(unittest.TestCase):
         self.assertEqual(len(compacted), 1)
         path, seconds = compacted[0]
         self.assertTrue(path.endswith(".compact.mp4"))
-        # 动作 30 帧 + 尾部保留 6 帧 = 36 帧（1.5s）；静止区只许压，不许吃动作。
-        self.assertGreater(seconds, 33 / 24.0)
-        self.assertLess(seconds, 40 / 24.0)
+        # 动作 30 帧一帧不动 + 尾部保留 3 帧 = 33 帧（约 1.4s）；静止区只许压，不许吃动作。
+        self.assertGreater(seconds, 30 / 24.0)
+        self.assertLessEqual(seconds, 34 / 24.0)
+
+    def test_thin_creep_marks_slow_regions_but_spares_action(self):
+        """缓动抽稀的纯逻辑：p99 在 9~16 之间按 2 倍抽，动作区一帧不动。
+
+        想用合成视频做端到端测不出来：mp4v 会把低对比度移动边缘抹平到
+        p99≈1，整段被判成静止。所以这里直接喂分数序列。
+        """
+        import numpy as np
+
+        # 全程缓动（p99=12：在动但慢）：50 帧抽成 25 帧
+        keep = pipeline.thin_creep(
+            np.ones(50, bool), np.full(49, 12.0), [],
+            threshold=16.0, factor=2, min_frames=7,
+        )
+        self.assertEqual(int(keep.sum()), 25)
+        # 全程真动作（p99=40）：一帧不动
+        keep2 = pipeline.thin_creep(
+            np.ones(50, bool), np.full(49, 40.0), [],
+            threshold=16.0, factor=2, min_frames=7,
+        )
+        self.assertEqual(int(keep2.sum()), 50)
+        # 太短的缓动段（<7 帧）不动，避免在快速动作里挖洞
+        keep3 = pipeline.thin_creep(
+            np.ones(50, bool), np.array([12.0] * 5 + [40.0] * 44), [],
+            threshold=16.0, factor=2, min_frames=7,
+        )
+        self.assertEqual(int(keep3.sum()), 50)
 
     def test_compact_static_skips_frozen_or_disabled_clips(self):
         config = {"fps": 24, "static_compact": True}
