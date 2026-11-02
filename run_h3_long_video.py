@@ -1283,12 +1283,28 @@ def probe_video_size(video):
     return int(streams[0]["width"]), int(streams[0]["height"])
 
 
+def pick_scale_flags(config, src_size, dst_size):
+    """放大时用 bicubic：lanczos 放大低分辨率扩散帧会产生振铃/硬边（观感=锐化过度）。
+    缩小时仍用 lanczos（无过冲问题，锐度更稳）。可用 final_scale_flags 强制指定。"""
+    explicit = config.get("final_scale_flags")
+    if explicit:
+        return str(explicit)
+    try:
+        src_px = int(src_size[0]) * int(src_size[1])
+        dst_px = int(dst_size[0]) * int(dst_size[1])
+    except (TypeError, IndexError, ValueError):
+        return "bicubic"
+    return "bicubic" if dst_px > src_px else "lanczos"
+
+
 def normalize_video_resolution(config, video, prompt_id):
     video = Path(video)
     width = int(config["final_width"])
     height = int(config["final_height"])
-    if probe_video_size(video) == (width, height):
+    src_size = probe_video_size(video)
+    if src_size == (width, height):
         return video
+    flags = pick_scale_flags(config, src_size, (width, height))
 
     output = (
         Path(config.get("final_output_dir", config["comfy_output_dir"]))
@@ -1307,7 +1323,7 @@ def normalize_video_resolution(config, video, prompt_id):
             "-map",
             "0:a:0?",
             "-vf",
-            f"scale={width}:{height}:flags=lanczos",
+            f"scale={width}:{height}:flags={flags}",
             "-r",
             "24",
             "-c:v",
