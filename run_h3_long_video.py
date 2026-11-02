@@ -223,10 +223,14 @@ def generation_signature(config, segment, source_prompt_id):
         # is already captured inside the keyframe prompt it modifies.
         "two_pass_blend_frames",
         "audio_boundary_fade",
-        "trim_static_tail",
-        "trim_static_tail_threshold",
-        "trim_static_tail_keep",
-        "trim_static_tail_min_seconds",
+        "static_compact",
+        "static_compact_threshold",
+        "static_compact_head_keep",
+        "static_compact_mid_keep",
+        "static_compact_tail_keep",
+        "static_compact_min_seconds",
+        "static_compact_mid_min_seconds",
+        "static_compact_min_saving",
         "qa_anchor_ssim_min",
         "qa_face_check",
         "qa_face_sim_min",
@@ -1622,24 +1626,19 @@ def probe_video_size(video):
     return int(streams[0]["width"]), int(streams[0]["height"])
 
 
-def static_tail_frames(video, threshold=1.0, sample_width=208):
-    """数出视频「尾部连续不动」的帧数。
+def frame_motion(video, sample_width=208):
+    """逐帧算两种差异指标，返回长度 ``帧数 - 1`` 的 ``[(mean, p99)]``。
 
-    H3 有个固定毛病：一段 4 秒的提示词里动作 1.8 秒就演完了，剩下 2 秒人物
-    原地定格——首尾帧都对，但观感就是在等。实测（2026-11-02，抬手碰锁骨）：
-
-        seg1 尾部连续静止 53 帧 = 2.21s
-        seg2 尾部连续静止 13 帧 = 0.54s
-
-    拼起来就是中间「停两秒再跳一下」。这里只负责测，裁剪由 ``trim_static_tail``
-    做。返回值 ``(tail_frames, total_frames)``；读不了就抛异常，调用方自己降级。
+    ``mean`` 分不开「真静止」和「缓慢抬手」：实测 seg1 静止段 mean 0.8、抬手段
+    mean 1.1，同一量级。``p99`` 抓的是「少量像素大幅移动」——手/头一动就飙到
+    10~45，纯呼吸/压缩噪声只到 2~8。所以判定静止看 p99，不看 mean。
     """
     import cv2
 
     capture = cv2.VideoCapture(str(video))
     if not capture.isOpened():
         raise RuntimeError(f"cannot open video: {video}")
-    diffs = []
+    scores = []
     previous = None
     try:
         while True:
@@ -1654,13 +1653,39 @@ def static_tail_frames(video, threshold=1.0, sample_width=208):
             )
             gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
             if previous is not None:
-                diffs.append(float(np.abs(gray - previous).mean()))
+                delta = np.abs(gray - previous)
+                scores.append(
+                    (float(delta.mean()), float(np.percentile(delta, 99)))
+                )
             previous = gray
     finally:
         capture.release()
-    if not diffs:
+    if not scores:
         raise RuntimeError(f"no frames decoded: {video}")
+    return scores
 
+
+def frame_diffs(video, sample_width=208):
+    """逐帧灰度均值差（旧口径，给尾部统计用）。
+
+    返回长度为 ``帧数 - 1`` 的列表：``diffs[i]`` 是第 i 帧到第 i+1 帧的平均差。
+    """
+    return [mean for mean, _ in frame_motion(video, sample_width=sample_width)]
+
+
+def static_tail_frames(video, threshold=1.0, sample_width=208):
+    """数出视频「尾部连续不动」的帧数。
+
+    H3 有个固定毛病：一段 4 秒的提示词里动作 1.8 秒就演完了，剩下 2 秒人物
+    原地定格——首尾帧都对，但观感就是在等。实测（2026-11-02，抬手碰锁骨）：
+
+        seg1 尾部连续静止 53 帧 = 2.21s
+        seg2 尾部连续静止 13 帧 = 0.54s
+
+    拼起来就是中间「停两秒再跳一下」。返回值 ``(tail_frames, total_frames)``；
+    读不了就抛异常，调用方自己降级。
+    """
+    diffs = frame_diffs(video, sample_width=sample_width)
     tail = 0
     for value in reversed(diffs):
         if value < threshold:
@@ -1670,96 +1695,220 @@ def static_tail_frames(video, threshold=1.0, sample_width=208):
     return tail, len(diffs) + 1
 
 
-def trim_video_tail(video, keep_frames, fps, out_path):
-    """把 ``video`` 截到前 ``keep_frames`` 帧，音轨同步截断，重编码到 ``out_path``。"""
+def find_static_runs(diffs, threshold=1.0, min_frames=4):
+    """把逐帧差序列里「连续不动」的区间找出来，返回帧号闭区间 ``[(first, last)]``。
+
+    ``diffs[i]`` 是第 i 帧到第 i+1 帧的差；连续 ``k`` 个低差值覆盖 ``k+1`` 帧。
+    """
+    quiet = [value < threshold for value in diffs]
+    runs = []
+    index = 0
+    while index < len(quiet):
+        if not quiet[index]:
+            index += 1
+            continue
+        end = index
+        while end < len(quiet) and quiet[end]:
+            end += 1
+        # diff 的 index..end-1 都低 → 帧 index..end 静止
+        if end - index + 1 >= min_frames:
+            runs.append((index, end))
+        index = end
+    return runs
+
+
+def build_keep_ranges(total, runs, head_keep, mid_keep, tail_keep, mid_min_frames):
+    """按「头/中/尾舍得留几帧」把每段静止区间压短，返回要保留的帧区间列表。
+
+    H3 的动作是断续的：抬手 → 停 → 再继续。只剪尾巴消不掉中段的定格，所以
+    头部和中段一起处理。动作区（非静止区间）一帧不动。
+    """
+    keep = []
+    cursor = 0
+    for first, last in runs:
+        if first > cursor:
+            keep.append((cursor, first))
+        count = last - first + 1
+        if first == 0:
+            allowed = head_keep
+        elif last >= total - 1:
+            allowed = tail_keep
+        elif count >= mid_min_frames:
+            allowed = mid_keep
+        else:
+            allowed = count
+        take = max(1, min(count, allowed)) if allowed > 0 else count
+        keep.append((first, first + take))
+        cursor = last + 1
+    if cursor < total:
+        keep.append((cursor, total))
+    merged = [(a, b) for a, b in keep if b > a]
+    return merged
+
+
+def has_audio_stream(video):
+    """用 ``ffmpeg -i`` 的探测输出判断有没有音轨（环境里未必有独立 ffprobe）。"""
+    result = subprocess.run(
+        [find_ffmpeg(), "-hide_banner", "-i", str(video)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return "Audio:" in (result.stderr or "")
+
+
+def render_keep_ranges(video, ranges, fps, out_path):
+    """只保留 ``ranges`` 里的帧（音轨按同一时间轴同步裁剪），重编码到 ``out_path``。"""
     ffmpeg = find_ffmpeg()
-    seconds = keep_frames / float(fps)
+    audio = has_audio_stream(video)
+    filters = []
+    labels = []
+    for index, (first, last) in enumerate(ranges):
+        filters.append(
+            f"[0:v]trim=start_frame={first}:end_frame={last},"
+            f"setpts=PTS-STARTPTS[v{index}]"
+        )
+        if audio:
+            filters.append(
+                f"[0:a]atrim=start={first / fps:.6f}:end={last / fps:.6f},"
+                f"asetpts=PTS-STARTPTS[a{index}]"
+            )
+            labels.append(f"[v{index}][a{index}]")
+        else:
+            labels.append(f"[v{index}]")
+    filters.append(
+        "".join(labels) + f"concat=n={len(ranges)}:v=1:a={1 if audio else 0}[v][a]"
+        if audio
+        else "".join(labels) + f"concat=n={len(ranges)}:v=1:a=0[v]"
+    )
     command = [
         ffmpeg,
         "-y",
         "-i",
         str(video),
-        "-vf",
-        f"trim=end_frame={keep_frames},setpts=PTS-STARTPTS",
-        "-af",
-        f"atrim=end={seconds:.6f},asetpts=PTS-STARTPTS",
-        "-r",
-        str(int(fps)),
-        "-c:v",
-        "libx264",
-        "-preset",
-        "medium",
-        "-crf",
-        "18",
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-movflags",
-        "+faststart",
-        str(out_path),
+        "-filter_complex",
+        ";".join(filters),
+        "-map",
+        "[v]",
     ]
+    if audio:
+        command.extend(["-map", "[a]"])
+    command.extend(
+        [
+            "-r",
+            str(int(fps)),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            str(out_path),
+        ]
+    )
     subprocess.run(command, check=True, capture_output=True)
 
 
-def trim_static_tail(config, playlist, work_dir):
-    """拼接前把每段尾部的「定格等待」剪掉，返回新的 ``(path, seconds)`` 列表。
+def compact_static(config, playlist, work_dir):
+    """拼接前压掉每段的「定格等待」，返回新的 ``(path, seconds)`` 列表。
 
-    不剪的话，段尾静止会原封不动进入成片：动作演完后人物定格 1–2 秒，然后
-    硬接到下一段，看起来就是「中间卡了一下」。这是拼接观感问题里最容易被
-    误判成转场的一个。
+    H3 的段有个固定毛病：4 秒的提示词，动作 1.8 秒就演完，剩下 2 秒人物原地
+    定格。首尾帧、QA 全过，但拼起来就是「停一秒再接下一段」。实测（2026-11-02）：
+
+        seg1 尾部静止 53 帧(2.21s)；成片里还夹着开头 1.12s、中段 0.83s 的静止。
+
+    只剪尾巴只能消掉一部分，所以头部和中段一起压：静止区间抽稀到 head_keep /
+    mid_keep / tail_keep 帧，动作区一帧不动。因为静止帧之间几乎完全一样，
+    抽稀看不出跳帧，只是节奏不拖了。
     """
-    if not bool(config.get("trim_static_tail", True)):
+    if not bool(config.get("static_compact", True)):
         return playlist
     fps = float(config.get("fps", 24) or 24)
-    threshold = float(config.get("trim_static_tail_threshold", 1.0))
-    keep = max(0, int(config.get("trim_static_tail_keep", 6)))
-    min_frames = int(
-        round(float(config.get("trim_static_tail_min_seconds", 0.5)) * fps)
-    )
-    trimmed = []
+    # 阈值是 p99 口径：< 9 说明整帧没有「局部大幅移动」，即人物真的没动。
+    threshold = float(config.get("static_compact_threshold", 9.0))
+    head_keep = max(0, int(config.get("static_compact_head_keep", 3)))
+    mid_keep = max(1, int(config.get("static_compact_mid_keep", 5)))
+    tail_keep = max(0, int(config.get("static_compact_tail_keep", 6)))
+    min_frames = max(2, int(round(float(config.get("static_compact_min_seconds", 0.4)) * fps)))
+    mid_min_frames = max(2, int(round(float(config.get("static_compact_mid_min_seconds", 0.4)) * fps)))
+    min_saving = max(1, int(round(float(config.get("static_compact_min_saving", 0.3)) * fps)))
+
+    compacted = []
     for index, (path, seconds) in enumerate(playlist, 1):
         try:
-            tail, total = static_tail_frames(path, threshold=threshold)
+            scores = frame_motion(path)
         except Exception as exc:
             print(
-                f"[H3] Segment {index}: static-tail probe skipped "
+                f"[H3] Segment {index}: 静止检测跳过 "
                 f"({type(exc).__name__}: {exc})",
                 flush=True,
             )
-            trimmed.append((path, seconds))
+            compacted.append((path, seconds))
             continue
-        # 保护：慢动作段整段 diff 都低，别把真正的内容剪光。
-        keep_frames = min(total, max(total - tail + keep, int(total * 0.5)))
-        if tail <= min_frames or keep_frames >= total:
-            if tail > min_frames:
+        total = len(scores) + 1
+        runs = find_static_runs(
+            [p99 for _, p99 in scores], threshold=threshold, min_frames=2
+        )
+        head_tail_runs = [
+            (first, last)
+            for first, last in runs
+            if (first == 0 or last >= total - 1) and (last - first + 1) >= min_frames
+        ]
+        mid_runs = [
+            (first, last)
+            for first, last in runs
+            if 0 < first and last < total - 1 and (last - first + 1) >= mid_min_frames
+        ]
+        active = sorted(head_tail_runs + mid_runs)
+        if not active:
+            compacted.append((path, seconds))
+            continue
+        ranges = build_keep_ranges(
+            total, active, head_keep, mid_keep, tail_keep, mid_min_frames
+        )
+        kept = sum(b - a for a, b in ranges)
+        removed = total - kept
+        # 保护：只有「整段几乎不动」（空镜、极慢的慢动作）才跳过——那种素材
+        # 压完会剩下几帧，看起来就是坏片。动作段里静止占比 7 成是常态
+        # （实测 seg1：96 帧里 71 帧静止），必须照压，否则开头的定格原样留着。
+        if removed < min_saving or removed >= total * float(
+            config.get("static_compact_max_ratio", 0.9)
+        ):
+            if removed >= min_saving:
                 print(
-                    f"[H3] Segment {index}: 尾部静止 {tail} 帧但受 50% 保护未剪",
+                    f"[H3] Segment {index}: 静止占 {removed / total:.0%}，"
+                    "判定为空镜/慢动作，不压",
                     flush=True,
                 )
-            trimmed.append((path, seconds))
+            compacted.append((path, seconds))
             continue
-        target = Path(work_dir) / f"{Path(path).stem}.trim.mp4"
+        target = Path(work_dir) / f"{Path(path).stem}.compact.mp4"
         try:
-            trim_video_tail(path, keep_frames, fps, target)
+            render_keep_ranges(path, ranges, fps, target)
         except Exception as exc:
             print(
-                f"[H3] Segment {index}: trim failed "
+                f"[H3] Segment {index}: 静止压缩失败 "
                 f"({type(exc).__name__}: {exc})，保留原段",
                 flush=True,
             )
-            trimmed.append((path, seconds))
+            compacted.append((path, seconds))
             continue
-        new_seconds = keep_frames / fps
+        new_seconds = kept / fps
         print(
-            f"[H3] Segment {index}: 剪掉尾部静止 {tail} 帧（{tail / fps:.2f}s），"
-            f"{total} → {keep_frames} 帧（{new_seconds:.2f}s）",
+            f"[H3] Segment {index}: 静止压缩 {total} → {kept} 帧"
+            f"（{total / fps:.2f}s → {new_seconds:.2f}s，去掉 {len(active)} 处定格）",
             flush=True,
         )
-        trimmed.append((target.as_posix(), new_seconds))
-    return trimmed
+        compacted.append((target.as_posix(), new_seconds))
+    return compacted
 
 
 def pick_scale_flags(config, src_size, dst_size):
@@ -3282,7 +3431,7 @@ def main():
         return
     if playlist:
         # 先剪掉每段尾部的定格等待，再按剪完的实际时长算转场/音频边界。
-        playlist = trim_static_tail(config, playlist, config_path.parent)
+        playlist = compact_static(config, playlist, config_path.parent)
         fade_boundaries = []
         if transition_mode == "fade":
             elapsed = 0.0

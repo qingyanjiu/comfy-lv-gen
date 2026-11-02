@@ -1843,40 +1843,51 @@ class KeyframeAlignTests(unittest.TestCase):
         self.assertGreaterEqual(tail, 35)
         self.assertLessEqual(tail, 45)
 
-    def test_trim_static_tail_cuts_only_the_frozen_ending(self):
+    def test_frame_motion_separates_slow_motion_from_true_stillness(self):
+        """p99 抓「局部大幅移动」：动作段 p99 很高、静止段接近 0，均值分不开。"""
         video = self.temp / "clip.mp4"
-        total = self._write_video_with_still_tail(video)
-        config = {
-            "fps": 24,
-            "trim_static_tail": True,
-            "trim_static_tail_threshold": 1.0,
-            "trim_static_tail_keep": 6,
-            "trim_static_tail_min_seconds": 0.5,
-        }
-        trimmed = pipeline.trim_static_tail(config, [(video.as_posix(), total / 24.0)], self.temp)
-        self.assertEqual(len(trimmed), 1)
-        path, seconds = trimmed[0]
-        self.assertTrue(path.endswith(".trim.mp4"))
-        # 动作 30 帧 + keep 6 帧 = 36 帧（约 1.5s），绝不能剪进动作区。
-        self.assertGreater(seconds, 30 / 24.0)
+        moving, still = 30, 40
+        self._write_video_with_still_tail(video, moving=moving, still=still)
+        scores = pipeline.frame_motion(video)
+        action = [p99 for _, p99 in scores[: moving - 1]]
+        frozen = [p99 for _, p99 in scores[moving:]]
+        self.assertGreater(min(action), 15.0)
+        self.assertLess(max(frozen), 9.0)
+
+    def test_compact_static_keeps_action_and_squeezes_the_freeze(self):
+        video = self.temp / "clip.mp4"
+        total = self._write_video_with_still_tail(video)  # 30 动作 + 40 静止 = 70 帧
+        config = {"fps": 24, "static_compact": True}
+        compacted = pipeline.compact_static(config, [(video.as_posix(), total / 24.0)], self.temp)
+        self.assertEqual(len(compacted), 1)
+        path, seconds = compacted[0]
+        self.assertTrue(path.endswith(".compact.mp4"))
+        # 动作 30 帧 + 尾部保留 6 帧 = 36 帧（1.5s）；静止区只许压，不许吃动作。
+        self.assertGreater(seconds, 33 / 24.0)
         self.assertLess(seconds, 40 / 24.0)
 
-    def test_trim_static_tail_disabled_or_healthy_video_is_untouched(self):
+    def test_compact_static_skips_frozen_or_disabled_clips(self):
+        config = {"fps": 24, "static_compact": True}
+        # 只有 4 帧静止 → 低于门槛，原样返回
         video = self.temp / "clip.mp4"
         total = self._write_video_with_still_tail(video, moving=60, still=4)
         playlist = [(video.as_posix(), total / 24.0)]
-        config = {"fps": 24, "trim_static_tail": True}
-        # 只静 4 帧 < 0.5s 门槛 → 原样返回
-        self.assertEqual(pipeline.trim_static_tail(config, playlist, self.temp), playlist)
-        config["trim_static_tail"] = False
+        self.assertEqual(pipeline.compact_static(config, playlist, self.temp), playlist)
+        # 总开关关掉 → 原样返回
         video2 = self.temp / "clip2.mp4"
         self._write_video_with_still_tail(video2)
         playlist2 = [(video2.as_posix(), 70 / 24.0)]
-        self.assertEqual(pipeline.trim_static_tail(config, playlist2, self.temp), playlist2)
+        self.assertEqual(
+            pipeline.compact_static(dict(config, static_compact=False), playlist2, self.temp),
+            playlist2,
+        )
 
-    def test_trim_options_never_invalidate_the_generation_cache(self):
+    def test_compact_options_never_invalidate_the_generation_cache(self):
         base = {"fps": 24, "prompt": "x", "segments": []}
-        with_extra = dict(base, trim_static_tail=True, trim_static_tail_keep=6)
+        with_extra = dict(
+            base, static_compact=True, static_compact_threshold=9.0,
+            static_compact_head_keep=3, static_compact_mid_keep=5,
+        )
         self.assertEqual(
             pipeline.generation_signature(base, {}, "pid"),
             pipeline.generation_signature(with_extra, {}, "pid"),
