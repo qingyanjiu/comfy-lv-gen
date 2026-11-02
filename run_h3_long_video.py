@@ -896,6 +896,66 @@ def run_outpaint_pass(config, src_path, target, seed, label=None):
     return str(resolve_output(config, images[0]))
 
 
+def preexpand_reference(config, work_dir):
+    """把参考图预先扩一次到成片比例，之后所有关键帧共用这张扩好的图。
+
+    以前每段的首帧各自扩图：同一张参考图，每段补出来的背景延伸都不一样
+    （段 1 桌子左边多了个杯子、段 2 没有），拼起来环境对不上，还每段多花
+    一次 20 步扩图（约 +35s/帧）。预扩一次之后：
+
+      * 所有段的首帧都以同一张扩好图为图1，背景延伸完全一致；
+      * 首帧出图时 ``qwen_keyframe_size`` 发现比例已是目标，直接按目标尺寸
+        出图，``align_frame_to_target`` 里 exact_frame 命中——整条链路零扩图。
+
+    只扩 reference_images[0]（图1/画布角色）；其余参考图是纯身份输入，不进
+    画布，不用扩。关闭（``keyframe_reference_preexpand: false``）、比例已对、
+    后端不是 Qwen 时原样返回；扩图失败也不打断任务，退回逐帧扩图的旧行为。
+    扩好的图存 ``work_dir/reference_expanded.png``，已存在且尺寸匹配就直接
+    复用（断点续跑不重复扩）。
+    """
+    if not bool(config.get("keyframe_reference_preexpand", True)):
+        return
+    if keyframe_backend(config) not in QWEN_BACKENDS:
+        return
+    if keyframe_align_mode(config) == "off":
+        return
+    references = [str(item) for item in config.get("reference_images") or []]
+    if not references:
+        return
+    source = references[0]
+    if not Path(source).is_file():
+        return
+    try:
+        target = target_frame_size(config)
+        if aspect_gap(image_size(source), target) <= 0.01:
+            return
+        out = Path(work_dir) / "reference_expanded.png"
+        reused = False
+        if out.is_file():
+            try:
+                reused = aspect_gap(image_size(str(out)), target) <= 0.01
+            except Exception:
+                reused = False  # 坏文件就重扩
+        if not reused:
+            seed = int(config.get("base_seed") or 0) + 800000
+            expanded = run_outpaint_pass(
+                config, source, target, seed, label="Reference preexpand"
+            )
+            shutil.copyfile(expanded, out)
+            _resize_to(_center_crop_resize(str(out), target), target)
+        config["reference_images"] = [out.as_posix()] + references[1:]
+        state = "复用" if reused else "生成"
+        print(
+            f"[H3] 预扩参考图（{state}）: {out} — 之后所有关键帧共用，不再逐帧扩图",
+            flush=True,
+        )
+    except Exception as exc:
+        print(
+            f"[H3] 参考图预扩失败（{type(exc).__name__}: {exc}），退回逐帧扩图",
+            flush=True,
+        )
+
+
 def align_frame_to_target(config, path, seed=0, label=None):
     """把一帧关键帧对齐到成片分辨率；返回（可能被覆盖过的）路径。
 
@@ -2306,6 +2366,9 @@ def ensure_keyframe_chain(
 ):
     count = len(specs) if max_segments is None else min(len(specs), max_segments)
     draft_seconds = float(config.get("keyframe_draft_seconds", 2.0))
+    # 关键帧开跑前先把参考图扩一次到成片比例，全体关键帧共用这张扩好的图：
+    # 背景延伸一致 + 省掉每段一次扩图。放在链式生成最前面，手动/面板流程同样受益。
+    preexpand_reference(config, Path(state_path).parent)
     overrides = state.get("keyframe_overrides") or {}
     attempts = state.get("keyframe_attempts") or {}
     existing = {

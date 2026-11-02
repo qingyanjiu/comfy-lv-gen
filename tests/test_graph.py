@@ -1822,6 +1822,93 @@ class KeyframeAlignTests(unittest.TestCase):
         missing = (self.temp / "nope.png").as_posix()
         self.assertEqual(pipeline.align_frame_to_target(self.config, missing), missing)
 
+    # ------------------------------------------------------------------
+    # 参考图预扩：一次扩好、全体关键帧共用，替代每段首帧各扩一次
+    # ------------------------------------------------------------------
+
+    def _preexpand_config(self):
+        from PIL import Image
+
+        config = dict(self.config)
+        config["keyframe_align"] = "outpaint"
+        config["keyframe_backend"] = pipeline.BACKEND_QWEN21
+        reference = self.temp / "ref_preexpand.png"
+        # 4:5 参考图，和 9:16 目标差得远，必须扩
+        Image.new("RGB", (500, 625), (200, 190, 180)).save(reference)
+        config["reference_images"] = [reference.as_posix()]
+        return config
+
+    def test_preexpand_reference_swaps_in_one_shared_expanded_image(self):
+        from PIL import Image
+        import unittest.mock as mock
+
+        config = self._preexpand_config()
+        expanded_src = self.temp / "outpaint_raw.png"
+        # 扩图 pass 的输出是画布尺寸（32 对齐），不一定是精确目标
+        Image.new("RGB", (864, 1536), (10, 20, 30)).save(expanded_src)
+
+        with mock.patch.object(
+            pipeline, "run_outpaint_pass", return_value=expanded_src.as_posix()
+        ) as fake:
+            pipeline.preexpand_reference(config, self.temp)
+            self.assertEqual(fake.call_count, 1)
+            swapped = config["reference_images"][0]
+            self.assertTrue(swapped.endswith("reference_expanded.png"))
+            # 保存时裁/缩到精确目标，qwen_keyframe_size 才会直接命中目标尺寸
+            self.assertEqual(self._size(swapped), (832, 1472))
+
+            # 第二次调用（断点续跑）必须复用已扩好的图，不再提交扩图
+            pipeline.preexpand_reference(config, self.temp)
+            self.assertEqual(fake.call_count, 1)
+
+    def test_preexpand_reference_skips_when_not_needed(self):
+        from PIL import Image
+        import unittest.mock as mock
+
+        calls = []
+        original = pipeline.run_outpaint_pass
+
+        def fake(*args, **kwargs):
+            calls.append(args)
+            raise AssertionError("这些场景都不该扩图")
+
+        pipeline.run_outpaint_pass = fake
+        try:
+            # 开关关掉
+            config = self._preexpand_config()
+            config["keyframe_reference_preexpand"] = False
+            pipeline.preexpand_reference(config, self.temp)
+            self.assertFalse(config["reference_images"][0].endswith("reference_expanded.png"))
+
+            # 对齐关闭：视频阶段自己缩放，不需要预扩
+            config = self._preexpand_config()
+            config["keyframe_align"] = "off"
+            pipeline.preexpand_reference(config, self.temp)
+            self.assertFalse(config["reference_images"][0].endswith("reference_expanded.png"))
+
+            # 参考图比例已经对上：一张 9:16 的图不用扩
+            config = self._preexpand_config()
+            square = self.temp / "already_916.png"
+            Image.new("RGB", (832, 1472), (1, 2, 3)).save(square)
+            config["reference_images"] = [square.as_posix()]
+            pipeline.preexpand_reference(config, self.temp)
+            self.assertEqual(config["reference_images"][0], square.as_posix())
+        finally:
+            pipeline.run_outpaint_pass = original
+        self.assertEqual(calls, [])
+
+    def test_preexpand_reference_failure_falls_back_to_original(self):
+        import unittest.mock as mock
+
+        config = self._preexpand_config()
+        original_ref = config["reference_images"][0]
+        with mock.patch.object(
+            pipeline, "run_outpaint_pass", side_effect=RuntimeError("ComfyUI down")
+        ):
+            pipeline.preexpand_reference(config, self.temp)
+        # 失败只降级，绝不能把参考图换成坏路径打断任务
+        self.assertEqual(config["reference_images"][0], original_ref)
+
     @staticmethod
     def _write_video_with_still_tail(path, moving=30, still=40, fps=24, size=(64, 64)):
         import cv2

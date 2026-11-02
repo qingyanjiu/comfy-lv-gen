@@ -113,6 +113,7 @@
   "keyframe_camera_continuity": true,
   "keyframe_camera_prompt": "Tracking shot: the camera moves with her and pulls back as she walks forward, so she keeps exactly the same size in the frame and stays fully visible from head to feet. The background slides past her. Never zoom into her face, never crop her feet or head.",
   "keyframe_align": "outpaint",
+  "keyframe_reference_preexpand": true,
   "keyframe_outpaint_prompt": "Outpaint the image: replace the solid gray areas with a seamless continuation of the scene, keeping the existing picture unchanged.",
   "keyframe_outpaint_megapixels": 0.75,
   "keyframe_outpaint_steps": 20,
