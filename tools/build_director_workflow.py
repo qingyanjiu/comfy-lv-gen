@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-import director
+import director as h3_director
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -166,10 +166,11 @@ def build_workflow(config):
                 "{}",
                 config.get("base_seed", 0),
                 True,
-                director.STAGE_REVIEW,
+                h3_director.STAGE_REVIEW,
                 "",
                 "",
-                director.KEYFRAME_BACKEND_OPTIONS[0],
+                h3_director.KEYFRAME_BACKEND_OPTIONS[0],
+                h3_director.RESOLUTION_OPTIONS[0],
             ],
         },
     ]
@@ -303,6 +304,7 @@ def build_single_clip_workflow(config):
             config.get("base_seed", 0),
             True,
             "",
+            h3_director.RESOLUTION_OPTIONS[0],
         ],
     }
     nodes.append(director)

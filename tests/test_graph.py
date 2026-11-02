@@ -1603,5 +1603,117 @@ class GraphTests(unittest.TestCase):
         self.assertIn("不新增人物", encoder["inputs"]["prompt"])
 
 
+class ResolutionTests(unittest.TestCase):
+    """分辨率下拉 → final_width/height。"""
+
+    def test_presets_beat_the_two_int_widgets(self):
+        for label, expected in (
+            ("720x1280（9:16 标清）", (720, 1280)),
+            ("832x1472（9:16 默认）", (832, 1472)),
+            ("1080x1920（9:16 高清）", (1080, 1920)),
+            ("480x854（9:16 省显存）", (480, 854)),
+        ):
+            self.assertEqual(director.resolve_resolution(label, 999, 111), expected)
+
+    def test_custom_uses_the_int_widgets(self):
+        self.assertEqual(
+            director.resolve_resolution("自定义（用 final_width / final_height）", 640, 1136),
+            (640, 1136),
+        )
+
+    def test_empty_value_falls_back_to_int_widgets(self):
+        self.assertEqual(director.resolve_resolution("", 704, 1216), (704, 1216))
+
+
+class KeyframeAlignTests(unittest.TestCase):
+    """关键帧对齐到成片分辨率：比例不符时裁切 / 扩图，尺寸最终必须精确相等。"""
+
+    def setUp(self):
+        from PIL import Image
+
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp = Path(self.temp_dir.name)
+        self.config = json.loads((REPO / "config.json").read_text(encoding="utf-8"))
+        self.config["comfy_input_dir"] = self.temp.as_posix()
+        self.config["final_width"] = 832
+        self.config["final_height"] = 1472
+        self.frame = self.temp / "frame.png"
+        Image.new("RGB", (608, 1056), (120, 130, 140)).save(self.frame)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _size(self, path):
+        from PIL import Image
+
+        with Image.open(path) as image:
+            return image.size
+
+    def test_crop_mode_hits_the_exact_final_size(self):
+        self.config["keyframe_align"] = "crop"
+        out = pipeline.align_frame_to_target(self.config, self.frame.as_posix())
+        self.assertEqual(self._size(out), (832, 1472))
+
+    def test_off_mode_leaves_the_generated_size_alone(self):
+        self.config["keyframe_align"] = "off"
+        out = pipeline.align_frame_to_target(self.config, self.frame.as_posix())
+        self.assertEqual(self._size(out), (608, 1056))
+
+    def test_already_aligned_frame_is_untouched(self):
+        from PIL import Image
+
+        target = self.temp / "done.png"
+        Image.new("RGB", (832, 1472), (10, 20, 30)).save(target)
+        before = target.stat().st_mtime_ns
+        out = pipeline.align_frame_to_target(self.config, target.as_posix())
+        self.assertEqual(out, target.as_posix())
+        self.assertEqual(target.stat().st_mtime_ns, before)
+
+    def test_outpaint_canvas_keeps_the_target_aspect(self):
+        target = (832, 1472)
+        for source in ((608, 1056), (1024, 1024), (1280, 720)):
+            canvas_w, canvas_h, px, py, sw, sh = pipeline.outpaint_canvas_geometry(source, target)
+            self.assertLess(abs(canvas_w / canvas_h - target[0] / target[1]) / (target[0] / target[1]), 0.005)
+            # 源图必须完整落在画布里（另一半才交给扩图去补）
+            self.assertGreaterEqual(px, 0)
+            self.assertGreaterEqual(py, 0)
+            self.assertLessEqual(px + sw, canvas_w)
+            self.assertLessEqual(py + sh, canvas_h)
+
+    def test_outpaint_canvas_is_32_aligned(self):
+        canvas_w, canvas_h, *_ = pipeline.outpaint_canvas_geometry((608, 1056), (720, 1280))
+        self.assertEqual(canvas_w % 32, 0)
+        self.assertEqual(canvas_h % 32, 0)
+
+    def test_outpaint_graph_uses_the_outpaint_lora_and_canvas_size(self):
+        graph = pipeline.build_qwen_keyframe_graph(
+            self.config,
+            pipeline.BACKEND_QWEN21,
+            pipeline.DEFAULT_OUTPAINT_PROMPT,
+            self.frame.as_posix(),
+            4242,
+            preset=pipeline.OUTPAINT_PRESET,
+            size=(576, 1024),
+        )
+        by_type = {node["class_type"]: node for node in graph.values()}
+        self.assertEqual(by_type["UNETLoader"]["inputs"]["unet_name"], pipeline.OUTPAINT_PRESET["unet"])
+        self.assertIn("outpaint", by_type["LoraLoaderModelOnly"]["inputs"]["lora_name"])
+        self.assertEqual(by_type["KSampler"]["inputs"]["steps"], pipeline.OUTPAINT_PRESET["steps"])
+        # 画布尺寸必须落到 ImageScale 上，否则扩出来的还是原尺寸
+        self.assertEqual(by_type["ImageScale"]["inputs"]["width"], 576)
+        self.assertEqual(by_type["ImageScale"]["inputs"]["height"], 1024)
+        # 2.1 的 latent 由编码器自己从 image_1 派生（第 3 个输出），
+        # 所以画布必须接进 TextEncodeQwenImage21 的 image_1 槽位。
+        encoder = by_type["TextEncodeQwenImage21"]
+        self.assertEqual(encoder["inputs"]["resolution"], 0)
+        self.assertIn("images.image_1", encoder["inputs"])
+        latent_source = by_type["KSampler"]["inputs"]["latent_image"]
+        self.assertEqual(graph[latent_source[0]]["class_type"], "TextEncodeQwenImage21")
+
+    def test_align_never_raises_on_a_missing_file(self):
+        missing = (self.temp / "nope.png").as_posix()
+        self.assertEqual(pipeline.align_frame_to_target(self.config, missing), missing)
+
+
 if __name__ == "__main__":
     unittest.main()
