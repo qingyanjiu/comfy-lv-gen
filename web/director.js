@@ -1138,13 +1138,15 @@ function migrateWidgetValues(node) {
       megapixels.value = 0.2;
     }
   }
+  // 704x1216（0.5789）跟 9:16 差 2.9%，选「自定义」不动数字就会报错，所以兜底值
+  // 也换成和 resolution 默认档一致的 832x1472（= 一采 416x736 的 2 倍）。
   const finalWidth = findWidget(node, "final_width");
   if (finalWidth && !Number.isFinite(Number(finalWidth.value))) {
-    finalWidth.value = 704;
+    finalWidth.value = 832;
   }
   const finalHeight = findWidget(node, "final_height");
   if (finalHeight && !Number.isFinite(Number(finalHeight.value))) {
-    finalHeight.value = 1216;
+    finalHeight.value = 1472;
   }
 }
 

@@ -1635,6 +1635,23 @@ class ResolutionTests(unittest.TestCase):
             (640, 1136),
         )
 
+    def test_node_defaults_are_a_legal_preset(self):
+        """选「自定义」时用的就是这两个 INT，它们的默认值本身必须合法。
+
+        以前单段节点默认 704x1216（比例 0.5789，跟 9:16 差 2.9%），选了自定义
+        却不动数字，一提交就报 "final resolution must remain a 9:16 portrait preset"。
+        """
+        for cls in (director.H3LongVideoDirector, director.H3SingleClipDirector):
+            types = cls.INPUT_TYPES()
+            fields = {**types["required"], **types.get("optional", {})}
+            width = fields["final_width"][1]["default"]
+            height = fields["final_height"][1]["default"]
+            self.assertLess(width, height, f"{cls.__name__} 必须竖构图")
+            gap = abs(width / height - 9 / 16) / (9 / 16)
+            self.assertLessEqual(
+                gap, 0.02, f"{cls.__name__} 默认 {width}x{height} 超出 9:16 的 2% 容差"
+            )
+
     def test_empty_value_falls_back_to_int_widgets(self):
         self.assertEqual(director.resolve_resolution("", 704, 1216), (704, 1216))
 
