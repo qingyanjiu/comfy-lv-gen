@@ -577,6 +577,10 @@ QWEN_BACKENDS = (BACKEND_QWEN2511, BACKEND_QWEN21)
 DEFAULT_KEYFRAME_WIDTH = 608
 DEFAULT_KEYFRAME_HEIGHT = 1056
 
+# Qwen 关键帧的像素预算。2.1 的出图规则是「图1 比例 × 约 1.05MP，对齐 32」，
+# 500x625 的参考图因此出 928x1152（skill 里 pipeline 的实测值）。
+DEFAULT_QWEN_KEYFRAME_MEGAPIXELS = 1.05
+
 QWEN_KEYFRAME_PRESETS = {
     BACKEND_QWEN2511: {
         "unet": "qwen_image_edit_2511_int8_convrot.safetensors",
@@ -593,17 +597,16 @@ QWEN_KEYFRAME_PRESETS = {
         "prefix": "qwen2511_edit",
     },
     BACKEND_QWEN21: {
-        "unet": "qwen_image_2.1_int8_convrot.safetensors",
+        # ray 微调版，不是官方 int8。同一张参考图、同一句提示词，官方版会把
+        # 头转向 3/4 侧面（人像的"看镜头"变成"看旁边"），ray 版保持正脸。
+        # 这条是 2026-11-02 定稿时确认的：关键帧角度是硬要求，官方版一票否决。
+        "unet": r"Qwen\Qwen21-rayQwen21_v1_int8_convrot.safetensors",
         "clip": "qwen3vl_8b_int8_convrot.safetensors",
         "vae": "qwen_image_2.1_vae_bf16.safetensors",
-        # A/B on the same canvas + seed (2026-11-01): LR-8step kept the outfit,
-        # the shoes and the framing best and was the fastest of the three 8-step
-        # candidates (18s vs 30s); turbo_r178 drifted the costume (suit lost its
-        # sleeves), p_8step_v0.1 duplicated the person even with the no-extra-
-        # people suffix. Subfolder paths must use backslashes: that is what
-        # ComfyUI's combo list on Windows contains.
-        "lora": r"Qwen-功能2.1\Qwen-Image-2.1-LR-8step-lora-r128.safetensors",
-        "steps": 8,
+        # 不挂 8 步 LoRA：ray 版在 20 步下细节就够，挂 LoRA 反而把皮肤磨平。
+        # 8 步 + LoRA 是官方 int8 的省时配方，这里用不上。
+        "lora": "",
+        "steps": 20,
         "cfg": 1.0,
         "shift": None,
         "prefix": "qwen21_edit",
@@ -617,8 +620,60 @@ def keyframe_backend(config):
 
 
 def keyframe_size(config):
+    """H3 自己出图时的尺寸（固定）。
+
+    Qwen 后端不再用这个，见 ``qwen_keyframe_size``。
+    """
     width = int(config.get("keyframe_width") or DEFAULT_KEYFRAME_WIDTH)
     height = int(config.get("keyframe_height") or DEFAULT_KEYFRAME_HEIGHT)
+    return width, height
+
+
+def qwen_keyframe_size(config, canvas=None):
+    """Qwen 关键帧的生成尺寸：跟着图1（或画布）的比例走，约 1.05MP，32 对齐。
+
+    以前这里和 H3 共用固定的 608x1056（比例 0.5758）。4:5 的参考图进
+    ``ImageScale(crop="center")`` 时，要被塞进这个更窄的框里——左右各砍掉约
+    28%，人物被推近、桌面被裁掉，看起来就是"人变大、桌子没了"。
+
+    现在改成按图1 的实际比例算（和 skill 里 pipeline 的出图规则一致），整张
+    参考图进模型，画幅差交给后面的扩图补。
+    """
+    target = None
+    if config.get("final_width") and config.get("final_height"):
+        target = target_frame_size(config)
+    source = canvas
+    if not source:
+        references = config.get("reference_images") or []
+        source = references[0] if references else None
+    if source and Path(str(source)).is_file():
+        try:
+            size = image_size(str(source))
+        except Exception:
+            # 图坏了/不是真图（单测里的占位文件）就退回目标尺寸，
+            # 不能因为一张打不开的参考图让整条关键帧阶段挂掉。
+            size = None
+        if size:
+            # 已经是目标画幅就别绕圈：链式派生的尾帧画布就是扩展后的 9:16，
+            # 按 1.05MP 重算会得出 768x1376（比例 0.558），和目标差 1.3%，
+            # 白多跑一次扩图。1% 的容差是为了容下 32 对齐带来的零头
+            # （1080x1920 会被 2.1 对齐成 1088x1920）。
+            if target and aspect_gap(size, target) <= 0.01:
+                return target
+            ratio = size[0] / size[1] if size[1] else 9 / 16
+        elif target:
+            return target
+        else:
+            ratio = 9 / 16
+    elif target:
+        return target
+    else:
+        ratio = 9 / 16
+    megapixels = float(
+        config.get("keyframe_qwen_megapixels") or DEFAULT_QWEN_KEYFRAME_MEGAPIXELS
+    )
+    width = _align32(math.sqrt(megapixels * 1_000_000 * ratio))
+    height = _align32(width / ratio)
     return width, height
 
 
@@ -659,6 +714,8 @@ OUTPAINT_PRESET = {
 }
 
 DEFAULT_OUTPAINT_MEGAPIXELS = 0.75
+# 扩图画布的像素上限。8GB 卡实测 864x1536（1.33MP）能跑，再大就 OOM。
+MAX_OUTPAINT_MEGAPIXELS = 1.35
 
 
 def target_frame_size(config):
@@ -714,6 +771,11 @@ def outpaint_canvas_geometry(size, target, megapixels=None):
     """
     ratio = target[0] / target[1]
     mp = float(megapixels or DEFAULT_OUTPAINT_MEGAPIXELS)
+    # 画布比目标还小的话，扩完还得再放大一次 = 先缩后放，细节白丢。
+    # 目标 832x1472 = 1.22MP，4:5 出的 928x1152 正好按原尺寸铺进去，不用缩。
+    mp = max(mp, target[0] * target[1] / 1_000_000)
+    # 8GB 卡上限：864x1536（1.33MP）是实测跑得动的最大画布，再大会 OOM。
+    mp = min(mp, MAX_OUTPAINT_MEGAPIXELS)
     ideal_h = math.sqrt(mp * 1_000_000 / ratio)
     best = None
     for step in range(-6, 7):
@@ -842,8 +904,11 @@ def align_frame_to_target(config, path, seed=0, label=None):
         if exact_frame(size, target):
             return path
         gap = aspect_gap(size, target)
-        # 0.5% 以内直接缩放到目标尺寸——中心裁切掉的那几像素肉眼看不出来，不值得为它扩图。
-        if mode == "outpaint" and gap > 0.005:
+        # 1% 以内直接 cover+crop 到目标尺寸（等比放大再中心裁，不是硬拉伸），
+        # 裁掉的那几像素肉眼看不出来，不值得为它跑一次扩图。
+        # 阈值取 1% 是因为目标分辨率不一定是 32 的倍数：选 1080x1920 时
+        # 2.1 会按 32 对齐成 1088x1920，差 0.74%，卡在 0.5% 就会每帧白扩一次（+60s）。
+        if mode == "outpaint" and gap > 0.01:
             try:
                 source = run_outpaint_pass(config, path, target, seed, label)
                 return _resize_to(_center_crop_resize(source, target), target)
@@ -871,6 +936,18 @@ DEFAULT_QWEN_KEYFRAME_SUFFIX = (
     "真实摄影，自然皮肤纹理，无文字水印。"
 )
 
+# 三条全局锁，和 skill 的 Q21_FIRST_TMPL / Q21_LAST_TMPL 用同一套措辞。
+# storyboard 里的一句话很难同时压住头发走向、人物大小和色温，模型每次总会
+# 在其中一项上漂：头发散开、人物被推近、白背心发黄或整体偏冷。所以单独写成
+# 固定尾巴（2026-11-02 定稿配方的一部分）。
+DEFAULT_KEYFRAME_LOCKS_PROMPT = (
+    "头发保持原状：发长、分缝、发丝走向和垂落位置都和参考图一致，"
+    "不要让头发飘动、散开、变形或改变遮挡关系；"
+    "同一机位同一景别，人物在画面中的大小和位置与参考图保持一致，不靠近也不远离镜头；"
+    "背景是干净的浅灰色墙面，柔和的室内自然光从左前方照来，色温中性偏暖、光线均匀没有硬阴影，"
+    "白色衣物保持纯白不发黄，肤色自然不偏红不偏绿，整体低对比、不偏冷蓝也不偏橙黄。"
+)
+
 
 def qwen_keyframe_prompt(config, prompt):
     suffix = str(
@@ -878,6 +955,12 @@ def qwen_keyframe_prompt(config, prompt):
     ).strip()
     if suffix and suffix not in prompt:
         prompt = f"{prompt}\n\n{suffix}"
+    if bool(config.get("keyframe_locks", True)):
+        locks = str(
+            config.get("keyframe_locks_prompt") or DEFAULT_KEYFRAME_LOCKS_PROMPT
+        ).strip()
+        if locks and locks not in prompt:
+            prompt = f"{prompt}\n\n{locks}"
     return prompt
 
 
@@ -924,7 +1007,13 @@ def build_qwen_keyframe_graph(config, backend, prompt, canvas, seed, preset=None
     # ``preset`` / ``size`` 让扩图复用这一套图：同一个 2.1 编码器 + VAEEncode 路径，
     # 只换 UNET/LoRA 和画布尺寸，避免再维护第二份完全平行的建图代码。
     preset = preset or qwen_keyframe_preset(config, backend)
-    width, height = size or keyframe_size(config)
+    if size:
+        width, height = size
+    elif backend == BACKEND_QWEN21:
+        # 跟着图1/画布的比例出图，别把 4:5 的参考图裁成 9:16 的窄条。
+        width, height = qwen_keyframe_size(config, canvas)
+    else:
+        width, height = keyframe_size(config)
     references = [str(item) for item in config.get("reference_images") or []]
     # Measured on 2.1 with the same canvas and seed: canvas alone renders
     # one person; canvas + either one or two identity references renders
@@ -2833,10 +2922,14 @@ def main():
         )
         return
     if backend in QWEN_BACKENDS and args.stage in {"keyframes", "all"}:
-        width, height = keyframe_size(config)
+        if backend == BACKEND_QWEN21:
+            size_text = "按图1比例 × 1.05MP（跟着参考图走，不再裁成 9:16）"
+        else:
+            width, height = keyframe_size(config)
+            size_text = f"固定 {width}x{height}"
         print(
             f"[H3] 关键帧来源 = {backend}：用 Qwen 出图，"
-            f"固定 {width}x{height}，共 {render_end} 段。",
+            f"{size_text}，共 {render_end} 段。",
             flush=True,
         )
 
