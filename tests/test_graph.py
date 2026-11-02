@@ -1635,6 +1635,46 @@ class ResolutionTests(unittest.TestCase):
             (640, 1136),
         )
 
+    def test_presets_come_from_config_not_from_code(self):
+        """档位表是配置项：加一档只需要改 config.json，不用动 py/js。"""
+        custom = {
+            "resolution_presets": {
+                "864x1536（1.33MP）": [864, 1536],
+                "1280x2272（大图）": {"width": 1280, "height": 2272},
+            },
+            "resolution_default": "864x1536（1.33MP）",
+        }
+        self.assertEqual(
+            director.resolution_options(custom),
+            ["864x1536（1.33MP）", "1280x2272（大图）", director.CUSTOM_RESOLUTION_LABEL],
+        )
+        self.assertEqual(
+            director.resolve_resolution(
+                "1280x2272（大图）", 1, 2, director.resolution_presets(custom)
+            ),
+            (1280, 2272),
+        )
+        self.assertEqual(director.resolution_default(custom), "864x1536（1.33MP）")
+
+    def test_broken_preset_entries_are_dropped_not_reused(self):
+        """宁可少一档，也不能拿 0x0 的分辨率去跑图。"""
+        table = director.resolution_presets(
+            {
+                "resolution_presets": {
+                    "好的": [720, 1280],
+                    "零": [0, 0],
+                    "文字": "not-a-size",
+                    "字符串尺寸": "640x1136",
+                }
+            }
+        )
+        self.assertEqual(table, {"好的": (720, 1280), "字符串尺寸": (640, 1136)})
+
+    def test_missing_preset_table_falls_back_to_builtin(self):
+        table = director.resolution_presets({"resolution_presets": None})
+        self.assertIn("832x1472（9:16 默认）", table)
+        self.assertEqual(director.resolution_default({"resolution_presets": {}}), "832x1472（9:16 默认）")
+
     def test_node_defaults_are_a_legal_preset(self):
         """选「自定义」时用的就是这两个 INT，它们的默认值本身必须合法。
 

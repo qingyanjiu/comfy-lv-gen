@@ -133,24 +133,102 @@ KEYFRAME_BACKEND_TO_VALUE = {
 # 成片分辨率预设。选中的值同时作用于关键帧和成片：runner 出完图会立刻把关键帧
 # 对齐到 final_width x final_height（见 align_frame_to_target），所以换分辨率就是换
 # 整条链的画幅，不再靠最后一步硬拉伸。
-RESOLUTION_OPTIONS = [
-    "832x1472（9:16 默认）",
-    "720x1280（9:16 标清）",
-    "1080x1920（9:16 高清）",
-    "480x854（9:16 省显存）",
-    "自定义（用 final_width / final_height）",
-]
-RESOLUTION_PRESETS = {
+#
+# 档位本身是配置项（config.json 的 ``resolution_presets``），不写死在代码里：
+# 加一档只需要在 JSON 里补一行，不用改 py/js。标签格式约定成 "宽x高（说明）"，
+# 前端就是靠这个正则把标签解析回尺寸的（见 web/director.js）。
+CUSTOM_RESOLUTION_LABEL = "自定义（用 final_width / final_height）"
+
+# config.json 缺失或写坏时的兜底。832x1472 = 一采 416x736 的 2 倍，
+# 是这条链唯一「成片阶段零缩放」的档位。
+FALLBACK_RESOLUTION_PRESETS = {
     "832x1472（9:16 默认）": (832, 1472),
     "720x1280（9:16 标清）": (720, 1280),
     "1080x1920（9:16 高清）": (1080, 1920),
     "480x854（9:16 省显存）": (480, 854),
 }
+FALLBACK_RESOLUTION_DEFAULT = "832x1472（9:16 默认）"
 
 
-def resolve_resolution(resolution, final_width, final_height):
+def normalize_resolution_presets(raw):
+    """把 JSON 里的 ``resolution_presets`` 整理成 ``{标签: (宽, 高)}``。
+
+    容忍三种写法：``{"832x1472（默认）": [832, 1472]}``、``{"...": {"width": ...
+    "height": ...}}``、以及带说明的 ``"832x1472（默认）"`` 字符串键。条目不合法
+    就整条丢掉——与其拿一个 0x0 的分辨率去跑，不如少一档。
+    """
+    table = {}
+    if isinstance(raw, dict):
+        for label, value in raw.items():
+            name = str(label).strip()
+            width = height = None
+            if isinstance(value, (list, tuple)) and len(value) >= 2:
+                width, height = value[0], value[1]
+            elif isinstance(value, dict):
+                width = value.get("width")
+                height = value.get("height")
+            elif isinstance(value, str):
+                match = re.match(r"^\s*(\d+)\s*[x×]\s*(\d+)\s*$", value)
+                if match:
+                    width, height = match.group(1), match.group(2)
+            try:
+                width, height = int(width), int(height)
+            except (TypeError, ValueError):
+                continue
+            if width > 0 and height > 0 and name:
+                table[name] = (width, height)
+    return table
+
+
+def resolution_presets(config=None):
+    """当前生效的分辨率档位表：先看传入的任务配置，再回落到 config.json。"""
+    raw = None
+    if isinstance(config, dict):
+        raw = config.get("resolution_presets")
+    if raw is None:
+        try:
+            raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8")).get(
+                "resolution_presets"
+            )
+        except Exception:
+            raw = None
+    table = normalize_resolution_presets(raw)
+    return table or dict(FALLBACK_RESOLUTION_PRESETS)
+
+
+def resolution_options(config=None):
+    """下拉里显示的选项：配置里的档位 + 「自定义」兜底。"""
+    return list(resolution_presets(config)) + [CUSTOM_RESOLUTION_LABEL]
+
+
+def resolution_default(config=None):
+    """默认档位。配置里写了 ``resolution_default`` 且合法就用它，否则取第一档。"""
+    table = resolution_presets(config)
+    wanted = None
+    if isinstance(config, dict):
+        wanted = config.get("resolution_default")
+    if wanted is None:
+        try:
+            wanted = json.loads(CONFIG_PATH.read_text(encoding="utf-8")).get(
+                "resolution_default"
+            )
+        except Exception:
+            wanted = None
+    wanted = str(wanted or "").strip()
+    if wanted in table:
+        return wanted
+    return next(iter(table), FALLBACK_RESOLUTION_DEFAULT)
+
+
+# 模块导入时算一次，给 INPUT_TYPES 用（ComfyUI 启动时读的就是这份）。
+RESOLUTION_OPTIONS = resolution_options()
+RESOLUTION_PRESETS = resolution_presets()
+
+
+def resolve_resolution(resolution, final_width, final_height, presets=None):
     """把分辨率下拉解析成 (w, h)；选了「自定义」就用两个 INT 控件的值。"""
-    preset = RESOLUTION_PRESETS.get(str(resolution or "").strip())
+    table = presets if presets is not None else RESOLUTION_PRESETS
+    preset = table.get(str(resolution or "").strip())
     if preset:
         return int(preset[0]), int(preset[1])
     return int(final_width), int(final_height)
@@ -2037,7 +2115,7 @@ class H3LongVideoDirector:
                 # 后面控件的值顶到新控件上。选了预设就盖掉 final_width/height。
                 "resolution": (
                     RESOLUTION_OPTIONS,
-                    {"default": RESOLUTION_OPTIONS[0]},
+                    {"default": RESOLUTION_OPTIONS[0]},  # 配置里的第一档
                 ),
             },
         }
@@ -2193,7 +2271,7 @@ class H3LongVideoDirector:
             config["two_pass_scheduler"] = scheduler
             config["megapixels"] = float(megapixels)
             final_width, final_height = resolve_resolution(
-                resolution, final_width, final_height
+                resolution, final_width, final_height, resolution_presets(config)
             )
             config["final_width"] = int(final_width)
             config["final_height"] = int(final_height)
@@ -2361,7 +2439,7 @@ class H3SingleClipDirector:
                 # 放最后：老工作流按顺序存 widgets_values，插中间会错位。
                 "resolution": (
                     RESOLUTION_OPTIONS,
-                    {"default": RESOLUTION_OPTIONS[0]},
+                    {"default": RESOLUTION_OPTIONS[0]},  # 配置里的第一档
                 ),
             },
         }
@@ -2402,7 +2480,7 @@ class H3SingleClipDirector:
         if seconds <= 0:
             raise ValueError("seconds must be greater than 0")
         final_width, final_height = resolve_resolution(
-            resolution, final_width, final_height
+            resolution, final_width, final_height, resolution_presets(config)
         )
         final_width = int(final_width)
         final_height = int(final_height)

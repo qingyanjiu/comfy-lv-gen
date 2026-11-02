@@ -1150,18 +1150,24 @@ function migrateWidgetValues(node) {
   }
 }
 
-// 分辨率预设（和 director.py 的 RESOLUTION_PRESETS 一一对应）。
-// 选了预设就盖掉 final_width/final_height，摘要里要显示真正生效的那个。
-const RESOLUTION_PRESETS = {
-  "832x1472（9:16 默认）": [832, 1472],
-  "720x1280（9:16 标清）": [720, 1280],
-  "1080x1920（9:16 高清）": [1080, 1920],
-  "480x854（9:16 省显存）": [480, 854],
-};
+// 分辨率档位表在 config.json 的 resolution_presets 里，前端不复制一份。
+// 标签约定成「宽x高（说明）」，这里靠正则把标签解析回尺寸——后端加一档，
+// 面板不用改代码就能认出来。「自定义（用 final_width / final_height）」不含
+// "数字x数字"，正则匹配不到，自然回落到两个 INT 控件。
+const RESOLUTION_LABEL_PATTERN = /^\s*(\d+)\s*[x×]\s*(\d+)/;
+
+function parseResolutionLabel(value) {
+  const match = RESOLUTION_LABEL_PATTERN.exec(String(value ?? ""));
+  if (!match) {
+    return null;
+  }
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  return width > 0 && height > 0 ? [width, height] : null;
+}
 
 function effectiveResolution(node) {
-  const resolution = findWidget(node, "resolution");
-  const preset = RESOLUTION_PRESETS[resolution?.value];
+  const preset = parseResolutionLabel(findWidget(node, "resolution")?.value);
   if (preset) {
     return preset;
   }
