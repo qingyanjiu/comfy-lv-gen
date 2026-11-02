@@ -106,5 +106,11 @@
   ],
   "keyframe_camera_continuity": true,
   "keyframe_camera_prompt": "Tracking shot: the camera moves with her and pulls back as she walks forward, so she keeps exactly the same size in the frame and stays fully visible from head to feet. The background slides past her. Never zoom into her face, never crop her feet or head.",
+  "keyframe_align": "crop",
+  "keyframe_outpaint_prompt": "Outpaint the image: replace the solid gray areas with a seamless continuation of the scene, keeping the existing picture unchanged.",
+  "keyframe_outpaint_megapixels": 0.75,
+  "keyframe_outpaint_steps": 20,
+  "keyframe_outpaint_unet": "qwen_image_2.1_int8_convrot.safetensors",
+  "keyframe_outpaint_lora": "Qwen-功能2.1\\Qwen21-图像扩展qwen-image-2.1-outpaint-v2.safetensors",
   "tail_guard_frames": 2
 }

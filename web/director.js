@@ -1148,6 +1148,26 @@ function migrateWidgetValues(node) {
   }
 }
 
+// 分辨率预设（和 director.py 的 RESOLUTION_PRESETS 一一对应）。
+// 选了预设就盖掉 final_width/final_height，摘要里要显示真正生效的那个。
+const RESOLUTION_PRESETS = {
+  "832x1472（9:16 默认）": [832, 1472],
+  "720x1280（9:16 标清）": [720, 1280],
+  "1080x1920（9:16 高清）": [1080, 1920],
+  "480x854（9:16 省显存）": [480, 854],
+};
+
+function effectiveResolution(node) {
+  const resolution = findWidget(node, "resolution");
+  const preset = RESOLUTION_PRESETS[resolution?.value];
+  if (preset) {
+    return preset;
+  }
+  const finalWidth = findWidget(node, "final_width");
+  const finalHeight = findWidget(node, "final_height");
+  return [finalWidth?.value ?? "?", finalHeight?.value ?? "?"];
+}
+
 function countSegments(node, ui) {
   const storyboard = findWidget(node, "storyboard");
   const mode = findWidget(node, "two_pass_mode");
@@ -1156,12 +1176,11 @@ function countSegments(node, ui) {
   const sampler = findWidget(node, "sampler");
   const scheduler = findWidget(node, "scheduler");
   const megapixels = findWidget(node, "megapixels");
-  const finalWidth = findWidget(node, "final_width");
-  const finalHeight = findWidget(node, "final_height");
   const keyframeSteps = findWidget(node, "keyframe_steps");
   const seed = findWidget(node, "seed");
   const randomizeSeed = findWidget(node, "randomize_seed");
   node.lastTwoPassMode = mode?.value || "";
+  const [effectiveWidth, effectiveHeight] = effectiveResolution(node);
   node.samplingSummary = [
     `${steps?.value ?? "?"}+${twoPassSteps?.value ?? "?"} 步`,
     `关键帧${keyframeSteps?.value ?? "?"}步`,
@@ -1169,7 +1188,7 @@ function countSegments(node, ui) {
     scheduler?.value,
     randomizeSeed?.value ? "随机 Seed" : `Seed ${seed?.value ?? "?"}`,
     `${megapixels?.value ?? "?"} MP`,
-    `${finalWidth?.value ?? "?"}×${finalHeight?.value ?? "?"}`,
+    `${effectiveWidth}×${effectiveHeight}`,
   ]
     .filter(Boolean)
     .join(" / ");
@@ -2150,6 +2169,7 @@ function installPanel(node) {
     "sampler",
     "scheduler",
     "megapixels",
+    "resolution",
     "final_width",
     "final_height",
     "keyframe_steps",

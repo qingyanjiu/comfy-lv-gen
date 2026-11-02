@@ -130,6 +130,32 @@ KEYFRAME_BACKEND_TO_VALUE = {
     "Qwen-Image-2.1": BACKEND_QWEN21,
     "只用手动图": BACKEND_MANUAL,
 }
+# 成片分辨率预设。选中的值同时作用于关键帧和成片：runner 出完图会立刻把关键帧
+# 对齐到 final_width x final_height（见 align_frame_to_target），所以换分辨率就是换
+# 整条链的画幅，不再靠最后一步硬拉伸。
+RESOLUTION_OPTIONS = [
+    "832x1472（9:16 默认）",
+    "720x1280（9:16 标清）",
+    "1080x1920（9:16 高清）",
+    "480x854（9:16 省显存）",
+    "自定义（用 final_width / final_height）",
+]
+RESOLUTION_PRESETS = {
+    "832x1472（9:16 默认）": (832, 1472),
+    "720x1280（9:16 标清）": (720, 1280),
+    "1080x1920（9:16 高清）": (1080, 1920),
+    "480x854（9:16 省显存）": (480, 854),
+}
+
+
+def resolve_resolution(resolution, final_width, final_height):
+    """把分辨率下拉解析成 (w, h)；选了「自定义」就用两个 INT 控件的值。"""
+    preset = RESOLUTION_PRESETS.get(str(resolution or "").strip())
+    if preset:
+        return int(preset[0]), int(preset[1])
+    return int(final_width), int(final_height)
+
+
 KEYFRAME_BACKEND_LABELS = {
     BACKEND_H3: "H3 自己出",
     BACKEND_QWEN2511: "Qwen-Image-Edit 2511",
@@ -1456,6 +1482,47 @@ if PromptServer is not None:
         image.convert("RGB").save(target)
         return target
 
+    def _normalize_keyframe_to_job(path, job_dir):
+        """把用户上传的帧归一成这个任务的分辨率：等比放大后中心裁切。
+
+        人换帧的时候不会刚好给 832x1472：可能是截图、可能是别处生成的 4:5 图。
+        在这里就裁好，保证手动帧和自动帧、和成片同尺寸，视频阶段不再被拉伸。
+        """
+        config_path = Path(job_dir) / "config.json"
+        if not config_path.is_file():
+            return None
+        try:
+            job_config = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        width = int(job_config.get("final_width") or 0)
+        height = int(job_config.get("final_height") or 0)
+        if width <= 0 or height <= 0:
+            return None
+        target = Path(path)
+        with Image.open(target) as image:
+            image = image.convert("RGB")
+            size = (image.width, image.height)
+            if size == (width, height):
+                return size
+            scale = max(width / size[0], height / size[1])
+            cover = (
+                max(width, round(size[0] * scale)),
+                max(height, round(size[1] * scale)),
+            )
+            # 放大用 bicubic（lanczos 放大会出振铃，观感像锐化过度），缩小用 lanczos。
+            resample = (
+                Image.BICUBIC
+                if cover[0] * cover[1] > size[0] * size[1]
+                else Image.LANCZOS
+            )
+            image = image.resize(cover, resample)
+            left = (cover[0] - width) // 2
+            top = (cover[1] - height) // 2
+            image = image.crop((left, top, left + width, top + height))
+            image.save(target)
+        return (width, height)
+
     @PromptServer.instance.routes.post(
         "/h3-long-video/keyframe/{job_id}/{index}/{side}/replace"
     )
@@ -1474,6 +1541,7 @@ if PromptServer is not None:
             target_dir.mkdir(parents=True, exist_ok=True)
             target = target_dir / f"seg{index:02d}_{side}_manual.png"
             await _write_keyframe_image(target, request)
+            size = _normalize_keyframe_to_job(target, job_dir)
 
             overrides = state.setdefault("keyframe_overrides", {})
             entry = overrides.setdefault(str(index), {})
@@ -1509,6 +1577,7 @@ if PromptServer is not None:
                     "index": index,
                     "side": side,
                     "path": target.as_posix(),
+                    "size": list(size) if size else None,
                     "url": f"/h3-long-video/media/{job_id}/keyframe/{index}/{side}",
                     "queued": queued,
                     "note": note,
@@ -1962,6 +2031,12 @@ class H3LongVideoDirector:
                     KEYFRAME_BACKEND_OPTIONS,
                     {"default": KEYFRAME_BACKEND_OPTIONS[0]},
                 ),
+                # 必须放在最后：老工作流的 widgets_values 是按顺序存的，插在中间会把
+                # 后面控件的值顶到新控件上。选了预设就盖掉 final_width/height。
+                "resolution": (
+                    RESOLUTION_OPTIONS,
+                    {"default": RESOLUTION_OPTIONS[0]},
+                ),
             },
         }
 
@@ -1993,6 +2068,7 @@ class H3LongVideoDirector:
         job_name="",
         keyframe_backend=KEYFRAME_BACKEND_OPTIONS[0],
         resume_job_id="",
+        resolution=RESOLUTION_OPTIONS[0],
         **reference_images,
     ):
         global _ACTIVE_JOB
@@ -2114,8 +2190,12 @@ class H3LongVideoDirector:
             config["scheduler"] = scheduler
             config["two_pass_scheduler"] = scheduler
             config["megapixels"] = float(megapixels)
+            final_width, final_height = resolve_resolution(
+                resolution, final_width, final_height
+            )
             config["final_width"] = int(final_width)
             config["final_height"] = int(final_height)
+            config["resolution"] = str(resolution)
             actual_seed = _resolve_seed(seed, randomize_seed)
             config["base_seed"] = actual_seed
             if config["megapixels"] <= 0:
@@ -2274,6 +2354,11 @@ class H3SingleClipDirector:
                         "default": "",
                     },
                 ),
+                # 放最后：老工作流按顺序存 widgets_values，插中间会错位。
+                "resolution": (
+                    RESOLUTION_OPTIONS,
+                    {"default": RESOLUTION_OPTIONS[0]},
+                ),
             },
         }
 
@@ -2301,6 +2386,7 @@ class H3SingleClipDirector:
         seed=0,
         randomize_seed=True,
         job_name="",
+        resolution=RESOLUTION_OPTIONS[0],
         **reference_images,
     ):
         global _ACTIVE_JOB
@@ -2311,6 +2397,9 @@ class H3SingleClipDirector:
         seconds = float(seconds)
         if seconds <= 0:
             raise ValueError("seconds must be greater than 0")
+        final_width, final_height = resolve_resolution(
+            resolution, final_width, final_height
+        )
         final_width = int(final_width)
         final_height = int(final_height)
         ratio = final_width / final_height if final_height else 0

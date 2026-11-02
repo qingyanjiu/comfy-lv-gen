@@ -622,6 +622,245 @@ def keyframe_size(config):
     return width, height
 
 
+# ---------------------------------------------------------------------------
+# 关键帧 → 成片分辨率：对齐 / 扩图
+#
+# 背景：关键帧一直是固定 608x1056（比例 0.5758），成片却是 832x1472（0.5652），
+# 差 2.4%。以前靠 ``normalize_video_resolution`` 的 ``scale=W:H`` 硬拉伸圆过去，
+# 相当于整片被横向压扁 2.4%。现在改成两头都按用户选的分辨率走：
+#
+#   1. 关键帧出图后立刻对齐到 final_width x final_height，H3 拿到的首尾帧和成片
+#      同尺寸同比例，剪辑阶段不再需要拉伸；
+#   2. 比例对不上时，``keyframe_align`` 决定怎么补：
+#        crop     —— 等比放大后中心裁切（默认，零额外耗时）
+#        outpaint —— 铺灰底走 2.1 扩图 LoRA，把缺的那一截补成真实场景（约 +35s/帧）
+#        off      —— 保持旧行为（关键帧维持生成尺寸，交给视频阶段缩放）
+#
+# 手动替换的帧也走同一套归一，所以用户可以随便丢一张图进来。
+KEYFRAME_ALIGN_MODES = ("crop", "outpaint", "off")
+
+# 和 skill 里 ``outpaint_916()`` 用的触发词一致：只描述"把灰区补成场景"，不描述内容。
+DEFAULT_OUTPAINT_PROMPT = (
+    "Outpaint the image: replace the solid gray areas with a seamless continuation "
+    "of the scene, keeping the existing picture unchanged."
+)
+
+# 扩图专用预设：官方 int8（ray 微调版在扩图上会乱造角度）+ 扩图 LoRA，20 步。
+# 2.1 的 Canvas Stable Diffusion 编号沿用 build_qwen_keyframe_graph 的 2.1 分支。
+OUTPAINT_PRESET = {
+    "unet": "qwen_image_2.1_int8_convrot.safetensors",
+    "clip": "qwen3vl_8b_int8_convrot.safetensors",
+    "vae": "qwen_image_2.1_vae_bf16.safetensors",
+    "lora": r"Qwen-功能2.1\Qwen21-图像扩展qwen-image-2.1-outpaint-v2.safetensors",
+    "steps": 20,
+    "cfg": 1.0,
+    "shift": None,
+    "prefix": "qwen21_outpaint",
+}
+
+DEFAULT_OUTPAINT_MEGAPIXELS = 0.75
+
+
+def target_frame_size(config):
+    """成片分辨率，关键帧要对齐到它。"""
+    width = int(config.get("final_width") or 0)
+    height = int(config.get("final_height") or 0)
+    if width <= 0 or height <= 0:
+        raise RuntimeError("final_width/final_height must be set before aligning keyframes")
+    return width, height
+
+
+def keyframe_align_mode(config):
+    value = str(config.get("keyframe_align") or "crop").strip().lower()
+    return value if value in KEYFRAME_ALIGN_MODES else "crop"
+
+
+def image_size(path):
+    from PIL import Image
+
+    with Image.open(path) as image:
+        return int(image.width), int(image.height)
+
+
+def exact_frame(size, target):
+    return int(size[0]) == int(target[0]) and int(size[1]) == int(target[1])
+
+
+def aspect_gap(size, target):
+    """两个尺寸的比例相对差，0.01 = 差 1%。"""
+    if not size[1] or not target[1]:
+        return 0.0
+    return abs((size[0] / size[1]) - (target[0] / target[1])) / (target[0] / target[1])
+
+
+def cover_geometry(size, target):
+    """等比放大到能盖住目标框后的尺寸（中心裁切用）。"""
+    scale = max(target[0] / size[0], target[1] / size[1])
+    return max(target[0], round(size[0] * scale)), max(target[1], round(size[1] * scale))
+
+
+def _align32(value):
+    return max(32, int(round(value / 32.0)) * 32)
+
+
+def outpaint_canvas_geometry(size, target, megapixels=None):
+    """算出扩图灰底画布：目标比例、约 megapixels 像素预算、32 对齐。
+
+    返回 ``(canvas_w, canvas_h, paste_x, paste_y, scaled_w, scaled_h)``。
+    源图等比缩到刚好有一边贴满画布，另一边留灰给模型补。
+
+    宽高都要 32 对齐，单独按比例算会让比例再飘 1% 左右（640x1120 = 0.5714，
+    目标是 0.5652），所以这里在预算附近搜一遍，挑「比例误差最小」的那组。
+    """
+    ratio = target[0] / target[1]
+    mp = float(megapixels or DEFAULT_OUTPAINT_MEGAPIXELS)
+    ideal_h = math.sqrt(mp * 1_000_000 / ratio)
+    best = None
+    for step in range(-6, 7):
+        height = _align32(ideal_h + step * 32)
+        width = _align32(height * ratio)
+        error = abs(width / height - ratio) / ratio
+        budget = abs(width * height - mp * 1_000_000) / (mp * 1_000_000)
+        # 比例误差权重远高于像素预算：扩图的目的是"按目标比例补齐"，
+        # 为了凑像素数把比例搞歪 1%，后面还得再裁一刀，白扩。
+        score = error * 20 + budget * 0.5
+        if best is None or score < best[0]:
+            best = (score, width, height)
+    _, canvas_w, canvas_h = best
+    scale = min(canvas_w / size[0], canvas_h / size[1])
+    scaled_w = max(1, int(round(size[0] * scale)))
+    scaled_h = max(1, int(round(size[1] * scale)))
+    paste_x = (canvas_w - scaled_w) // 2
+    paste_y = (canvas_h - scaled_h) // 2
+    return canvas_w, canvas_h, paste_x, paste_y, scaled_w, scaled_h
+
+
+def _resize_filter(src, dst):
+    """放大用 bicubic（lanczos 放大会有振铃，观感像"锐化过度"），缩小用 lanczos。"""
+    from PIL import Image
+
+    return Image.BICUBIC if dst[0] * dst[1] > src[0] * src[1] else Image.LANCZOS
+
+
+def _center_crop_resize(path, target):
+    """等比放大后中心裁切到目标比例，再缩放到精确尺寸。"""
+    from PIL import Image
+
+    with Image.open(path) as image:
+        image = image.convert("RGB")
+        size = (image.width, image.height)
+        cover = cover_geometry(size, target)
+        if cover != size:
+            image = image.resize(cover, _resize_filter(size, cover))
+        left = (cover[0] - target[0]) // 2
+        top = (cover[1] - target[1]) // 2
+        image = image.crop((left, top, left + target[0], top + target[1]))
+        image.save(path)
+    return path
+
+
+def _resize_to(path, target):
+    from PIL import Image
+
+    with Image.open(path) as image:
+        image = image.convert("RGB")
+        size = (image.width, image.height)
+        if exact_frame(size, target):
+            return path
+        image = image.resize(target, _resize_filter(size, target))
+        image.save(path)
+    return path
+
+
+def _gray_canvas(src_path, target, megapixels=None):
+    """把源图贴到目标比例的灰底画布上，返回 (画布路径, 画布尺寸)。
+
+    画布写在 ``comfy_input_dir`` 里，名字带随机后缀，避免并发跑任务时互相覆盖。
+    """
+    from PIL import Image
+
+    with Image.open(src_path) as image:
+        image = image.convert("RGB")
+        size = (image.width, image.height)
+        canvas_w, canvas_h, px, py, sw, sh = outpaint_canvas_geometry(size, target, megapixels)
+        if (sw, sh) != size:
+            image = image.resize((sw, sh), _resize_filter(size, (sw, sh)))
+        canvas = Image.new("RGB", (canvas_w, canvas_h), (127, 127, 127))
+        canvas.paste(image, (px, py))
+        return canvas, (canvas_w, canvas_h)
+
+
+def _save_canvas(config, canvas, label):
+    directory = Path(config["comfy_input_dir"])
+    directory.mkdir(parents=True, exist_ok=True)
+    name = f"h3_outpaint_{uuid.uuid4().hex[:8]}.png"
+    target = directory / name
+    canvas.save(target)
+    return target.as_posix()
+
+
+def run_outpaint_pass(config, src_path, target, seed, label=None):
+    """把 src_path 扩成 target 比例，返回扩图后的临时图路径（不覆盖原图）。"""
+    canvas, (canvas_w, canvas_h) = _gray_canvas(src_path, target)
+    canvas_path = _save_canvas(config, canvas, label)
+    prompt = str(config.get("keyframe_outpaint_prompt") or DEFAULT_OUTPAINT_PROMPT)
+    preset = dict(OUTPAINT_PRESET)
+    if config.get("keyframe_outpaint_lora") is not None:
+        preset["lora"] = str(config.get("keyframe_outpaint_lora") or "")
+    if config.get("keyframe_outpaint_unet"):
+        preset["unet"] = str(config["keyframe_outpaint_unet"])
+    preset["steps"] = int(config.get("keyframe_outpaint_steps") or preset["steps"])
+    graph = build_qwen_keyframe_graph(
+        config,
+        BACKEND_QWEN21,
+        prompt,
+        canvas_path,
+        seed,
+        preset=preset,
+        size=(canvas_w, canvas_h),
+    )
+    prompt_id, entry = submit_graph(config, graph, label or f"Outpaint {seed}")
+    images = (entry.get("outputs") or {}).get("32", {}).get("images") or []
+    if not images:
+        raise RuntimeError("Outpaint pass produced no image")
+    return str(resolve_output(config, images[0]))
+
+
+def align_frame_to_target(config, path, seed=0, label=None):
+    """把一帧关键帧对齐到成片分辨率；返回（可能被覆盖过的）路径。
+
+    ``keyframe_align = off`` 时原样返回，保持「关键帧尺寸随便、视频阶段缩放」的旧行为。
+    读不了图 / 配置不全时也只打日志并返回原路径——对齐是"锦上添花"，
+    不能因为它把整条任务打断。
+    """
+    mode = keyframe_align_mode(config)
+    if mode == "off":
+        return path
+    try:
+        target = target_frame_size(config)
+        size = image_size(path)
+        if exact_frame(size, target):
+            return path
+        gap = aspect_gap(size, target)
+        # 0.5% 以内直接缩放到目标尺寸——中心裁切掉的那几像素肉眼看不出来，不值得为它扩图。
+        if mode == "outpaint" and gap > 0.005:
+            try:
+                source = run_outpaint_pass(config, path, target, seed, label)
+                return _resize_to(_center_crop_resize(source, target), target)
+            except Exception as exc:
+                print(
+                    f"[H3] 扩图失败，退回中心裁切（{type(exc).__name__}: {exc}）",
+                    flush=True,
+                )
+        return _resize_to(_center_crop_resize(path, target), target)
+    except Exception as exc:
+        print(
+            f"[H3] 关键帧对齐跳过（{type(exc).__name__}: {exc}）：{path}",
+            flush=True,
+        )
+        return path
+
+
 # Every Qwen anchor carries this tail. Both edit models read the identity
 # references as "people in the picture", and without an explicit headcount they
 # happily render the same girl two or three times (verified on the very first
@@ -664,7 +903,7 @@ def qwen_keyframe_preset(config, backend):
     return preset
 
 
-def build_qwen_keyframe_graph(config, backend, prompt, canvas, seed):
+def build_qwen_keyframe_graph(config, backend, prompt, canvas, seed, preset=None, size=None):
     """Draw one anchor frame with a Qwen edit model, at a fixed resolution.
 
     ``canvas`` is the frame this one has to grow out of:
@@ -682,8 +921,10 @@ def build_qwen_keyframe_graph(config, backend, prompt, canvas, seed):
     """
     if backend not in QWEN_BACKENDS:
         raise RuntimeError(f"Unknown keyframe backend: {backend}")
-    preset = qwen_keyframe_preset(config, backend)
-    width, height = keyframe_size(config)
+    # ``preset`` / ``size`` 让扩图复用这一套图：同一个 2.1 编码器 + VAEEncode 路径，
+    # 只换 UNET/LoRA 和画布尺寸，避免再维护第二份完全平行的建图代码。
+    preset = preset or qwen_keyframe_preset(config, backend)
+    width, height = size or keyframe_size(config)
     references = [str(item) for item in config.get("reference_images") or []]
     # Measured on 2.1 with the same canvas and seed: canvas alone renders
     # one person; canvas + either one or two identity references renders
@@ -963,6 +1204,7 @@ def run_qwen_keyframe(config, backend, prompt, canvas, seed, label):
     if not images:
         raise RuntimeError("Qwen keyframe image output was not reported")
     path = str(resolve_output(config, images[0]))
+    path = align_frame_to_target(config, path, seed=seed, label=f"{label or 'Qwen'} align")
     is_end = canvas is not None
     return {
         "prompt_id": prompt_id,
@@ -1203,10 +1445,12 @@ def run_keyframe(config, segment, seed, first_frame=None, prompt=None, label=Non
     last_images = outputs.get("40", {}).get("images", [])
     if not first_images or not last_images:
         raise RuntimeError("Keyframe image outputs were not reported")
+    first_path = str(resolve_output(config, first_images[0]))
+    last_path = str(resolve_output(config, last_images[0]))
     return {
         "prompt_id": prompt_id,
-        "first_frame": str(resolve_output(config, first_images[0])),
-        "last_frame": str(resolve_output(config, last_images[0])),
+        "first_frame": align_frame_to_target(config, first_path, seed=seed, label="H3 keyframe align"),
+        "last_frame": align_frame_to_target(config, last_path, seed=seed + 1, label="H3 keyframe align"),
     }
 
 
@@ -1312,6 +1556,13 @@ def normalize_video_resolution(config, video, prompt_id):
         / f"single_{prompt_id[:8]}_{width}x{height}.mp4"
     )
     output.parent.mkdir(parents=True, exist_ok=True)
+    # 等比放大到盖住目标框再中心裁切，而不是直接 scale=W:H。
+    # 直接 scale 是硬拉伸：608x1056(0.5758) → 832x1472(0.5652) 会把整片横向压扁 2.4%，
+    # 人脸会变窄、圆的东西变椭圆。和关键帧那边的 crop 用同一套几何。
+    video_filter = (
+        f"scale={width}:{height}:force_original_aspect_ratio=increase:flags={flags},"
+        f"crop={width}:{height}"
+    )
     subprocess.run(
         [
             find_ffmpeg(),
@@ -1323,7 +1574,7 @@ def normalize_video_resolution(config, video, prompt_id):
             "-map",
             "0:a:0?",
             "-vf",
-            f"scale={width}:{height}:flags={flags}",
+            video_filter,
             "-r",
             "24",
             "-c:v",
@@ -1515,12 +1766,16 @@ def rebuild_two_pass_postprocess(config, state, state_path, fix_frames):
     return rebuilt
 
 
-def manual_keyframe(overrides, segment, side):
+def manual_keyframe(overrides, segment, side, config=None):
     """Return the user-supplied keyframe path for a segment side, if any.
 
     The review gate lets a human replace an AI keyframe after it has been
     rendered. Those overrides live in ``state["keyframe_overrides"]`` and always
     win over both cached and freshly generated frames.
+
+    给了 ``config`` 就顺手把这张图对齐到成片分辨率：用户可以直接往磁盘上覆盖
+    一张任意尺寸的图（截图、PS 改过的、别处生成的），这里统一归一成
+    final_width x final_height，省得视频阶段再被拉伸。已经对齐过的会原地跳过。
     """
     if not overrides:
         return None
@@ -1535,7 +1790,16 @@ def manual_keyframe(overrides, segment, side):
     candidate = Path(path)
     if not candidate.is_file():
         return None
-    return candidate.as_posix()
+    resolved = candidate.as_posix()
+    if config is not None:
+        try:
+            resolved = align_frame_to_target(config, resolved, label="manual keyframe align")
+        except Exception as exc:
+            print(
+                f"[H3] 手动帧对齐失败，按原样使用（{type(exc).__name__}: {exc}）",
+                flush=True,
+            )
+    return resolved
 
 
 def keyframe_attempt(attempts, segment, side):
@@ -1671,7 +1935,7 @@ def ensure_keyframe_chain(
             )
             or (index > 0 and specs[index - 1].get("free_end"))
         )
-        manual_start = manual_keyframe(overrides, index + 1, "start")
+        manual_start = manual_keyframe(overrides, index + 1, "start", config)
         if manual_start:
             start_frame = manual_start
             start_prompt_id = None
@@ -1759,7 +2023,7 @@ def ensure_keyframe_chain(
         reroll_start = bool(previous) and previous.get("start_sha1") == ""
         reroll_end = bool(previous) and previous.get("end_sha1") == ""
         hold_composition = should_anchor_last_frame(config, spec)
-        manual_end = manual_keyframe(overrides, index + 1, "end")
+        manual_end = manual_keyframe(overrides, index + 1, "end", config)
         if manual_end:
             end_frame = manual_end
             end_prompt_id = None
@@ -1957,7 +2221,11 @@ def stitch_segments(
     _, audio_fade_filters = build_fade_filters(audio_fade_boundaries)
 
     def encode_full():
-        video_filter = f"scale={width}:{height}:flags=lanczos"
+        # 同上：等比盖住再裁，避免比例微差被硬拉伸。
+        video_filter = (
+            f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
+            f"crop={width}:{height}"
+        )
         if video_fade_filters:
             video_filter += "," + ",".join(video_fade_filters)
         command = [
