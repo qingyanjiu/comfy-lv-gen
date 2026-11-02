@@ -1148,6 +1148,14 @@ function migrateWidgetValues(node) {
   if (finalHeight && !Number.isFinite(Number(finalHeight.value))) {
     finalHeight.value = 1472;
   }
+  // 「每处定格剪完留多久」：ComfyUI 直接拿控件 key 当标签，这里是英文，补个中文名。
+  const holdSeconds = findWidget(node, "static_compact_hold_seconds");
+  if (holdSeconds) {
+    holdSeconds.label = "定格保留(秒)";
+    if (!Number.isFinite(Number(holdSeconds.value))) {
+      holdSeconds.value = 0.12;
+    }
+  }
 }
 
 // 分辨率档位表在 config.json 的 resolution_presets 里，前端不复制一份。

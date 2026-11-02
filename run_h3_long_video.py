@@ -1834,9 +1834,13 @@ def compact_static(config, playlist, work_dir):
     fps = float(config.get("fps", 24) or 24)
     # 阈值是 p99 口径：< 9 说明整帧没有「局部大幅移动」，即人物真的没动。
     threshold = float(config.get("static_compact_threshold", 9.0))
-    head_keep = max(0, int(config.get("static_compact_head_keep", 3)))
-    mid_keep = max(1, int(config.get("static_compact_mid_keep", 5)))
-    tail_keep = max(0, int(config.get("static_compact_tail_keep", 6)))
+    # 「每处定格剪完留多久」——0.12s × 24fps ≈ 3 帧，够避开硬切又看不出停顿。
+    # 老配置里的 *_keep（帧数）仍然认，写了就以它为准，方便个别用户精调。
+    hold_seconds = float(config.get("static_compact_hold_seconds", 0.12) or 0.0)
+    hold_frames = max(1, int(round(hold_seconds * fps)))
+    head_keep = max(0, int(config.get("static_compact_head_keep", hold_frames)))
+    mid_keep = max(1, int(config.get("static_compact_mid_keep", hold_frames)))
+    tail_keep = max(0, int(config.get("static_compact_tail_keep", hold_frames)))
     min_frames = max(2, int(round(float(config.get("static_compact_min_seconds", 0.4)) * fps)))
     mid_min_frames = max(2, int(round(float(config.get("static_compact_mid_min_seconds", 0.4)) * fps)))
     min_saving = max(1, int(round(float(config.get("static_compact_min_saving", 0.3)) * fps)))
