@@ -231,9 +231,6 @@ def generation_signature(config, segment, source_prompt_id):
         "static_compact_min_seconds",
         "static_compact_mid_min_seconds",
         "static_compact_min_saving",
-        "static_compact_creep_threshold",
-        "static_compact_creep_factor",
-        "static_compact_creep_min_seconds",
         "qa_anchor_ssim_min",
         "qa_face_check",
         "qa_face_sim_min",
@@ -1720,14 +1717,17 @@ def find_static_runs(diffs, threshold=1.0, min_frames=4):
     return runs
 
 
-def build_keep_mask(total, runs, head_keep, mid_keep, tail_keep, mid_min_frames):
-    """把每段静止区间抽稀成 head/mid/tail_keep 帧，返回长度 ``total`` 的布尔掩码。
+def build_keep_ranges(total, runs, head_keep, mid_keep, tail_keep, mid_min_frames):
+    """按「头/中/尾舍得留几帧」把每段静止区间压短，返回要保留的帧区间列表。
 
-    和早先「只留区间前 N 帧」相比改成**均匀取帧**：区间两端各留一帧，跳变摊在
-    区间内部，不会正好落在动作起手的一瞬间（那里最容易被看出卡顿）。
+    H3 的动作是断续的：抬手 → 停 → 再继续。只剪尾巴消不掉中段的定格，所以
+    头部和中段一起处理。动作区（非静止区间）一帧不动。
     """
-    keep = np.ones(total, dtype=bool)
+    keep = []
+    cursor = 0
     for first, last in runs:
+        if first > cursor:
+            keep.append((cursor, first))
         count = last - first + 1
         if first == 0:
             allowed = head_keep
@@ -1737,65 +1737,13 @@ def build_keep_mask(total, runs, head_keep, mid_keep, tail_keep, mid_min_frames)
             allowed = mid_keep
         else:
             allowed = count
-        allowed = max(1, min(count, allowed)) if allowed > 0 else count
-        picks = np.unique(
-            np.linspace(first, last, allowed).round().astype(int)
-        )
-        keep[first : last + 1] = False
-        keep[picks] = True
-    return keep
-
-
-def thin_creep(keep, scores, static_runs, threshold, factor, min_frames, window=6):
-    """把「缓动区」按 ``factor`` 抽稀：「在动，但慢到看不出在动」的区间。
-
-    阈值 9 只抓得住真静止（p99 < 9 = 人物一帧都没动）。实测 seg2 的 p99 中位数
-    是 11——整段都是缓慢的肢体漂移，判不成静止，可一分钟只挪几像素，观感就是
-    定格。这类区间按比例抽帧，把「几乎不动」加速到「正常动」。
-
-    判据用**滑动平均**而不是单帧值：缓动区的 p99 在 8~20 之间抖动，单帧判会有
-    一半帧漏掉，平滑 0.25 秒后才连成片。
-    """
-    if factor < 2 or threshold <= 0:
-        return keep
-    inside_static = np.zeros(len(keep), dtype=bool)
-    for first, last in static_runs:
-        inside_static[first : last + 1] = True
-    smoothed = scores.astype(np.float32)
-    if window > 1:
-        kernel = np.ones(window, dtype=np.float32) / window
-        smoothed = np.convolve(smoothed, kernel, mode="same")
-    quiet = (smoothed < threshold) & ~inside_static[:-1]
-    index = 0
-    while index < len(quiet):
-        if not quiet[index]:
-            index += 1
-            continue
-        end = index
-        while end < len(quiet) and quiet[end]:
-            end += 1
-        # quiet 的 index..end-1 覆盖帧 index..end
-        if end - index + 1 >= min_frames:
-            for frame in range(index, min(end + 1, len(keep))):
-                if (frame - index) % factor:
-                    keep[frame] = False
-        index = end
-    return keep
-
-
-def mask_to_ranges(keep):
-    """布尔掩码 → 要保留的帧区间 ``[(first, last))``。"""
-    ranges = []
-    start = None
-    for index, flag in enumerate(keep):
-        if flag and start is None:
-            start = index
-        elif not flag and start is not None:
-            ranges.append((start, index))
-            start = None
-    if start is not None:
-        ranges.append((start, len(keep)))
-    return ranges
+        take = max(1, min(count, allowed)) if allowed > 0 else count
+        keep.append((first, first + take))
+        cursor = last + 1
+    if cursor < total:
+        keep.append((cursor, total))
+    merged = [(a, b) for a, b in keep if b > a]
+    return merged
 
 
 def has_audio_stream(video):
@@ -1886,19 +1834,12 @@ def compact_static(config, playlist, work_dir):
     fps = float(config.get("fps", 24) or 24)
     # 阈值是 p99 口径：< 9 说明整帧没有「局部大幅移动」，即人物真的没动。
     threshold = float(config.get("static_compact_threshold", 9.0))
-    head_keep = max(0, int(config.get("static_compact_head_keep", 2)))
-    mid_keep = max(1, int(config.get("static_compact_mid_keep", 2)))
-    tail_keep = max(0, int(config.get("static_compact_tail_keep", 3)))
+    head_keep = max(0, int(config.get("static_compact_head_keep", 3)))
+    mid_keep = max(1, int(config.get("static_compact_mid_keep", 5)))
+    tail_keep = max(0, int(config.get("static_compact_tail_keep", 6)))
     min_frames = max(2, int(round(float(config.get("static_compact_min_seconds", 0.4)) * fps)))
     mid_min_frames = max(2, int(round(float(config.get("static_compact_mid_min_seconds", 0.4)) * fps)))
     min_saving = max(1, int(round(float(config.get("static_compact_min_saving", 0.3)) * fps)))
-    # 第二层：缓动区（在动但太慢）按比例抽帧，把「几乎定格」加速。
-    creep_threshold = float(config.get("static_compact_creep_threshold", 16.0))
-    creep_factor = max(1, int(config.get("static_compact_creep_factor", 2)))
-    creep_min_frames = max(
-        2, int(round(float(config.get("static_compact_creep_min_seconds", 0.3)) * fps))
-    )
-    creep_window = max(1, int(round(float(config.get("static_compact_creep_window", 0.25)) * fps)))
 
     compacted = []
     for index, (path, seconds) in enumerate(playlist, 1):
@@ -1912,9 +1853,10 @@ def compact_static(config, playlist, work_dir):
             )
             compacted.append((path, seconds))
             continue
-        p99 = np.array([p99 for _, p99 in scores])
-        total = len(p99) + 1
-        runs = find_static_runs(list(p99), threshold=threshold, min_frames=2)
+        total = len(scores) + 1
+        runs = find_static_runs(
+            [p99 for _, p99 in scores], threshold=threshold, min_frames=2
+        )
         head_tail_runs = [
             (first, last)
             for first, last in runs
@@ -1926,20 +1868,12 @@ def compact_static(config, playlist, work_dir):
             if 0 < first and last < total - 1 and (last - first + 1) >= mid_min_frames
         ]
         active = sorted(head_tail_runs + mid_runs)
-        if not active and creep_factor < 2:
+        if not active:
             compacted.append((path, seconds))
             continue
-        keep = build_keep_mask(total, active, head_keep, mid_keep, tail_keep, mid_min_frames)
-        keep = thin_creep(
-            keep,
-            p99,
-            active,
-            threshold=creep_threshold,
-            factor=creep_factor,
-            min_frames=creep_min_frames,
-            window=creep_window,
+        ranges = build_keep_ranges(
+            total, active, head_keep, mid_keep, tail_keep, mid_min_frames
         )
-        ranges = mask_to_ranges(keep)
         kept = sum(b - a for a, b in ranges)
         removed = total - kept
         # 保护：只有「整段几乎不动」（空镜、极慢的慢动作）才跳过——那种素材
