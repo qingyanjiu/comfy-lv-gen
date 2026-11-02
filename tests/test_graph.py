@@ -1371,9 +1371,11 @@ class GraphTests(unittest.TestCase):
                     self.assertEqual(encoder["inputs"]["resolution"], 0)
                     first = graph[encoder["inputs"]["images.image_1"][0]]
                     self.assertEqual(first["class_type"], "ImageScale")
+                    # 2.1 跟着图1/画布的比例出图（不再固定 608x1056），
+                    # 4:5 的参考图因此不会被裁成 9:16 的窄条。
                     self.assertEqual(
                         (first["inputs"]["width"], first["inputs"]["height"]),
-                        pipeline.keyframe_size(self.config),
+                        pipeline.qwen_keyframe_size(self.config, canvas),
                     )
                     # The rest are pure identity input: pixel-budgeted, never
                     # allowed to define the latent size. With a canvas there
@@ -1495,7 +1497,7 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(mushed["26c"]["class_type"], "ImageScale")
         self.assertEqual(
             (mushed["26c"]["inputs"]["width"], mushed["26c"]["inputs"]["height"]),
-            pipeline.keyframe_size(config),
+            pipeline.qwen_keyframe_size(config, canvas),
         )
         self.assertEqual(
             mushed["28"]["inputs"]["images.image_1"][0], "26c"
@@ -1509,11 +1511,13 @@ class GraphTests(unittest.TestCase):
                 "TextEncodeQwenImageEditPlus",
                 8,
             ),
+            # 2.1 走 ray 微调版 + 20 步、不挂 LoRA（定稿配方）。官方 int8
+            # 会把头转向 3/4 侧面，8 步蒸馏档也只是省时间，这一档不追速度。
             pipeline.BACKEND_QWEN21: (
                 "UNETLoader",
-                "qwen_image_2.1_int8_convrot.safetensors",
+                r"Qwen\Qwen21-rayQwen21_v1_int8_convrot.safetensors",
                 "TextEncodeQwenImage21",
-                8,
+                20,
             ),
         }
         for backend, (loader, unet, encoder, steps) in models.items():
@@ -1537,6 +1541,16 @@ class GraphTests(unittest.TestCase):
             self.assertTrue(encoders, backend)
             self.assertEqual(graph["30"]["inputs"]["steps"], steps)
             self.assertEqual(graph["30"]["inputs"]["cfg"], 1.0)
+            loras = [
+                node
+                for node in graph.values()
+                if node["class_type"] == "LoraLoaderModelOnly"
+            ]
+            if backend == pipeline.BACKEND_QWEN21:
+                # ray 版 20 步不需要蒸馏 LoRA，挂了反而把皮肤磨平
+                self.assertEqual(loras, [])
+            else:
+                self.assertTrue(loras, "2511 必须挂 Lightning 8 步 LoRA")
 
     def test_run_keyframe_dispatches_to_the_qwen_builder(self):
         config = dict(self.config)
@@ -1709,6 +1723,35 @@ class KeyframeAlignTests(unittest.TestCase):
         self.assertIn("images.image_1", encoder["inputs"])
         latent_source = by_type["KSampler"]["inputs"]["latent_image"]
         self.assertEqual(graph[latent_source[0]]["class_type"], "TextEncodeQwenImage21")
+
+    def test_near_target_aspect_does_not_pay_for_an_outpaint(self):
+        """1080x1920 不是 32 的倍数，2.1 会输出 1088x1920（差 0.74%）。
+
+        这一档必须直接 cover+crop，不能每帧多跑一次扩图——阈值卡在 0.5%
+        的时候，选 1080 就是每帧白等一分钟。
+        """
+        from PIL import Image
+
+        self.config["keyframe_align"] = "outpaint"
+        self.config["final_width"] = 1080
+        self.config["final_height"] = 1920
+        frame = self.temp / "almost.png"
+        Image.new("RGB", (1088, 1920), (90, 100, 110)).save(frame)
+
+        calls = []
+        original = pipeline.run_outpaint_pass
+
+        def fake(*args, **kwargs):
+            calls.append(args)
+            raise AssertionError("不该走到扩图")
+
+        pipeline.run_outpaint_pass = fake
+        try:
+            out = pipeline.align_frame_to_target(self.config, frame.as_posix())
+        finally:
+            pipeline.run_outpaint_pass = original
+        self.assertEqual(calls, [])
+        self.assertEqual(self._size(out), (1080, 1920))
 
     def test_align_never_raises_on_a_missing_file(self):
         missing = (self.temp / "nope.png").as_posix()
