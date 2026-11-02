@@ -171,6 +171,7 @@ def build_workflow(config):
                 "",
                 h3_director.KEYFRAME_BACKEND_OPTIONS[0],
                 h3_director.RESOLUTION_OPTIONS[0],
+                h3_director.STATIC_COMPACT_HOLD_DEFAULT,
             ],
         },
     ]
@@ -305,6 +306,7 @@ def build_single_clip_workflow(config):
             True,
             "",
             h3_director.RESOLUTION_OPTIONS[0],
+            h3_director.STATIC_COMPACT_HOLD_DEFAULT,
         ],
     }
     nodes.append(director)

@@ -1862,9 +1862,28 @@ class KeyframeAlignTests(unittest.TestCase):
         self.assertEqual(len(compacted), 1)
         path, seconds = compacted[0]
         self.assertTrue(path.endswith(".compact.mp4"))
-        # 动作 30 帧 + 尾部保留 6 帧 = 36 帧（1.5s）；静止区只许压，不许吃动作。
-        self.assertGreater(seconds, 33 / 24.0)
-        self.assertLess(seconds, 40 / 24.0)
+        # 动作 30 帧一帧不动 + 定格保留 0.12s×24fps≈3 帧 = 33 帧（1.375s）。
+        # 静止区只许压，不许吃动作。
+        self.assertGreaterEqual(seconds, 30 / 24.0)
+        self.assertLessEqual(seconds, 34 / 24.0)
+
+    def test_hold_seconds_controls_how_much_freeze_is_kept(self):
+        """「每处定格保留多久」：0.5s 就该留约 12 帧，0 就只留 1 帧。"""
+        video = self.temp / "clip.mp4"
+        total = self._write_video_with_still_tail(video)  # 30 动作 + 40 静止
+
+        def kept(hold):
+            config = {"fps": 24, "static_compact": True,
+                      "static_compact_hold_seconds": hold}
+            out = pipeline.compact_static(
+                config, [(video.as_posix(), total / 24.0)], self.temp
+            )
+            return int(round(out[0][1] * 24))
+
+        self.assertEqual(kept(0.0), 31)          # 只留 1 帧
+        self.assertEqual(kept(0.12), 33)         # 3 帧（默认）
+        self.assertGreaterEqual(kept(0.5), 40)   # 12 帧：留得越多剪得越少
+        self.assertLessEqual(kept(0.5), 44)
 
     def test_compact_static_skips_frozen_or_disabled_clips(self):
         config = {"fps": 24, "static_compact": True}

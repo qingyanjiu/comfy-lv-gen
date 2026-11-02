@@ -338,6 +338,22 @@ def _load_base_config():
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 
+def static_compact_hold_default(config=None):
+    """面板上「定格保留」控件的默认值（秒）。配置里写了就用配置的。"""
+    fallback = 0.12
+    try:
+        config = config if config is not None else _load_base_config()
+        value = float(config.get("static_compact_hold_seconds", fallback))
+    except Exception:
+        return fallback
+    if value < 0 or value > 1:
+        return fallback
+    return value
+
+
+STATIC_COMPACT_HOLD_DEFAULT = static_compact_hold_default()
+
+
 def _normalize_storyboard(
     value,
     two_pass_mode="跟随每段 JSON",
@@ -2117,6 +2133,17 @@ class H3LongVideoDirector:
                     RESOLUTION_OPTIONS,
                     {"default": RESOLUTION_OPTIONS[0]},  # 配置里的第一档
                 ),
+                # 每处「人物定格」剪完保留多久（秒）。0.12s ≈ 3 帧：够避开硬切，
+                # 又看不出停顿。0 = 只留 1 帧（剪得最狠）。同样放最后。
+                "static_compact_hold_seconds": (
+                    "FLOAT",
+                    {
+                        "default": STATIC_COMPACT_HOLD_DEFAULT,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.02,
+                    },
+                ),
             },
         }
 
@@ -2149,6 +2176,7 @@ class H3LongVideoDirector:
         keyframe_backend=KEYFRAME_BACKEND_OPTIONS[0],
         resume_job_id="",
         resolution=RESOLUTION_OPTIONS[0],
+        static_compact_hold_seconds=STATIC_COMPACT_HOLD_DEFAULT,
         **reference_images,
     ):
         global _ACTIVE_JOB
@@ -2276,6 +2304,9 @@ class H3LongVideoDirector:
             config["final_width"] = int(final_width)
             config["final_height"] = int(final_height)
             config["resolution"] = str(resolution)
+            config["static_compact_hold_seconds"] = max(
+                0.0, min(1.0, float(static_compact_hold_seconds))
+            )
             actual_seed = _resolve_seed(seed, randomize_seed)
             config["base_seed"] = actual_seed
             if config["megapixels"] <= 0:
@@ -2441,6 +2472,15 @@ class H3SingleClipDirector:
                     RESOLUTION_OPTIONS,
                     {"default": RESOLUTION_OPTIONS[0]},  # 配置里的第一档
                 ),
+                "static_compact_hold_seconds": (
+                    "FLOAT",
+                    {
+                        "default": STATIC_COMPACT_HOLD_DEFAULT,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.02,
+                    },
+                ),
             },
         }
 
@@ -2469,6 +2509,7 @@ class H3SingleClipDirector:
         randomize_seed=True,
         job_name="",
         resolution=RESOLUTION_OPTIONS[0],
+        static_compact_hold_seconds=STATIC_COMPACT_HOLD_DEFAULT,
         **reference_images,
     ):
         global _ACTIVE_JOB
@@ -2545,6 +2586,9 @@ class H3SingleClipDirector:
                     "ref_image_size": ref_image_size,
                     "output_prefix": "h3_single_clip",
                     "job_name": _sanitize_job_name(job_name),
+                    "static_compact_hold_seconds": max(
+                        0.0, min(1.0, float(static_compact_hold_seconds))
+                    ),
                 }
             )
             actual_seed = _resolve_seed(seed, randomize_seed)
