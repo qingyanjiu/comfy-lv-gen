@@ -58,6 +58,7 @@ function ensureStyles() {
     .h3-director-review-title { color: #ffd479; font-size: 13px; font-weight: 700; white-space: nowrap; }
     .h3-director-review-hint { color: #c7b183; font-size: 12px; line-height: 1.4; flex: 1 1 220px; min-width: 0; }
     .h3-director-review-actions { display: flex; gap: 8px; align-items: center; flex: 0 0 auto; }
+    .h3-director-refimg { height: 84px; width: auto; max-width: 120px; border-radius: 4px; background: #000; cursor: zoom-in; flex: 0 0 auto; }
     .h3-director-go { border: 1px solid #3b6f55; background: #1d3a2a; color: #b9f2d3; border-radius: 4px; padding: 5px 12px; font-size: 13px; font-weight: 600; cursor: pointer; }
     .h3-director-go:hover { background: #265039; }
     .h3-director-go:disabled { opacity: 0.5; cursor: default; }
@@ -854,6 +855,7 @@ function updatePanel(ui, node, data) {
   }
 
   ui.lastKeyframes = data.keyframes || [];
+  ui.lastReference = data.reference_expand || null;
   // The backend decides which action the banner should offer: the review gate
   // ("gate"), a job whose keyframes are complete but whose videos are not
   // ("resume"), or a job that died before the keyframe set was finished
@@ -892,7 +894,27 @@ function updatePanel(ui, node, data) {
   if (ui.rerollAll) {
     ui.rerollAll.style.display = reviewState === "keyframes" ? "none" : "";
   }
-  if (reviewState === "gate") {
+  const referenceMode = reviewState === "reference";
+  if (ui.rerollRef) {
+    ui.rerollRef.style.display = referenceMode ? "" : "none";
+    ui.replaceRef.style.display = referenceMode ? "" : "none";
+    ui.refImage.style.display =
+      referenceMode && ui.lastReference?.url ? "" : "none";
+    if (referenceMode && ui.lastReference?.url) {
+      ui.refImage.src = ui.lastReference.url;
+    }
+  }
+  if (reviewState === "reference") {
+    const attempt = ui.lastReference?.attempts
+      ? `（第 ${ui.lastReference.attempts + 1} 次尝试）`
+      : "";
+    ui.reviewTitle.textContent = "参考图已扩好，等你确认";
+    ui.go.textContent = "没问题，生成关键帧";
+    ui.reviewHint.textContent =
+      "这是参考图1扩到成片比例后的效果，之后所有关键帧都用它当画布" +
+      `${attempt}。` +
+      "背景延伸没问题就点继续；不满意可以重扩一次，或换成你自己处理的图。";
+  } else if (reviewState === "gate") {
     ui.reviewTitle.textContent = "关键帧已生成，等待你确认";
     ui.go.textContent = "确认关键帧，生成视频";
     ui.reviewHint.textContent =
@@ -1261,6 +1283,12 @@ function installPanel(node) {
   );
 
   const review = makeElement("div", "h3-director-review");
+  const refImage = makeElement("img", "h3-director-refimg", "");
+  refImage.style.display = "none";
+  refImage.title = "参考图1扩到成片比例后的效果（点击放大）";
+  refImage.addEventListener("click", () => {
+    if (refImage.src) window.open(refImage.src, "_blank");
+  });
   const reviewTitle = makeElement(
     "div",
     "h3-director-review-title",
@@ -1270,8 +1298,12 @@ function installPanel(node) {
   const reviewActions = makeElement("div", "h3-director-review-actions");
   const go = makeElement("button", "h3-director-go", "确认关键帧，生成视频");
   const rerollAll = makeElement("button", "h3-director-refresh", "全部重生成");
-  reviewActions.append(go, rerollAll);
-  review.append(reviewTitle, reviewHint, reviewActions);
+  const rerollRef = makeElement("button", "h3-director-refresh", "重扩参考图");
+  rerollRef.style.display = "none";
+  const replaceRef = makeElement("button", "h3-director-refresh", "换参考图");
+  replaceRef.style.display = "none";
+  reviewActions.append(go, rerollAll, rerollRef, replaceRef);
+  review.append(refImage, reviewTitle, reviewHint, reviewActions);
 
   const keyframes = makeElement("div", "h3-director-keyframes");
   // 关键帧来源提示条：选了 Qwen / 只用手动图 时告诉用户该开哪张工作流。
@@ -1481,9 +1513,13 @@ function installPanel(node) {
     review,
     reviewTitle,
     reviewHint,
+    refImage,
+    rerollRef,
+    replaceRef,
     go,
     rerollAll,
     reviewState: "",
+    lastReference: null,
     keyframes,
     backendNote,
     transitions,
@@ -1733,6 +1769,20 @@ function installPanel(node) {
     if (!jobId) return;
     const mode = ui.reviewState || "gate";
     go.disabled = true;
+    if (mode === "reference") {
+      setNotice("已确认扩图，开始生成关键帧…");
+      try {
+        await postJson(
+          `/h3-long-video/reference/${encodeURIComponent(jobId)}/confirm`,
+          {},
+        );
+        startPolling(node, ui, jobId);
+      } catch (error) {
+        go.disabled = false;
+        setNotice(`确认失败：${error.message}`, "warn");
+      }
+      return;
+    }
     if (mode === "keyframes") {
       setNotice("正在补齐关键帧…");
       try {
@@ -1753,6 +1803,57 @@ function installPanel(node) {
       go.disabled = false;
       setNotice(`继续生成失败：${error.message}`, "warn");
     }
+  });
+
+  rerollRef?.addEventListener("click", async () => {
+    const jobId = currentJobId();
+    if (!jobId) return;
+    rerollRef.disabled = true;
+    setNotice("正在重新扩参考图（换一个 seed）…");
+    try {
+      await postJson(
+        `/h3-long-video/reference/${encodeURIComponent(jobId)}/reroll`,
+        {},
+      );
+      ui.lastReference = null;
+      startPolling(node, ui, jobId);
+    } catch (error) {
+      setNotice(`重新扩图失败：${error.message}`, "warn");
+    } finally {
+      rerollRef.disabled = false;
+    }
+  });
+
+  replaceRef?.addEventListener("click", async () => {
+    const jobId = currentJobId();
+    if (!jobId) return;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.addEventListener("change", async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const formData = new FormData();
+      formData.append("image", file, file.name);
+      setNotice("正在替换参考扩图（会自动裁到成片比例）…");
+      try {
+        const result = await postFormData(
+          `/h3-long-video/reference/${encodeURIComponent(jobId)}/replace`,
+          formData,
+        );
+        ui.lastReference = {
+          ...(ui.lastReference || {}),
+          status: "ready",
+          source: "user",
+          url: result.url,
+        };
+        setNotice("参考图已替换，请确认后再生成关键帧。");
+        refreshOnce();
+      } catch (error) {
+        setNotice(`替换失败：${error.message}`, "warn");
+      }
+    });
+    input.click();
   });
 
   rerollAll.addEventListener("click", async () => {

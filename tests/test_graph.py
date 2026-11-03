@@ -1057,6 +1057,41 @@ class GraphTests(unittest.TestCase):
             director._review_state({"status": "unknown"}, {}, [], 3, 0)
         )
 
+    def test_review_state_reference_gate(self):
+        # 扩图已生成但没确认、关键帧还没跑：面板先弹「扩图确认」卡。
+        state = {
+            "reference_expand": {"status": "ready", "confirmed": False}
+        }
+        self.assertEqual(
+            director._review_state({"status": "completed"}, state, [], 2, 0),
+            "reference",
+        )
+        # 确认之后回到正常流程（关键帧没跑、状态空闲 → 补关键帧入口）。
+        state["reference_expand"]["confirmed"] = True
+        self.assertEqual(
+            director._review_state({"status": "failed"}, state, [], 2, 0),
+            "keyframes",
+        )
+        # 关键帧已经生成过 → 不再回到扩图关卡。
+        state["reference_expand"]["confirmed"] = False
+        job_dir = self._write_job_keyframes(2)
+        keyframes = director._job_keyframes(job_dir, "job")
+        self.assertEqual(
+            director._review_state(
+                {"status": "awaiting_review"},
+                {"awaiting_review": True, **state},
+                keyframes,
+                2,
+                0,
+            ),
+            "gate",
+        )
+        # 没有扩图状态的老任务 → 行为不变。
+        self.assertEqual(
+            director._review_state({"status": "failed"}, {}, [], 3, 0),
+            "keyframes",
+        )
+
     def test_chained_start_frame_is_served_from_the_previous_end(self):
         first_start = self.temp / "s1.png"
         shared = self.temp / "shared.png"
@@ -1908,6 +1943,136 @@ class KeyframeAlignTests(unittest.TestCase):
             pipeline.preexpand_reference(config, self.temp)
         # 失败只降级，绝不能把参考图换成坏路径打断任务
         self.assertEqual(config["reference_images"][0], original_ref)
+
+    # ------------------------------------------------------------------
+    # 扩图确认流程（--stage preexpand）：先扩图 → 等确认 → 再生成关键帧
+    # ------------------------------------------------------------------
+
+    def _preexpand_stage_setup(self):
+        from PIL import Image
+
+        config = self._preexpand_config()
+        state_path = self.temp / ".state.json"
+        state_path.write_text("{}", encoding="utf-8")
+        expanded_src = self.temp / "outpaint_raw.png"
+        Image.new("RGB", (864, 1536), (10, 20, 30)).save(expanded_src)
+        return config, state_path, expanded_src
+
+    def test_preexpand_stage_records_ready_state(self):
+        import unittest.mock as mock
+
+        config, state_path, expanded_src = self._preexpand_stage_setup()
+        with mock.patch.object(
+            pipeline, "run_outpaint_pass", return_value=expanded_src.as_posix()
+        ) as fake:
+            state = {}
+            pipeline.run_preexpand_stage(config, state, state_path)
+            self.assertEqual(fake.call_count, 1)
+            info = state["reference_expand"]
+            self.assertEqual(info["status"], "ready")
+            self.assertEqual(info["source"], "ai")
+            self.assertEqual(info["attempts"], 0)
+            self.assertEqual(info["seed"], (config["base_seed"] or 0) + 800000)
+            self.assertTrue(info["image"].endswith("reference_expanded.png"))
+            self.assertTrue(info["original"].endswith("ref_preexpand.png"))
+            # 扩好的图顶到图1，并持久化到 config.json / .state.json
+            self.assertTrue(
+                config["reference_images"][0].endswith("reference_expanded.png")
+            )
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                persisted["reference_expand"]["status"], "ready"
+            )
+            saved_config = json.loads(
+                (self.temp / "config.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(
+                saved_config["reference_images"][0].endswith(
+                    "reference_expanded.png"
+                )
+            )
+
+    def test_preexpand_stage_not_needed_records_reason(self):
+        from PIL import Image
+        import unittest.mock as mock
+
+        calls = []
+        original = pipeline.run_outpaint_pass
+
+        def fake(*args, **kwargs):
+            calls.append(args)
+            raise AssertionError("不需要扩图的场景不该提交扩图")
+
+        pipeline.run_outpaint_pass = fake
+        try:
+            config = self._preexpand_config()
+            config["keyframe_reference_preexpand"] = False
+            state_path = self.temp / ".state.json"
+            state_path.write_text("{}", encoding="utf-8")
+            state = {}
+            pipeline.run_preexpand_stage(config, state, state_path)
+            self.assertEqual(state["reference_expand"]["status"], "not_needed")
+            self.assertIn("preexpand", state["reference_expand"]["reason"])
+
+            square = self.temp / "already_916.png"
+            Image.new("RGB", (832, 1472), (1, 2, 3)).save(square)
+            config = self._preexpand_config()
+            config["reference_images"] = [square.as_posix()]
+            state = {}
+            pipeline.run_preexpand_stage(config, state, state_path)
+            self.assertEqual(state["reference_expand"]["status"], "not_needed")
+            self.assertIn("ratio", state["reference_expand"]["reason"])
+        finally:
+            pipeline.run_outpaint_pass = original
+        self.assertEqual(calls, [])
+
+    def test_preexpand_stage_force_reroll_keeps_original_and_new_seed(self):
+        import unittest.mock as mock
+        from PIL import Image
+
+        config, state_path, expanded_src = self._preexpand_stage_setup()
+        state = {}
+        with mock.patch.object(
+            pipeline, "run_outpaint_pass", return_value=expanded_src.as_posix()
+        ) as fake:
+            pipeline.run_preexpand_stage(config, state, state_path)
+            self.assertEqual(fake.call_count, 1)
+            first_seed = state["reference_expand"]["seed"]
+            # 重扩：从原始参考图出发（不是在扩图上叠扩），seed 递增
+            config["reference_images"] = [
+                (self.temp / "reference_expanded.png").as_posix()
+            ]
+            pipeline.run_preexpand_stage(
+                config, state, state_path, force=True
+            )
+            self.assertEqual(fake.call_count, 2)
+            info = state["reference_expand"]
+            self.assertEqual(info["attempts"], 1)
+            self.assertEqual(info["seed"], first_seed + 1)
+            self.assertEqual(fake.call_args[0][1], info["original"])
+            self.assertFalse(fake.call_args[0][1].endswith("reference_expanded.png"))
+
+    def test_preexpand_stage_reuses_existing_expanded_image(self):
+        import unittest.mock as mock
+        from PIL import Image
+
+        config, state_path, _ = self._preexpand_stage_setup()
+        # 磁盘上已经有一张比例正确的扩图（人工换图也长这样）
+        existing = self.temp / "reference_expanded.png"
+        Image.new("RGB", (832, 1472), (5, 6, 7)).save(existing)
+        state = {"reference_expand": {"status": "ready", "source": "user"}}
+        with mock.patch.object(
+            pipeline, "run_outpaint_pass"
+        ) as fake:
+            pipeline.run_preexpand_stage(config, state, state_path)
+            self.assertEqual(fake.call_count, 0)
+        info = state["reference_expand"]
+        self.assertEqual(info["status"], "ready")
+        self.assertEqual(info["source"], "user")
+        self.assertTrue(info["image"].endswith("reference_expanded.png"))
+        self.assertTrue(
+            config["reference_images"][0].endswith("reference_expanded.png")
+        )
 
     @staticmethod
     def _write_video_with_still_tail(path, moving=30, still=40, fps=24, size=(64, 64)):

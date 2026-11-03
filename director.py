@@ -354,6 +354,82 @@ def static_compact_hold_default(config=None):
 STATIC_COMPACT_HOLD_DEFAULT = static_compact_hold_default()
 
 
+# ---------------------------------------------------------------------------
+# 「先确认扩图再生成」流程：参考图1比例和成片差超过 1% 时，点执行先只跑扩图，
+# 面板弹确认卡（继续 / 重扩 / 换图），确认后才放行关键帧。
+# 这里的判断和 run_h3_long_video.preexpand_reference 的跳过条件保持一致
+# （不直接 import 控制器：custom node 可能以任意模块名加载，路径不可靠）。
+# ---------------------------------------------------------------------------
+QWEN_BACKEND_VALUES = {"qwen2511", "qwen21"}
+
+
+def _reference_expand_needed(config):
+    """这份任务配置需不需要「先扩图等确认」。不需要就直接走原流程。"""
+    if not bool(config.get("keyframe_reference_preexpand", True)):
+        return False
+    backend = str(config.get("keyframe_backend") or "h3").strip().lower()
+    if backend not in QWEN_BACKEND_VALUES:
+        return False
+    if str(config.get("keyframe_align") or "crop").strip().lower() == "off":
+        return False
+    references = [str(item) for item in config.get("reference_images") or []]
+    if not references or not Path(references[0]).is_file():
+        return False
+    width = int(config.get("final_width") or 0)
+    height = int(config.get("final_height") or 0)
+    if width <= 0 or height <= 0:
+        return False
+    try:
+        with Image.open(references[0]) as image:
+            source_ratio = image.width / image.height
+    except Exception:
+        return False
+    target_ratio = width / height
+    return abs(source_ratio - target_ratio) / target_ratio > 0.01
+
+
+def _reference_expand_view(job_dir, job_id, state):
+    """status 接口里的扩图确认信息（带可访问的图片 URL）。"""
+    info = state.get("reference_expand")
+    if not isinstance(info, dict) or not info.get("status"):
+        return None
+    view = dict(info)
+    image = Path(str(view.get("image") or ""))
+    if view.get("status") == "ready" and image.is_file():
+        view["url"] = (
+            f"/h3-long-video/media/{job_id}/reference"
+            f"?v={_frame_version(image, '')}"
+        )
+    else:
+        view["url"] = None
+    return view
+
+
+def _normalize_reference_replacement(source_path, target):
+    """人工换图：等比放大盖住目标框、中心裁切、缩到精确尺寸。
+
+    换上来的图必须直接可用（关键帧阶段看到比例已对就跳过扩图），
+    所以这里一步到位做成和扩图产物一样的规格。
+    """
+    from PIL import Image
+
+    with Image.open(source_path) as image:
+        image = image.convert("RGB")
+        scale = max(target[0] / image.width, target[1] / image.height)
+        cover = (
+            max(target[0], round(image.width * scale)),
+            max(target[1], round(image.height * scale)),
+        )
+        if cover != (image.width, image.height):
+            image = image.resize(cover, Image.LANCZOS)
+        left = (cover[0] - target[0]) // 2
+        top = (cover[1] - target[1]) // 2
+        image = image.crop((left, top, left + target[0], top + target[1]))
+        image = image.resize(target, Image.LANCZOS)
+        image.save(source_path, format="PNG")
+    return source_path
+
+
 def _normalize_storyboard(
     value,
     two_pass_mode="跟随每段 JSON",
@@ -1015,6 +1091,16 @@ def _review_state(status, state, keyframes, segment_total, done_segments):
     """
     status_name = status.get("status")
     ready = _keyframes_ready(keyframes, segment_total)
+    # 「先确认扩图」关卡：扩图已生成但还没确认、关键帧还没开跑时，
+    # 面板先弹扩图确认卡，不进关键帧流程。
+    ref = state.get("reference_expand")
+    if (
+        isinstance(ref, dict)
+        and ref.get("status") == "ready"
+        and not ref.get("confirmed")
+        and not keyframes
+    ):
+        return "reference"
     if state.get("awaiting_review"):
         # 关键帧外包给外部图时，帧没放齐就不能说「已生成，等待确认」，
         # 否则面板会催你点一个点了必然报错的按钮。
@@ -1167,6 +1253,9 @@ if PromptServer is not None:
                         status, state, keyframes, segment_total, len(segments)
                     ),
                     "review_segments": state.get("review_segments"),
+                    "reference_expand": _reference_expand_view(
+                        job_dir, job_id, state
+                    ),
                     "seed": job_config.get("base_seed"),
                     "final_url": (
                         f"/h3-long-video/media/{job_id}/final"
@@ -1886,6 +1975,135 @@ if PromptServer is not None:
             )
 
 
+    @PromptServer.instance.routes.get("/h3-long-video/media/{job_id}/reference")
+    async def h3_long_video_reference_media(request):
+        try:
+            job_id = request.match_info["job_id"]
+            job_dir = _job_directory(job_id)
+            image = job_dir / "reference_expanded.png"
+            if not image.is_file():
+                raise FileNotFoundError(image)
+            return web.FileResponse(image, headers={"Content-Type": "image/png"})
+        except Exception:
+            raise web.HTTPNotFound()
+
+    @PromptServer.instance.routes.post("/h3-long-video/reference/{job_id}/confirm")
+    async def h3_long_video_reference_confirm(request):
+        """扩图没问题：标记确认，并直接把关键帧 stage 排上。"""
+        try:
+            job_id = request.match_info["job_id"]
+            job_dir = _job_directory(job_id)
+            if not (job_dir / "config.json").is_file():
+                raise FileNotFoundError(f"任务 {job_id} 没有 config.json")
+            state = _load_job_state(job_dir)
+            info = state.get("reference_expand")
+            if not isinstance(info, dict) or info.get("status") != "ready":
+                return web.json_response(
+                    {"ok": False, "error": "没有待确认的扩图结果"},
+                    status=400,
+                )
+            _ensure_idle(job_id, job_dir, "确认参考扩图")
+            info["confirmed"] = True
+            _save_job_state(job_dir, state)
+            started, reason = _start_stage_worker(
+                job_dir, job_id, "keyframes", tag="keyframes"
+            )
+            if not started:
+                return web.json_response(
+                    {"ok": False, "error": reason}, status=409
+                )
+            return web.json_response(
+                {"ok": True, "job_id": job_id, "queued": True}
+            )
+        except Exception as exc:
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                status=400,
+            )
+
+    @PromptServer.instance.routes.post("/h3-long-video/reference/{job_id}/reroll")
+    async def h3_long_video_reference_reroll(request):
+        """扩图不满意：从原始参考图重扩一次（换 seed）。"""
+        try:
+            job_id = request.match_info["job_id"]
+            job_dir = _job_directory(job_id)
+            if not (job_dir / "config.json").is_file():
+                raise FileNotFoundError(f"任务 {job_id} 没有 config.json")
+            _ensure_idle(job_id, job_dir, "重新扩图")
+            state = _load_job_state(job_dir)
+            info = state.get("reference_expand")
+            if not isinstance(info, dict) or info.get("status") != "ready":
+                return web.json_response(
+                    {"ok": False, "error": "没有可以重扩的扩图结果"},
+                    status=400,
+                )
+            info["confirmed"] = False
+            _save_job_state(job_dir, state)
+            started, reason = _start_stage_worker(
+                job_dir, job_id, "preexpand", force=True, tag="preexpand"
+            )
+            if not started:
+                return web.json_response(
+                    {"ok": False, "error": reason}, status=409
+                )
+            return web.json_response(
+                {"ok": True, "job_id": job_id, "queued": True}
+            )
+        except Exception as exc:
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                status=400,
+            )
+
+    @PromptServer.instance.routes.post("/h3-long-video/reference/{job_id}/replace")
+    async def h3_long_video_reference_replace(request):
+        """人工换图：上传自己处理好的图，中心裁切到成片比例后顶上。"""
+        try:
+            job_id = request.match_info["job_id"]
+            job_dir = _job_directory(job_id)
+            if not (job_dir / "config.json").is_file():
+                raise FileNotFoundError(f"任务 {job_id} 没有 config.json")
+            _ensure_idle(job_id, job_dir, "替换参考扩图")
+            config = _job_config(job_dir)
+            width = int(config.get("final_width") or 0)
+            height = int(config.get("final_height") or 0)
+            if width <= 0 or height <= 0:
+                raise ValueError("任务配置缺少 final_width/final_height")
+            target = (width, height)
+            uploaded = job_dir / "reference_upload.png"
+            await _write_keyframe_image(uploaded, request)
+            _normalize_reference_replacement(uploaded, target)
+            out = job_dir / "reference_expanded.png"
+            os.replace(uploaded, out)
+            state = _load_job_state(job_dir)
+            info = dict(state.get("reference_expand") or {})
+            info.update(
+                {
+                    "status": "ready",
+                    "image": out.as_posix(),
+                    "source": "user",
+                    "confirmed": False,
+                }
+            )
+            state["reference_expand"] = info
+            _save_job_state(job_dir, state)
+            return web.json_response(
+                {
+                    "ok": True,
+                    "job_id": job_id,
+                    "url": (
+                        f"/h3-long-video/media/{job_id}/reference"
+                        f"?v={_frame_version(out, '')}"
+                    ),
+                }
+            )
+        except Exception as exc:
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                status=400,
+            )
+
+
 def _start_stage_worker(job_dir, job_id, stage, *, force=False, tag="stage"):
     """Run one stage of the controller in the background.
 
@@ -2144,6 +2362,10 @@ class H3LongVideoDirector:
                         "step": 0.02,
                     },
                 ),
+                # 点执行后先把参考图1扩到成片比例，停在「扩图确认」让你过目：
+                # 没问题再生成关键帧；不满意可重扩一次或换成自己处理的图。
+                # 比例本来就对 / 后端不用扩时自动跳过，不多这一步。
+                "confirm_reference_expand": ("BOOLEAN", {"default": True}),
             },
         }
 
@@ -2177,6 +2399,7 @@ class H3LongVideoDirector:
         resume_job_id="",
         resolution=RESOLUTION_OPTIONS[0],
         static_compact_hold_seconds=STATIC_COMPACT_HOLD_DEFAULT,
+        confirm_reference_expand=True,
         **reference_images,
     ):
         global _ACTIVE_JOB
@@ -2330,6 +2553,19 @@ class H3LongVideoDirector:
                 json.dumps(config, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
+            # 「先确认扩图」：点执行后只把参考图1扩到成片比例就停，面板上
+            # 确认（或重扩/换图）之后才放行关键帧。比例已对/后端不扩则照旧。
+            if (
+                bool(confirm_reference_expand)
+                and requested_stage in {"keyframes", "all"}
+                and _reference_expand_needed(config)
+            ):
+                requested_stage = "preexpand"
+                config["confirm_reference_expand"] = True
+                config_path.write_text(
+                    json.dumps(config, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
             command = [
                 sys.executable,
                 str(CONTROLLER_PATH),
@@ -2357,11 +2593,10 @@ class H3LongVideoDirector:
                 daemon=True,
             )
             worker.start()
-            stage_hint = (
-                "关键帧生成完成后会暂停等待确认，确认后再生成视频。"
-                if requested_stage == "keyframes"
-                else "关键帧与视频一次跑完。"
-            )
+            stage_hint = {
+                "preexpand": "参考图扩图完成后暂停，请在面板确认（可重扩/换图）后再继续。",
+                "keyframes": "关键帧生成完成后会暂停等待确认，确认后再生成视频。",
+            }.get(requested_stage, "关键帧与视频一次跑完。")
             status = (
                 f"Job {job_id} scheduled with seed {actual_seed}. {stage_hint} "
                 f"Status: {(job_dir / 'status.json').as_posix()}"

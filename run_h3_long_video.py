@@ -956,6 +956,110 @@ def preexpand_reference(config, work_dir):
         )
 
 
+def reference_expand_state(config, source=None):
+    """确认流程用：判断参考图1要不要扩图，返回（是否需要, 原因, 目标尺寸）。
+
+    跳过条件与 :func:`preexpand_reference` 保持一致：关闭预扩、后端不是
+    Qwen、对齐模式 off、没有参考图、比例差 <=1% 都不需要扩。
+    """
+    if not bool(config.get("keyframe_reference_preexpand", True)):
+        return False, "keyframe_reference_preexpand=false", None
+    if keyframe_backend(config) not in QWEN_BACKENDS:
+        return False, "keyframe backend is not qwen", None
+    if keyframe_align_mode(config) == "off":
+        return False, "keyframe_align=off", None
+    references = [str(item) for item in config.get("reference_images") or []]
+    source = str(source or (references[0] if references else ""))
+    if not source or not Path(source).is_file():
+        return False, "reference image missing", None
+    try:
+        target = target_frame_size(config)
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}", None
+    if aspect_gap(image_size(source), target) <= 0.01:
+        return False, "ratio already matches", target
+    return True, "", target
+
+
+def run_preexpand_stage(config, state, state_path, force=False):
+    """``--stage preexpand``：只把参考图1扩到成片比例，然后停下等人工确认。
+
+    Director「先确认扩图再生成」流程的第一步（点执行后第一段）：
+
+      * 扩图结果写进 ``.state.json`` 的 ``reference_expand``
+        （status=ready/not_needed、图路径、来源、seed、第几次尝试）；
+      * 扩好的图顶到 ``config.json`` 的 ``reference_images[0]``，确认后
+        关键帧阶段直接用它（``preexpand_reference`` 看到比例已对会跳过）；
+      * 原始参考图记在 ``reference_expand.original``，重扩（``--force``）
+        永远从原图出发、换 seed（base_seed + 800000 + 第几次），不会
+        在扩过的图上叠加扩图；
+      * 人工换图直接覆盖 ``work_dir/reference_expanded.png``（比例对齐
+        目标即可），这里只复用不重画。
+    """
+    work_dir = Path(state_path).parent
+    refs = [str(item) for item in config.get("reference_images") or []]
+    info = dict(state.get("reference_expand") or {})
+    original = str(info.get("original") or (refs[0] if refs else ""))
+    info["original"] = original
+    needed, reason, target = reference_expand_state(config, source=original)
+    if not needed:
+        info.update({"status": "not_needed", "image": "", "reason": reason})
+        state["reference_expand"] = info
+        _save_preexpand_results(config, state, state_path)
+        print(f"[H3] 参考图无需扩图（{reason}），可以直接生成关键帧。", flush=True)
+        return
+    out = work_dir / "reference_expanded.png"
+    attempts = int(info.get("attempts") or 0)
+    reusable = (
+        not force
+        and out.is_file()
+        and aspect_gap(image_size(str(out)), target) <= 0.01
+    )
+    if reusable:
+        # 复用磁盘上已有的扩图（人工换图也走这里）：只补状态不重画
+        info.update({"status": "ready", "image": out.as_posix()})
+    else:
+        if force:
+            attempts += 1
+            if out.is_file():
+                out.unlink()
+        seed = int(config.get("base_seed") or 0) + 800000 + attempts
+        expanded = run_outpaint_pass(
+            config, original, target, seed, label="Reference preexpand"
+        )
+        shutil.copyfile(expanded, out)
+        _resize_to(_center_crop_resize(str(out), target), target)
+        info.update(
+            {
+                "status": "ready",
+                "image": out.as_posix(),
+                "source": "ai",
+                "seed": seed,
+                "attempts": attempts,
+            }
+        )
+    state["reference_expand"] = info
+    # 扩好的图顶到图1（其余参考图原样保留）；关键帧阶段比例已对，零逐帧扩图
+    config["reference_images"] = [out.as_posix()] + refs[1:]
+    state_text = "复用" if reusable else f"生成（第 {attempts + 1} 次尝试）"
+    print(
+        f"[H3] 参考图扩图完成（{state_text}）: {out} — 请在面板确认后再生成关键帧。",
+        flush=True,
+    )
+    _save_preexpand_results(config, state, state_path)
+
+
+def _save_preexpand_results(config, state, state_path):
+    """把扩图阶段的 config / state 改动持久化（确认流程跨进程靠它接力）。"""
+    state_path.write_text(
+        json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    config_path = Path(state_path).parent / "config.json"
+    config_path.write_text(
+        json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
 def align_frame_to_target(config, path, seed=0, label=None):
     """把一帧关键帧对齐到成片分辨率；返回（可能被覆盖过的）路径。
 
@@ -3157,14 +3261,16 @@ def main():
     )
     parser.add_argument(
         "--stage",
-        choices=["all", "keyframes", "videos", "reencode"],
+        choices=["all", "preexpand", "keyframes", "videos", "reencode"],
         default="all",
         help=(
-            "all: keyframes then videos; keyframes: render the keyframe chain "
-            "and stop for human review; videos: reuse the reviewed keyframes "
-            "and only render the segment videos; reencode: rebuild the two-pass "
-            "post-processing (opening repair + concat) from the raw model "
-            "outputs already on disk, without touching ComfyUI."
+            "all: keyframes then videos; preexpand: 只把参考图1扩到成片比例"
+            "然后停下等人工确认（Director 确认流程第一步）; keyframes: render "
+            "the keyframe chain and stop for human review; videos: reuse the "
+            "reviewed keyframes and only render the segment videos; reencode: "
+            "rebuild the two-pass post-processing (opening repair + concat) "
+            "from the raw model outputs already on disk, without touching "
+            "ComfyUI."
         ),
     )
     parser.add_argument("--dry-run", action="store_true", help="Build one API workflow without submitting it.")
@@ -3241,6 +3347,9 @@ def main():
     state = {}
     if state_path.exists():
         state = json.loads(state_path.read_text(encoding="utf-8"))
+    if args.stage == "preexpand":
+        run_preexpand_stage(config, state, state_path, force=args.force)
+        return
     if config.get("single_clip"):
         segment = run_single_clip(config, specs[0], state_path)
         print(f"[H3] Single clip: {segment['video']}", flush=True)

@@ -172,6 +172,7 @@ def build_workflow(config):
                 h3_director.KEYFRAME_BACKEND_OPTIONS[0],
                 h3_director.RESOLUTION_OPTIONS[0],
                 h3_director.STATIC_COMPACT_HOLD_DEFAULT,
+                True,  # confirm_reference_expand：先出扩图确认
             ],
         },
     ]
