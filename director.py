@@ -130,6 +130,17 @@ KEYFRAME_BACKEND_TO_VALUE = {
     "Qwen-Image-2.1": BACKEND_QWEN21,
     "只用手动图": BACKEND_MANUAL,
 }
+
+# 出视频跑在哪：本机 ComfyUI 还是 RunningHub 云端。
+# 只管「视频阶段」——关键帧永远在本机出（云端没有 Qwen 关键帧链，也没有
+# 本地的参考图扩图），所以切到云端也仍是先本地跑关键帧、确认后再上云。
+VIDEO_BACKEND_LOCAL = "local"
+VIDEO_BACKEND_CLOUD = "cloud"
+VIDEO_BACKEND_OPTIONS = ["本地 ComfyUI（默认）", "RunningHub 云端"]
+VIDEO_BACKEND_TO_VALUE = {
+    "本地 ComfyUI（默认）": VIDEO_BACKEND_LOCAL,
+    "RunningHub 云端": VIDEO_BACKEND_CLOUD,
+}
 # 成片分辨率预设。选中的值同时作用于关键帧和成片：runner 出完图会立刻把关键帧
 # 对齐到 final_width x final_height（见 align_frame_to_target），所以换分辨率就是换
 # 整条链的画幅，不再靠最后一步硬拉伸。
@@ -2293,10 +2304,6 @@ class H3LongVideoDirector:
                     {"default": "跟随每段 JSON"},
                 ),
                 "force": ("BOOLEAN", {"default": False}),
-                "keyframe_steps": (
-                    "INT",
-                    {"default": 6, "min": 1, "max": 200, "step": 1},
-                ),
                 "reference_1": ("IMAGE",),
             },
             "optional": {
@@ -2366,6 +2373,12 @@ class H3LongVideoDirector:
                 # 没问题再生成关键帧；不满意可重扩一次或换成自己处理的图。
                 # 比例本来就对 / 后端不用扩时自动跳过，不多这一步。
                 "confirm_reference_expand": ("BOOLEAN", {"default": True}),
+                # 出视频跑哪。放最后同样是为了不顶掉老工作流已存的值；
+                # 关键帧不受影响（永远本机），详见 docs/参数配置.md「云端出视频」。
+                "video_backend": (
+                    VIDEO_BACKEND_OPTIONS,
+                    {"default": VIDEO_BACKEND_OPTIONS[0]},
+                ),
             },
         }
 
@@ -2387,7 +2400,6 @@ class H3LongVideoDirector:
         final_height,
         two_pass_mode,
         force,
-        keyframe_steps,
         reference_1,
         advanced_overrides="{}",
         seed=0,
@@ -2400,6 +2412,7 @@ class H3LongVideoDirector:
         resolution=RESOLUTION_OPTIONS[0],
         static_compact_hold_seconds=STATIC_COMPACT_HOLD_DEFAULT,
         confirm_reference_expand=True,
+        video_backend=VIDEO_BACKEND_OPTIONS[0],
         **reference_images,
     ):
         global _ACTIVE_JOB
@@ -2472,10 +2485,24 @@ class H3LongVideoDirector:
             _ACTIVE_JOB = "reserved"
 
         try:
+            raw_overrides = str(advanced_overrides or "{}").strip() or "{}"
             try:
-                overrides = json.loads(advanced_overrides or "{}")
+                overrides = json.loads(raw_overrides)
             except json.JSONDecodeError as exc:
-                raise ValueError(f"advanced_overrides is invalid JSON: {exc}") from exc
+                if re.fullmatch(r"-?\d+(?:\.\d+)?", raw_overrides):
+                    # 老工作流（还有 keyframe_steps 那一格）的 widgets_values 会整排
+                    # 前移一位，步数就落到 advanced_overrides 上。前端有迁移会把顺序
+                    # 摆正；这里再兜一层，免得一个纯数字把整次执行顶掉。
+                    print(
+                        "[H3] advanced_overrides 收到纯数字，判定为旧工作流错位，按 {} 处理；"
+                        "建议重新拖一个 Director 节点",
+                        flush=True,
+                    )
+                    overrides = {}
+                else:
+                    raise ValueError(
+                        f"advanced_overrides is invalid JSON: {exc}"
+                    ) from exc
             if not isinstance(overrides, dict):
                 raise ValueError("advanced_overrides must be a JSON object")
             if "segments" in overrides or "reference_images" in overrides:
@@ -2516,7 +2543,6 @@ class H3LongVideoDirector:
 
             config["steps"] = int(steps)
             config["two_pass_steps"] = int(two_pass_steps)
-            config["keyframe_steps"] = int(keyframe_steps)
             config["sampler"] = sampler
             config["scheduler"] = scheduler
             config["two_pass_scheduler"] = scheduler
@@ -2547,6 +2573,9 @@ class H3LongVideoDirector:
             config["job_name"] = _sanitize_job_name(job_name)
             config["keyframe_backend"] = KEYFRAME_BACKEND_TO_VALUE.get(
                 str(keyframe_backend), BACKEND_H3
+            )
+            config["video_backend"] = VIDEO_BACKEND_TO_VALUE.get(
+                str(video_backend), VIDEO_BACKEND_LOCAL
             )
             config_path = job_dir / "config.json"
             config_path.write_text(
@@ -2755,6 +2784,9 @@ class H3SingleClipDirector:
         seconds = float(seconds)
         if seconds <= 0:
             raise ValueError("seconds must be greater than 0")
+        # 2026-11-04 修：原来这里直接引用 config，而 config 到建任务目录时才赋值，
+        # 导致 UnboundLocalError（H3SingleClipDirector 每次执行必崩）。提前读基础配置。
+        config = _load_base_config()
         final_width, final_height = resolve_resolution(
             resolution, final_width, final_height, resolution_presets(config)
         )
@@ -2796,7 +2828,6 @@ class H3SingleClipDirector:
                 _save_image(image, output)
                 saved_references.append(output.as_posix())
 
-            config = _load_base_config()
             config.update(
                 {
                     "single_clip": True,

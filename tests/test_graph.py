@@ -1230,8 +1230,8 @@ class GraphTests(unittest.TestCase):
             for item in workflow["nodes"]
             if item["type"] == "H3LongVideoDirector"
         )
-        self.assertEqual(node["widgets_values"][15], director.STAGE_REVIEW)
-        self.assertEqual(node["widgets_values"][16], "")
+        self.assertEqual(node["widgets_values"][14], director.STAGE_REVIEW)
+        self.assertEqual(node["widgets_values"][15], "")
 
     def test_director_workflow_links_reference_images(self):
         workflow = json.loads(
@@ -1263,14 +1263,11 @@ class GraphTests(unittest.TestCase):
         )
         self.assertEqual(director_node["widgets_values"][9], "跟随每段 JSON")
         self.assertFalse(director_node["widgets_values"][10])
+        self.assertEqual(director_node["widgets_values"][11], "{}")
         self.assertEqual(
-            director_node["widgets_values"][11], self.config["keyframe_steps"]
+            director_node["widgets_values"][12], self.config["base_seed"]
         )
-        self.assertEqual(director_node["widgets_values"][12], "{}")
-        self.assertEqual(
-            director_node["widgets_values"][13], self.config["base_seed"]
-        )
-        self.assertTrue(director_node["widgets_values"][14])
+        self.assertTrue(director_node["widgets_values"][13])
 
     def test_single_clip_graph_uses_fixed_first_last_and_nine_references(self):
         config = copy.deepcopy(self.config)

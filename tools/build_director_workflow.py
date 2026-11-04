@@ -162,7 +162,6 @@ def build_workflow(config):
                 config["final_height"],
                 "跟随每段 JSON",
                 False,
-                config.get("keyframe_steps", 6),
                 "{}",
                 config.get("base_seed", 0),
                 True,
@@ -173,6 +172,7 @@ def build_workflow(config):
                 h3_director.RESOLUTION_OPTIONS[0],
                 h3_director.STATIC_COMPACT_HOLD_DEFAULT,
                 True,  # confirm_reference_expand：先出扩图确认
+                h3_director.VIDEO_BACKEND_OPTIONS[0],  # 出视频：本地 / 云端
             ],
         },
     ]
