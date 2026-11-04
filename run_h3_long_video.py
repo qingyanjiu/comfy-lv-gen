@@ -155,6 +155,12 @@ def segment_specs(config):
 
 
 def validate_config(config):
+    # 出视频跑在哪，先判掉：写错值 / 云端缺 apiKey 都要在开跑前说清楚，
+    # 别等关键帧全出完了、进入视频阶段才发现配置不全。
+    if video_backend(config) == BACKEND_CLOUD:
+        import cloud_backend as CB
+
+        CB.check_conf(CB.conf(config))
     transition_mode = str(config.get("transition_mode", "fade")).lower()
     if transition_mode not in {"fade", "generated", "none"}:
         raise RuntimeError("transition_mode must be fade, generated, or none")
@@ -527,7 +533,10 @@ def build_keyframe_graph(config, prompt, first_frame, seed, seconds):
         "BasicScheduler",
         model=["26", 0],
         scheduler=config["scheduler"],
-        steps=int(config.get("keyframe_steps", config["steps"])),
+        # 关键帧和正片用同一个步数：H3 的关键帧只是「抽一张静态图」，
+        # 单独给个 keyframe_steps 从来没被单独调过，反而多一个会和 steps
+        # 打架的旋钮（改了 steps 忘了改它，关键帧糊而正片清）。
+        steps=int(config.get("steps", 6)),
         denoise=1.0,
     )
     add(
@@ -1559,6 +1568,119 @@ def submit_graph(config, graph, label):
     return prompt_id, entry
 
 
+BACKEND_LOCAL = "local"
+BACKEND_CLOUD = "cloud"
+
+
+def video_backend(config):
+    """出视频跑在哪：local（本机 ComfyUI）还是 cloud（RunningHub）。
+
+    只认白名单，写错直接报错而不是悄悄回落本地——「以为在花云端的钱其实本地跑」
+    和「以为没渲染其实提交了付费任务」两种都很难事后查。
+
+    控件传下来的是带括注的中文标签（「本地 ComfyUI（默认）」），所以按关键词判断
+    而不是精确匹配；云端先判，免得 "cloud" 被后面的本地分支兜走。
+    """
+    text = str(config.get("video_backend") or BACKEND_LOCAL).strip().lower()
+    if any(word in text for word in ("cloud", "runninghub", "云端", "云")):
+        return BACKEND_CLOUD
+    if any(word in text for word in ("local", "comfy", "本地")):
+        return BACKEND_LOCAL
+    raise RuntimeError(
+        f"video_backend 只认 local / cloud（RunningHub），收到 {text!r}"
+    )
+
+
+def extract_last_frame(config, video, dest):
+    """从云端视频里抽最后一帧。
+
+    本地链路是节点直接吐一张图出来（outputs["39"]），云端只回 mp4，所以链式
+    继承要自己补这一步：``-sseof -1`` 落到最后一秒，``-update 1`` 反复覆盖，
+    最后留下的就是末帧。
+    """
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            find_ffmpeg(),
+            "-y",
+            "-sseof",
+            "-1",
+            "-i",
+            str(video),
+            "-update",
+            "1",
+            "-q:v",
+            "2",
+            str(dest),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    if not dest.is_file():
+        raise RuntimeError(f"抽末帧失败：{video}")
+    return str(dest)
+
+
+def _cloud_work_dir(config, first_frame):
+    """云端产物放哪：关键帧在 ``<job>/keyframes/`` 时，跟它并排放 ``<job>/cloud/``。"""
+    if first_frame:
+        parent = Path(first_frame).resolve().parent
+        if parent.name == "keyframes":
+            return parent.parent
+    return Path(config.get("comfy_output_dir") or ".") / "h3-long-video"
+
+
+def run_segment_cloud(
+    config,
+    segment,
+    segment_index,
+    first_frame,
+    last_frame,
+    *,
+    seed,
+    label,
+):
+    """云端出片：传首尾帧 + 提示词，拿回 mp4，再抽末帧给下一段。
+
+    返回字段和本地 ``run_segment`` 完全一致，所以视频阶段循环、状态文件、
+    拼接/剪定格都不用知道这段是谁生成的。
+    """
+    import cloud_backend as CB
+
+    if not first_frame:
+        raise RuntimeError(f"{label}: 云端也必须有首帧（链式继承靠它）")
+    work_dir = _cloud_work_dir(config, first_frame)
+    dest_dir = work_dir / "cloud"
+    mp4, task_id = CB.render(
+        config,
+        segment,
+        seed,
+        first_frame,
+        last_frame,
+        dest_dir.as_posix(),
+        label=label,
+    )
+    last_path = extract_last_frame(
+        config,
+        mp4,
+        dest_dir / f"seg{segment_index + 1:02d}_last_{seed}_{task_id}.png",
+    )
+    return {
+        "segment": segment_index + 1,
+        "prompt_id": f"cloud:{task_id}",
+        "backend": BACKEND_CLOUD,
+        "cloud_task_id": task_id,
+        "video": str(mp4),
+        "raw_video": str(mp4),
+        "last_frame": last_path,
+        "next_frame": last_path,
+        "seconds": segment["seconds"],
+        "two_pass": bool(segment["two_pass"]),
+        "prompt_sha1": hashlib.sha1(segment["prompt"].encode("utf-8")).hexdigest(),
+    }
+
+
 def run_segment(
     config,
     segment,
@@ -1572,6 +1694,16 @@ def run_segment(
     if seed is None:
         seed = int(config["base_seed"]) + segment_index
     label = log_label or f"Segment {segment_index + 1}"
+    if video_backend(config) == BACKEND_CLOUD:
+        return run_segment_cloud(
+            config,
+            segment,
+            segment_index,
+            first_frame,
+            last_frame,
+            seed=seed,
+            label=label,
+        )
     graph = build_graph(
         config,
         segment["prompt"],
@@ -3294,6 +3426,13 @@ def main():
         print(f"[H3] Using random base seed: {config['base_seed']}", flush=True)
     specs = segment_specs(config)
     segment_count = len(specs)
+    if video_backend(config) == BACKEND_CLOUD:
+        print(
+            "[H3] 出视频 = RunningHub 云端（关键帧仍在本机生成；云端只有单采）",
+            flush=True,
+        )
+    else:
+        print("[H3] 出视频 = 本地 ComfyUI", flush=True)
     if args.dump_graphs:
         graph_dir = args.dump_graphs.expanduser().resolve()
         graph_dir.mkdir(parents=True, exist_ok=True)

@@ -11,3 +11,12 @@ jobs/
 *.jpeg
 stitch_test/
 
+# 密钥不进仓库：真 key 放 runninghub.local.json（cloud_backend.conf 会读）
+runninghub.local.json
+*.local.json
+
+# 本地临时备份（改代码前手存的 .bak / .bak-日期）
+*.bak
+*.bak-*
+*.orig
+

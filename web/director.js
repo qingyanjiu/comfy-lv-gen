@@ -1128,7 +1128,49 @@ function findWidget(node, name) {
   return node.widgets?.find((widget) => widget.name === name);
 }
 
+// 2026-11-04：keyframe_steps 控件删了（关键帧直接用 steps）。老工作流
+// widgets_values 是按顺序存的，少一格就整排前移一位——步数压到
+// advanced_overrides、seed 压到 stage，界面上看是「一堆莫名其妙的数字」。
+// 特征很好认：advanced_overrides（第 12 个控件）拿到了一个纯数字。
+// 把那一格删掉再整体回填，用户重新保存一次就干净了。
+function migrateLegacyKeyframeSteps(node) {
+  const widgets = node.widgets;
+  const values = node.widgets_values;
+  if (!Array.isArray(widgets) || !Array.isArray(values)) return false;
+  const overrides = findWidget(node, "advanced_overrides");
+  if (!overrides) return false;
+  if (!/^-?\d+(\.\d+)?$/.test(String(overrides.value ?? "").trim())) {
+    return false;
+  }
+  if (values.length < 13 || typeof values[11] !== "number") return false;
+  const fixed = values.slice(0, 11).concat(values.slice(12));
+  node.widgets_values = fixed;
+  widgets.forEach((widget, index) => {
+    if (index < fixed.length) widget.value = fixed[index];
+  });
+  return true;
+}
+
+// 下拉控件拿到非法值（空串 / 旧版遗留的错位值）时落回第一项，别让它带着
+// 空值去排队——后端只认白名单，会直接抛错。
+function sanitizeCombo(node, name) {
+  const widget = findWidget(node, name);
+  if (!widget || !Array.isArray(widget.options?.values)) return;
+  const options = widget.options.values;
+  if (!options.length) return;
+  if (!options.includes(widget.value)) widget.value = options[0];
+}
+
 function migrateWidgetValues(node) {
+  migrateLegacyKeyframeSteps(node);
+  for (const name of [
+    "stage",
+    "keyframe_backend",
+    "resolution",
+    "video_backend",
+  ]) {
+    sanitizeCombo(node, name);
+  }
   const seed = findWidget(node, "seed");
   if (seed && !Number.isFinite(Number(seed.value))) {
     seed.value = 0;
@@ -1136,22 +1178,6 @@ function migrateWidgetValues(node) {
   const randomizeSeed = findWidget(node, "randomize_seed");
   if (randomizeSeed && typeof randomizeSeed.value !== "boolean") {
     randomizeSeed.value = true;
-  }
-  const keyframeSteps = findWidget(node, "keyframe_steps");
-  if (
-    keyframeSteps &&
-    typeof keyframeSteps.value === "string" &&
-    !Number.isFinite(Number(keyframeSteps.value))
-  ) {
-    const oldAdvancedOverrides = keyframeSteps.value;
-    keyframeSteps.value = 6;
-    const advancedOverrides = findWidget(node, "advanced_overrides");
-    if (
-      advancedOverrides &&
-      (!advancedOverrides.value || advancedOverrides.value === "{}")
-    ) {
-      advancedOverrides.value = oldAdvancedOverrides;
-    }
   }
   const megapixels = findWidget(node, "megapixels");
   if (megapixels && typeof megapixels.value === "string") {
@@ -1214,20 +1240,23 @@ function countSegments(node, ui) {
   const sampler = findWidget(node, "sampler");
   const scheduler = findWidget(node, "scheduler");
   const megapixels = findWidget(node, "megapixels");
-  const keyframeSteps = findWidget(node, "keyframe_steps");
+  const videoBackend = findWidget(node, "video_backend");
   const seed = findWidget(node, "seed");
   const randomizeSeed = findWidget(node, "randomize_seed");
   node.lastTwoPassMode = mode?.value || "";
   const [effectiveWidth, effectiveHeight] = effectiveResolution(node);
   node.samplingSummary = [
     `${steps?.value ?? "?"}+${twoPassSteps?.value ?? "?"} 步`,
-    `关键帧${keyframeSteps?.value ?? "?"}步`,
     sampler?.value,
     scheduler?.value,
     randomizeSeed?.value ? "随机 Seed" : `Seed ${seed?.value ?? "?"}`,
     `${megapixels?.value ?? "?"} MP`,
     `${effectiveWidth}×${effectiveHeight}`,
-  ]
+    videoBackend
+      ? String(videoBackend.value).includes("云")
+        ? "云端出片"
+        : "本地出片"
+      : "",  ]
     .filter(Boolean)
     .join(" / ");
   try {
@@ -2289,7 +2318,7 @@ function installPanel(node) {
     "resolution",
     "final_width",
     "final_height",
-    "keyframe_steps",
+    "video_backend",
     "seed",
     "randomize_seed",
   ]) {
