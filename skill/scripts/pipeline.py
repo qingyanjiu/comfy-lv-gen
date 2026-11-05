@@ -249,16 +249,23 @@ def outpaint_916(path, seed=0, scene=None):
         canvas.paste(im, (0, top))
         cnv = os.path.join(COMFY_INPUT, f"{PFX}_op_canvas.png")
         canvas.save(cnv)
+        # 输出前缀必须唯一：以前固定用 f"{PFX}_op"，同一分镜里第二次扩图会撞名，
+        # comfy_run 有可能捞到上一次（甚至别的画幅）的产物——实测出现过 9:16 帧变 1088×960。
+        tag = f"{PFX}_op_{abs(hash((os.path.abspath(path), int(seed)))) % 100000:05d}"
         outs = comfy_run(
             os.path.join(WF_DIR, "Qwen21-Outpaint916.json"),
             {10: {0: os.path.basename(cnv)},
              40: {0: OUTPAINT_PROMPT.format(scene=(scene or OUTPAINT_SCENE_DEFAULT))},
-             32: {0: f"{PFX}_op"},
+             32: {0: tag},
              30: {0: int(seed)}},
             timeout=1200,
         )
         src = os.path.join(COMFY_OUTPUT, outs["32"]["images"][-1]["filename"])
         shutil.copy(src, path)
+        # 扩完必须复核：不是 9:16 就退回铺墙色补画幅，绝不把歪画幅留给视频阶段
+        if not _img_ratio_ok(path):
+            print(f"    扩图产出画幅不对（{os.path.basename(src)}），退回铺墙色补画幅")
+            return normalize_916(path)
         print(f"    扩图 9:16 {w}x{h} -> {W}x{H}")
         return True
     except Exception as e:
@@ -449,6 +456,12 @@ def cmd_check(sb_path, sb):
     if (sb.get("keyframe_backend") or "qwen21") != "2511" and not sb.get("wardrobe_items"):
         warns.append("没写 wardrobe_items：首尾帧的袖长/衣摆/配饰会各编一套，"
                      "建议按主参考图逐项列出服装细节")
+    # 2026-11-05：场景正面清单。负向串"不许有桌子/椅子/栏杆"压不住模型加景，
+    # 必须正面点名"场景里只有这几样"（外部案例库 §2.8）。
+    no_si = [i for i, s in enumerate(segs, 1) if not (s.get("scene_items") or sb.get("scene_items"))]
+    if no_si:
+        warns.append(f"第 {no_si} 段没写 scene_items：模型会自己在画面下方补家具（我们踩过木台面），"
+                     f"建议正面列出\"场景里只有哪几样东西\"，例：脚下的石板路、身后的玻璃橱窗、暖黄橱窗灯")
     foreign_hits = set()
     for i, s in enumerate(segs, 1):
         try:
@@ -688,7 +701,46 @@ def seg_vars(sb, s):
                             "不出现不该有的说话声、音乐或音效，无爆音、电流声或失真。")
     mus = s.get("music") or sb.get("music")
     d["music_line"] = ("配乐：" + str(mus).strip() if mus else "配乐：不加任何背景音乐。")
+    # 场景正面清单（2026-11-05）：外部案例库 §2.8 的 "The room contains only A, B and C."
+    # 负向串说不干净，必须正面点名"只有这几样"。分镜不写就用中性兜底（不含任何具体场景名词，
+    # 免得又变成"照抄别的项目"——见 check 的 lint）。
+    si = s.get("scene_items") or sb.get("scene_items")
+    if isinstance(si, (list, tuple)):
+        si = "、".join(str(x) for x in si)
+    d["scene_items"] = (str(si).strip().rstrip("。") if si else
+                        "原有的地面、人物身后的背景与建筑轮廓、光线和色温")
+    d["beats_timeline"] = _beats_timeline(sb, s)
     return d
+
+
+def _beats_timeline(sb, s):
+    """把 beats 摊到时间轴上，生成单镜时间锚（2026-11-05）。
+
+    来源：外部案例库 §2.6 雨夜站台的 `Shot 1 continues — 5.5s:` 写法。
+    我们 15 秒单镜实测的问题：三个节拍全挤在前 50% 演完（motion_front 123%），
+    后半段定格。根因是提示词只有"先…再…最后…"，一个时间点都没有。
+
+    hold：最后留 0.4~1.2 秒收尾（不新增动作，只保留呼吸/眨眼这类微动），
+    对应案例里 `The image ends while these tiny motions are still underway`。
+    """
+    beats = s.get("beats") or sb.get("beats") or []
+    if isinstance(beats, str):
+        beats = [x for x in re.split(r"[,，、;；]", beats)]
+    bs = [str(b).strip() for b in beats if str(b).strip()]
+    try:
+        sec = float(s.get("seconds") or sb.get("seconds_per_segment") or 5)
+    except (TypeError, ValueError):
+        sec = 5.0
+    if not bs or sec < 4:
+        return ""
+    hold = min(1.2, max(0.4, sec * 0.10))
+    span = max(1.0, sec - hold)
+    n = len(bs)
+    pts = [f"{span * i / n:.1f}s {b}完成" for i, b in enumerate(bs, 1)]
+    return ("时间锚（严格按这个节奏推进）：0.0s 保持首帧姿态；" + "；".join(pts) +
+            f"；{sec:.0f}s 才停在尾帧姿态。每个节拍只在自己那个时间点完成，"
+            "不许提前把后面的动作做完，也不许中途停住不动；"
+            "最后一个节拍之后不要定格，保留呼吸、眨眼和发丝衣料的细微变化直到结束。")
 
 
 def ref_name(sb):
@@ -1089,6 +1141,14 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
         for k, p in (("first", rec.get("first")), ("last", rec.get("last"))):
             if p and os.path.exists(p):
                 outpaint_916(p, seed_first(i) + (700 if k == "last" else 0), scene=_op_scene)
+                # 扩图后验：底部要是被补出一大块木色（旧 bug 的桌面/台面），当场说出来，
+                # 别等到用户看完片子才骂人。
+                wr = warm_bottom_ratio(p)
+                if wr is not None:
+                    rec[f"{k}_warm_bottom"] = round(wr, 3)
+                    if wr > 0.32:
+                        print(f"[段{i}] 警告：{k} 帧底部木色占比 {wr:.0%}，"
+                              f"疑似扩图补出了桌面/台面，出片前先看一眼这张图", flush=True)
 
         # 场景锚固化（9:16 定稿后）
         if _need_anchor and rec.get("first") and os.path.exists(rec["first"]):
@@ -1344,8 +1404,15 @@ VIDEO_TMPL = (
     "镜头全程固定：不推近、不拉远、不切特写，人物脸部在画面中的大小从头到尾保持不变。\n"
     # 2026-11-05：15 秒单镜实测，H3 会在最后一两秒凭空补一张木凳/台面到画面下方。
     # 关键帧本身干净，纯属模型自己加景，必须显式禁止。
-    "背景与 <Picture1> 完全一致：镜头里不新增任何家具、长椅、桌子、栏杆或前景遮挡物，"
+    # 2026-11-05 二次：改成"正面清单"（外部案例库 §2.8：The room contains only A, B and C）——
+    # 负向串"不许有桌子/椅子/栏杆"模型会漏，正面点名"只有这几样"才压得住。
+    "场景里只有 <Picture1> 里已经存在的这些东西：{scene_items}；"
+    "除此之外不加入任何家具、长椅、桌子、台面、栏杆或前景遮挡物，"
     "画面下方只有原有的地面，场景里的物件从头到尾不增不减。\n"
+    # 2026-11-05：单镜时间锚（外部案例库 §2.6 的 `Shot 1 continues — 5.5s:` 写法）。
+    # 此前 15 秒段三个动作全挤在前 50% 演完（motion_front 123%），后半段定格，
+    # 根因是提示词只有"先…再…最后…"，没有时间点。
+    "{beats_timeline}\n"
     # 2026-11-05 用户给的格式里有 soundscape / music 两段：H3 是带音轨生成的，
     # 我们以前从来没描述过声音，等于把这一半留给模型随便编。
     "{soundscape_line}\n{music_line}\n"
@@ -2128,6 +2195,28 @@ def gen_cloud(sb, s, rec, seed, sb_path):
     dest = os.path.join(SHARED_ROOT, "cloud",
                         os.path.splitext(os.path.basename(sb_path))[0])
     return RH.gen(sb, s, rec, seed, dest)
+
+
+def warm_bottom_ratio(path):
+    """底部 12% 里"暖棕高饱和"像素占比——扩图补出桌面/台面的探测器。
+
+    2026-11-05 出事那天：旧扩图提示词写死"原木色桌面"，于是每个项目扩 9:16 时
+    底部都被画上一块木台面。实测干净帧 0.15~0.19，带桌面的帧 0.48~0.94，区分很干净，
+    阈值取 0.32。只报警不拦截：有些场景（木地板店铺）本来就偏暖。
+    """
+    try:
+        import cv2
+        img = cv2.imread(path)
+        if img is None:
+            return None
+        h, w = img.shape[:2]
+        bot = img[int(h * 0.88):h, :]
+        hsv = cv2.cvtColor(bot, cv2.COLOR_BGR2HSV)
+        m = ((hsv[:, :, 0] >= 8) & (hsv[:, :, 0] <= 32) &
+             (hsv[:, :, 1] > 70) & (hsv[:, :, 2] > 45) & (hsv[:, :, 2] < 205))
+        return float(m.mean())
+    except Exception:
+        return None
 
 
 def _img_ratio_ok(path, tol=0.010):
