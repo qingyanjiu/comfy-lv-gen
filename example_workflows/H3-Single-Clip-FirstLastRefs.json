@@ -57,7 +57,7 @@
         "Node name for S&R": "LoadImage"
       },
       "widgets_values": [
-        "image.png",
+        "placeholder.png",
         "image"
       ]
     },
@@ -114,7 +114,7 @@
         "Node name for S&R": "LoadImage"
       },
       "widgets_values": [
-        "image.png",
+        "placeholder.png",
         "image"
       ]
     },
@@ -171,7 +171,7 @@
         "Node name for S&R": "LoadImage"
       },
       "widgets_values": [
-        "image.png",
+        "placeholder.png",
         "image"
       ]
     },
@@ -228,7 +228,7 @@
         "Node name for S&R": "LoadImage"
       },
       "widgets_values": [
-        "image (5).png",
+        "placeholder.png",
         "image"
       ]
     },
@@ -283,7 +283,7 @@
         "Node name for S&R": "LoadImage"
       },
       "widgets_values": [
-        "image.png",
+        "placeholder.png",
         "image"
       ]
     },
@@ -338,7 +338,7 @@
         "Node name for S&R": "LoadImage"
       },
       "widgets_values": [
-        "image.png",
+        "placeholder.png",
         "image"
       ]
     },
@@ -393,7 +393,7 @@
         "Node name for S&R": "LoadImage"
       },
       "widgets_values": [
-        "image.png",
+        "placeholder.png",
         "image"
       ]
     },
@@ -448,7 +448,7 @@
         "Node name for S&R": "LoadImage"
       },
       "widgets_values": [
-        "image.png",
+        "placeholder.png",
         "image"
       ]
     },
@@ -503,7 +503,7 @@
         "Node name for S&R": "LoadImage"
       },
       "widgets_values": [
-        "image.png",
+        "placeholder.png",
         "image"
       ]
     },
@@ -558,7 +558,7 @@
         "Node name for S&R": "LoadImage"
       },
       "widgets_values": [
-        "image.png",
+        "placeholder.png",
         "image"
       ]
     },
@@ -613,7 +613,7 @@
         "Node name for S&R": "LoadImage"
       },
       "widgets_values": [
-        "image.png",
+        "placeholder.png",
         "image"
       ]
     },
