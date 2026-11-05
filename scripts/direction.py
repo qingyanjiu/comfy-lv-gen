@@ -276,13 +276,32 @@ def face_yaw_signed(img_path):
 _POSE_SESSION = None
 
 
+_POSE_CANDIDATES = [
+    os.environ.get("H3_POSE_ONNX"),
+    # 2026-11-04 模型整体并入安装目录，原来的 Shared 路径失效了，两边都留着找
+    r"D:/Comfy-Desktop/ComfyUI-Installs/ComfyUI/ComfyUI/models/detection/yolov8n-pose.onnx",
+    r"D:/Comfy-Desktop/ComfyUI-Shared/models/detection/yolov8n-pose.onnx",
+]
+
+
+def _pose_onnx():
+    """按顺序找第一个存在的姿态模型。找不到时给出能直接照做的提示，
+    而不是让 onnxruntime 抛一个 "No such file" 让人猜路径。"""
+    for p in _POSE_CANDIDATES:
+        if p and os.path.exists(p):
+            return p
+    raise FileNotFoundError(
+        "找不到 yolov8n-pose.onnx（13MB）。放到下面任一位置，或用环境变量 H3_POSE_ONNX 指定：\n  "
+        + "\n  ".join(x for x in _POSE_CANDIDATES if x))
+
+
 def _pose_session():
     """YOLOv8n-pose ONNX 会话（onnxruntime CPU，13MB，单图约 0.3s）。"""
     global _POSE_SESSION
     if _POSE_SESSION is None:
         import onnxruntime as ort
         _POSE_SESSION = ort.InferenceSession(
-            r"D:/Comfy-Desktop/ComfyUI-Shared/models/detection/yolov8n-pose.onnx",
+            _pose_onnx(),
             providers=["CPUExecutionProvider"])
     return _POSE_SESSION
 
