@@ -679,6 +679,15 @@ def seg_vars(sb, s):
     d["wardrobe_items"] = (str(wi).strip() if wi else
                            "领口形状、袖型和袖长、袖口结构（系带/褶皱/松紧）、"
                            "上衣长度与下摆位置、下装长度与腰头高度、腰带、项链耳饰、鞋子")
+    # 声音（2026-11-05）：H3 自带音轨，不写就由模型随便给。
+    # 分镜写 soundscape / music 覆盖；不写只给"与场景一致的稳定环境音"。
+    sc = s.get("soundscape") or sb.get("soundscape")
+    d["soundscape_line"] = ("环境音：" + str(sc).strip()
+                            if sc else
+                            "环境音：与画面场景一致的自然环境声，音量稳定，"
+                            "不出现不该有的说话声、音乐或音效，无爆音、电流声或失真。")
+    mus = s.get("music") or sb.get("music")
+    d["music_line"] = ("配乐：" + str(mus).strip() if mus else "配乐：不加任何背景音乐。")
     return d
 
 
@@ -1333,6 +1342,13 @@ VIDEO_TMPL = (
     "不卷袖子、不加减外套、不换鞋、不增减任何配饰。\n"
     "{mouth_video}\n"
     "镜头全程固定：不推近、不拉远、不切特写，人物脸部在画面中的大小从头到尾保持不变。\n"
+    # 2026-11-05：15 秒单镜实测，H3 会在最后一两秒凭空补一张木凳/台面到画面下方。
+    # 关键帧本身干净，纯属模型自己加景，必须显式禁止。
+    "背景与 <Picture1> 完全一致：镜头里不新增任何家具、长椅、桌子、栏杆或前景遮挡物，"
+    "画面下方只有原有的地面，场景里的物件从头到尾不增不减。\n"
+    # 2026-11-05 用户给的格式里有 soundscape / music 两段：H3 是带音轨生成的，
+    # 我们以前从来没描述过声音，等于把这一半留给模型随便编。
+    "{soundscape_line}\n{music_line}\n"
     "不穿模、不跳帧、不切镜，无文字、字幕和水印。"
 )
 
@@ -2114,6 +2130,42 @@ def gen_cloud(sb, s, rec, seed, sb_path):
     return RH.gen(sb, s, rec, seed, dest)
 
 
+def _img_ratio_ok(path, tol=0.010):
+    try:
+        from PIL import Image as _I
+        with _I.open(path) as im:
+            w, h = im.size
+        return abs(w / h - 9 / 16) <= tol
+    except Exception:
+        return True
+
+
+def _ensure_ratio_916(rec, sb):
+    """把非 9:16 的关键帧扩成 9:16（返回是否可用）。
+
+    为什么必须有这一步：H3 的 first_frame 不做等比适配，直接按目标画幅采样，
+    3:4 的帧塞进 832×1472 会把人物纵向拉长（用户 2026-11-05 一眼看出来）。
+    扩图用的是 neutal 的"延续原场景"，不再补桌面。
+    """
+    ok = True
+    scene = (sb.get("outpaint_scene") or "").strip() or None
+    for key in ("first", "last"):
+        p = rec.get(key)
+        if not p or not os.path.exists(p):
+            ok = False
+            continue
+        if _img_ratio_ok(p):
+            continue
+        print(f"    {key} 帧不是 9:16，自动扩图...", flush=True)
+        try:
+            outpaint_916(p, seed=int(sb.get("keyframe_seed") or 100000), scene=scene)
+        except Exception as e:
+            print(f"    扩图失败：{e}")
+        if not _img_ratio_ok(p):
+            ok = False
+    return ok
+
+
 def cmd_video(sb_path, sb, only=None, max_try=3, backend=None):
     st = load_state(sb_path, sb)
     ref = ref_name(sb)
@@ -2134,6 +2186,12 @@ def cmd_video(sb_path, sb, only=None, max_try=3, backend=None):
             continue
         if not (rec.get("last") and os.path.exists(rec["last"])):
             print(f"[段{i}] 尾帧缺失，先跑 frames")
+            continue
+        # 关键帧比例守卫（2026-11-05 用户发现「首帧人被拉长」）：
+        # 非 9:16 的帧喂给 H3 会被直接拉伸（实测 896×1184 的 3:4 帧里人被拉长约 35%）。
+        # 先尝试自动扩图，扩完仍不合格就停下来说清楚，绝不允许带着变形去出片。
+        if not _ensure_ratio_916(rec, sb):
+            print(f"[段{i}] 关键帧不是 9:16（扩图后仍不合格），先修帧再出片")
             continue
         if rec.get("video") and os.path.exists(rec["video"]) and rec.get("qa", {}).get("verdict") != "FAIL":
             print(f"[段{i}] 已有合格视频，跳过")
