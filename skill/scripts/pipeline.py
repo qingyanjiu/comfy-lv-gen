@@ -8,6 +8,7 @@ import base64
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,7 @@ import uuid
 from PIL import Image
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 ROOT = r"D:/Comfy-Desktop/ComfyUI-Installs/h3-long-video-repo"
@@ -29,6 +31,10 @@ JOBS = os.path.join(SHARED_ROOT, "jobs-single")
 H3_OUTPUT = r"D:/Comfy-Desktop/ComfyUI-Installs/ComfyUI/ComfyUI/output/h3_single_clip"
 TESTS = os.path.join(SHARED_ROOT, "tests")
 API = os.environ.get("H3_COMFY_API", "http://127.0.0.1:8188")
+# 最近一次 comfy_run 的端到端耗时（秒）。用于把「这张图跑了多久」写进 state：
+# 实测同一 seed/尺寸的耗时会分 17s / 27s / 31s 三档，差别全在显存换页与 TE 重载，
+# 跟画质无因果；但要事后复盘就必须有数，不能靠 ComfyUI 控制台目测。
+LAST_SEC = None
 QA_DIR = r"D:/Comfy-Desktop/.workbuddy/skills/h3-video-qa/scripts"
 
 sys.path.insert(0, QA_DIR)
@@ -58,7 +64,9 @@ def die(msg):
 
 
 def obj_info(name):
-    with urllib.request.urlopen(f"{API}/object_info/{name}", timeout=15) as r:
+    # 节点类型名可能带空格（例如 "Image Median Blur"），不做 URL 编码会抛 InvalidURL
+    with urllib.request.urlopen(
+            f"{API}/object_info/{urllib.parse.quote(name, safe='')}", timeout=15) as r:
         return json.load(r)[name]
 
 
@@ -130,6 +138,8 @@ def comfy_run(wf_path, edits, timeout=1200):
                     if m[0] == "execution_error":
                         die(f"执行出错: {m[1].get('exception_message')}")
                 die("执行出错")
+            global LAST_SEC
+            LAST_SEC = round(time.time() - t0, 1)
             return hist[pid].get("outputs", {})
         if int(time.time() - t0) % 30 < 6:
             print(f"    生成中 {int(time.time()-t0)}s", flush=True)
@@ -161,6 +171,53 @@ def exposure_stats(path):
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     v, s = hsv[..., 2], hsv[..., 1]
     return float(v.mean()), float(((v > 248) & (s < 40)).mean())
+
+
+def align_exposure(anchor, path, tol=6.0):
+    """把一帧的亮度对齐到锚图（均值增益，只动 LAB 的 L 通道，色相饱和度不动）。
+
+    2026-11-05：2.1 每帧独立出图，同一提示词也有 ±20 的亮度漂移，而关键帧质检对
+    「偏离场景锚 > 8」是**硬 FAIL**。段2 实测 -12.8 / -18.5，换种子重出修不掉——
+    因为那是提示词决定的场景明暗（俯身进橱窗阴影），不是随机噪声。
+    所以出帧后直接做一次增益归一，比重出靠谱，也省 2~4 次出图。
+
+    增益法（而不是两点重映射）保持明暗比例，不会引入新的高光裁切；
+    闭环收敛在 V 均值上（质检量的是 V），L 上执行时乘 1.15 补偿两者差异。
+    """
+    import cv2
+    import numpy as np
+    if not (anchor and os.path.exists(anchor) and os.path.exists(path)):
+        return False
+    if os.path.abspath(anchor) == os.path.abspath(path):
+        return False
+    av, _ = exposure_stats(anchor)
+    ev, _ = exposure_stats(path)
+    if av is None or ev is None or abs(ev - av) <= tol:
+        return False
+    img = cv2.imread(path)
+    if img is None:
+        return False
+    for _ in range(8):
+        cur = float(cv2.cvtColor(img, cv2.COLOR_BGR2HSV)[..., 2].mean())
+        err = av - cur
+        if abs(err) <= 0.5:
+            break
+        gain = 1.0 + (err / max(cur, 1.0)) * 1.15
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+        L = lab[..., 0].astype(np.float32)
+        if gain > 1.0:
+            # 提亮只作用于暗部和中间调：整幅乘增益会把橱窗灯/白墙推到 255，
+            # 实测过曝像素 0.06% → 3%，比重出还糟（段2/段3 都中过）。
+            L = np.where(L < 200, L * gain, L)
+        else:
+            L = L * gain
+        lab[..., 0] = np.clip(L, 0, 255).astype(np.uint8)
+        img = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    cv2.imwrite(path, img)
+    nv, no = exposure_stats(path)
+    print(f"    亮度对齐 {os.path.basename(path)}: {ev:.0f} -> {nv:.0f}（锚 {av:.0f}，"
+          f"过曝 {no * 100:.2f}%）", flush=True)
+    return True
 
 
 def normalize_916(path, tol=0.004):
@@ -232,7 +289,7 @@ def outpaint_916(path, seed=0, scene=None):
     if img is None:
         return False
     h, w = img.shape[:2]
-    if abs(w / h - 9 / 16) <= 0.004:
+    if abs(w / h - 9 / 16) <= 0.010:
         return False
     try:
         W, H = 768, 1376
@@ -345,6 +402,14 @@ def cmd_check(sb_path, sb):
     errs, warns = [], []
     if not segs:
         errs.append("segments 为空")
+    # 两张参考图（2026-11-05 用户定稿）：没写 bg_ref 会静默退回老的照片锚 + 量化链路，
+    # 画质和背景一致性都差一档，所以显式提示。
+    if not (sb.get("bg_ref") or "").strip():
+        warns.append("没写 bg_ref（无人的场景空镜）：将退回旧的「首帧固化锚 + 12 色量化」链路；"
+                     "新片子建议写 bg_ref 指向一张纯背景空镜")
+    if int(sb.get("keyframe_seed") or 0) == 100000:
+        warns.append("keyframe_seed=100000 是已知坏种子；frames 阶段会自动替换成分镜派生的干净种子，"
+                     "建议把该字段从分镜里删掉")
     total = 0
     for i, s in enumerate(segs, 1):
         sec = float(s.get("seconds") or sb.get("seconds_per_segment") or 5)
@@ -404,8 +469,9 @@ def cmd_check(sb_path, sb):
                     f"改成画面内横向移动（人物大小不变）"
                 )
                 break
-        if i > 1 and not s.get("chain"):
-            warns.append(f"第 {i} 段未设 chain=true，将按独立镜头处理（需要转场）")
+        if i > 1 and not s.get("chain") and not s.get("transition"):
+            warns.append("第 {} 段未设 chain=true 且没写 transition，将按独立镜头处理（需要转场）；"
+                         "换机位的切镜请显式写 transition: cut".format(i))
 
         # 方向契约：脚朝哪、身朝哪、脸朝哪必须自洽，否则首尾帧必然反向构图
         for lv, msg in D.check_segment(s, i):
@@ -526,6 +592,10 @@ LAST_TMPL = (
 # 图2 场景锚句。第 1 段（或链式断掉时）没有场景图可当图2，此时换成文字搭景，
 # 否则模型照着"图2=人物头像"出一张白墙空景，桌面全丢（2026-11-01 实测）。
 SCENE_FROM_IMG = "场景、背景里的陈设和物品、机位、画幅和光照方向与图2保持一致。"
+# 新链路（bg_ref = 无人场景空镜）：场景内容跟图2，但机位 / 人物大小交给 camera_line。
+# 旧句会把全片每段锁成同一个正面全身构图，人像贴上去的（2026-11-05 用户指出）。
+SCENE_FROM_BG = ("场景内容、背景里的陈设和物品、色温与图2保持一致；"
+                 "机位和人物在画面里的大小按下面的镜头描述来，不受图2 约束。")
 SCENE_FROM_TXT = "光线方向、色温和时间感与图1一致，曝光正常不过曝，场景本身不加不减任何景物。"
 
 # 锚图卫生（2026-11-04 铁律）：第 1 段首帧会固化成全片图2。2.1 编辑模式会把图2
@@ -555,27 +625,43 @@ Q21_FIRST_TMPL = (
     "不许把长袖改短袖或把袖子加长、不许改动衣摆长度和腰头高度、不许增减任何配饰。"
     "头发保持原状：发长、分缝、发丝走向和垂落位置都和图1一样，不要让头发飘动、散开、变形或改变遮挡关系；"
     "9:16 竖构图，{shot}，{frame}。"
-    "同一机位同一景别，人物在画面中的大小和位置与首帧保持一致，不靠近也不远离镜头；"
+    "{camera_line}"
+    "{scene_line}"
+    "{light_line}"
     "{feet_first}"
     "{mouth_img}"
-    "{scene_line}"
-    "真实摄影，画面中只有一个人，无文字水印。"
+    # 2026-11-05：全身景别下 2.1 会把皮肤（尤其腿）画成密集颗粒斑点，
+    # 全图高频冲到 40~57%（段7 实测），换种子 2 次也压不住，得在提示词里明说。
+    "真实摄影，皮肤细腻自然、没有密集毛孔颗粒和噪点斑块，腿部皮肤平滑不粗糙，"
+    "画面中只有一个人，无文字水印。"
 )
 Q21_LAST_TMPL = (
     # 图2 = 本段首帧（同一镜头、同一套服装的唯一标准）；图1 只负责脸/身份。
-    "图1是一位年轻女性的照片，图2 是本段首帧，是同一个镜头。"
-    "让图2里的同一位女生{end_action}："
-    "保持她的身份、脸型、五官、眼神、发型与图1完全一致，是同一个人，不要生成新的人物。"
-    "服装和配饰以图2为唯一标准，逐项照抄：{wardrobe_items}，"
-    "袖长必须和图2一样长（长袖仍是长袖、到手腕的仍到手腕），衣摆和腰头位置不变，"
-    "不许把长袖改成短袖、不许卷起或加长袖子、不许改动衣摆长度、不许增减任何配饰。"
-    "头发保持原状：发长、分缝、发丝走向和垂落位置都和图2一样，不要让头发飘动、散开、变形或改变遮挡关系；"
+    # 2026-11-05 重构：旧版整段 90% 篇幅在写"和 图2 完全一致 / 保持原状 / 不许改动"，
+    # 只有一句在写"要改成什么样"，模型于是原样复制首帧——实测 10 段里 9 段
+    # 「关键点位移 0.02（阈值 0.12）」，手臂该抬的没抬。现在把"必须变"提到最前、
+    # "不变"限定到身份/服装/场景三样，并显式排除姿势。
+    "图1 是一位年轻女性的照片，图2 是本段首帧，是同一个镜头。"
+    "这一张画的是「动作做完之后」的样子：{end_action}。"
+    "**姿势必须与图2 明显不同**——手臂位置、手的落点、头部朝向、上身倾角都要按上面的描述"
+    "发生可见变化，不要原样复制图2 的站姿，不要只改表情。"
+    "必须保持不变的只有三样："
+    "① 身份：脸型五官发型与图1 是同一个人，不生成新的人物；"
+    "② 服装与配饰：以图2为唯一标准逐项照抄，{wardrobe_items}，"
+    "袖长与图2一样（长袖仍是长袖、到手腕的仍到手腕），衣摆和腰头位置不变，"
+    "不改成短袖、不卷起或加长袖子、不增减任何配饰；"
+    "③ 场景：背景里的店铺门面、招牌、陈列、地面材质和颜色保持图2 的样子，"
+    "背景中不新增也不删除物件（动作里明确要求人物手持/端起的道具除外，"
+    "道具要按动作描述出现、拿在手里，不能消失也不能悬浮）。"
+    "头发保持发长和分缝不变，不飘散变形。"
     "9:16 竖构图，{shot}，{frame}。"
-    "场景、机位、画幅、光照方向和色温与图2完全一致：背景里的店铺门面、招牌、陈列、地面材质和颜色都保持图2的样子，"
-    "不新增也不删除背景里的任何物件；"
-    "同一机位同一景别，人物在画面中的大小和位置与图2保持一致，不靠近也不远离镜头；"
+    "人物在画面中的尺度与图2 一致（不靠近也不远离镜头），机位、光照方向和色温不变；"
+    "这个尺度一致只约束人物大小，不约束姿势。"
     "{mouth_img}"
-    "真实摄影，画面中只有一个人，无文字水印。"
+    # 2026-11-05：全身景别下 2.1 会把皮肤（尤其腿）画成密集颗粒斑点，
+    # 全图高频冲到 40~57%（段7 实测），换种子 2 次也压不住，得在提示词里明说。
+    "真实摄影，皮肤细腻自然、没有密集毛孔颗粒和噪点斑块，腿部皮肤平滑不粗糙，"
+    "画面中只有一个人，无文字水印。"
 )
 
 # 空 latent 生图的先验是"女性正面全身像"，dirlock 写得再细也掰不动这个先验。
@@ -676,7 +762,16 @@ def seg_vars(sb, s):
     d["dir_lock"] = D.lock_line(merged)
     # shot 里可能带尾冒号（旧分镜的"标题："写法），叙述句式下要去掉，避免"：。"连标点
     d["shot"] = (d.get("shot") or "").strip().rstrip("：:")
-    d["scene_line"] = SCENE_FROM_IMG
+    # 模板里已经写了"9:16 竖构图，{shot}"，分镜的 shot 开头也常带这一句，
+    # 不去掉会渲染成"9:16 竖构图，9:16 竖构图，全身…"。
+    d["shot"] = re.sub(r"^(?:\s*9:16\s*竖构图\s*[，,、]?\s*)+", "", d["shot"])
+    d["scene_line"] = SCENE_FROM_BG if (sb.get("bg_ref") or "").strip() else SCENE_FROM_IMG
+    # 每段首帧的镜头设计（2026-11-05 用户定）：机位 / 景别 / 人物比例 / 光影各写各的，
+    # 同一镜头内由分镜保证一致，切镜才变。绝不再写「同一机位同一景别」把全片锁死。
+    d["camera_line"] = (str(s.get("camera") or sb.get("camera") or "").strip()
+                        or "镜头：平视全身景，人物在画面中央。")
+    d["light_line"] = (str(s.get("light") or sb.get("light") or "").strip()
+                       or "柔和自然光，人物身上的明暗方向与场景一致，脚下有自然的接触阴影。")
     d.update(action_locks(s, sb))
     wr = s.get("wardrobe") or sb.get("wardrobe") or ""
     d["wardrobe_lock"] = (
@@ -744,10 +839,40 @@ def _beats_timeline(sb, s):
 
 
 def ref_name(sb):
-    """返回参考脸的绝对路径（工作流里传 basename 即可）。"""
+    """返回参考脸的绝对路径（工作流里传 basename 即可）。
+
+    2026-11-05 用户定：**参考图统一先 pad 成 9:16，然后全程都用这一张**。
+
+    为什么必须这么做：2.1 的出图尺寸跟 image_1 的宽高比走（工作流注释原话
+    「latent 跟它走」）。喂 422×367 的近方形参考图，出图就变成 1088×960 横图，
+    于是每一帧都要再跑一次 outpaint_916 才能用——每段白花 2 次出图（约 1 分钟），
+    10 段就是 10 分钟，还多两次"扩图撞车/扩出桌面"的机会。
+    喂 768×1376 的 9:16 参考图，出图直接就是 768×1376，一张都不用扩。
+
+    实测（2026-11-05，sb.json 段1 首帧）：参考图 pad 成 768×1376 后，
+    出图 768×1376，场景仍是步行街橱窗前、下方是石板路、无家具、服装正确。
+
+    和历史方案的区别：2026-11-02 那次"方案 A"是用**扩图 LoRA 重绘**参考图，
+    清晰度 335→133 还出彩虹马赛克，被否决；这里只 **pad 画布 + 墙色渐变**，
+    人物像素不重绘，所以不掉清晰度。分镜里写 `ref_pad_916: false` 可关掉。
+    """
     r = sb["reference_images"][0]
     p = os.path.join(COMFY_INPUT, r)
-    return os.path.abspath(p) if os.path.exists(p) else os.path.abspath(r)
+    if not os.path.exists(p):
+        p = os.path.abspath(r)
+    if not os.path.exists(p) or not sb.get("ref_pad_916", True):
+        return p
+    base, ext = os.path.splitext(p)
+    out = base + "_916" + (ext if ext.lower() in (".png", ".jpg", ".jpeg", ".webp") else ".png")
+    try:
+        q = to_916(p, out)
+        if not _img_ratio_ok(q):
+            print(f"  参考图 pad 后比例仍不对（{q}），退回原图")
+            return p
+        return q
+    except Exception as e:
+        print(f"  参考图 9:16 化失败（{e}），退回原图")
+        return p
 
 
 def to_916(src, out_path):
@@ -864,6 +989,103 @@ def hf_ratio(img_path, thresh=60):
         return None
 
 
+def frame_quality(img_path, thresh=60):
+    """分区画质指标，替代「全图 hf > 20%」的单一闸门（2026-11-05 18:16）。
+
+    旧闸门在两类画面上判反：
+      · 街景含橱窗框 / 石板缝等**合法硬边**，全图 hf 天然 24~26% → 误判成脏帧，无限重出；
+      · 大色块锐化帧 hf 只有 12~16%，但每条边缘对比拉满 → 漏判。
+    所以改用三项：
+      hf    全图强梯度占比（只记录，不再单独拦截）
+      edge  强梯度像素的平均模长（干净帧 120~172；复刻模式 220+）
+      body  人物区（中间 44% 宽 × 18%~92% 高）强梯度占比（皮肤斑驳专用，干净 ~18% / 坏 54%）
+    """
+    try:
+        import cv2
+        import numpy as np
+        im = cv2.imread(img_path)
+        if im is None:
+            return None
+        hh, ww = im.shape[:2]
+        g = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+        gx = cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3)
+        m = np.hypot(gx, gy)
+        hit = m > thresh
+        return {
+            "hf": float(hit.mean()),
+            "edge": float(m[hit].mean()) if hit.any() else 0.0,
+            "body": float(hit[int(hh * .18):int(hh * .92),
+                             int(ww * .28):int(ww * .72)].mean()),
+        }
+    except Exception:
+        return None
+
+
+def frame_bad(sharp, q, sharp_max=380):
+    """首/尾帧画质闸门：脸过锐 / 边缘过硬 / 人物区斑驳，任一命中就换种子重出。"""
+    if sharp is not None and sharp > sharp_max:
+        return True, f"脸Lap {sharp:.0f}>{sharp_max:.0f}"
+    if q is None:
+        return False, ""
+    if q["edge"] > 200:
+        return True, f"强边缘均值 {q['edge']:.0f}>200"
+    if q["body"] > 0.35:
+        return True, f"人物区高频 {q['body']:.1%}>35%"
+    return False, ""
+
+
+def quant_anchor(path, colors=12, tag="q"):
+    """把「场景锚」剥成只剩布局的大色块，再喂给 image_2。
+
+    为什么必须这么做（2026-11-05 八组对照实验，段7 首帧，同 seed/步数/提示词）：
+        A 原锚(hf 13.3%)                     → 出图 hf 58.1%，脸 Lap 152
+        B image_1 换成真 9:16 全身           → 61.4%（换参考图无效）
+        C base20 二十步                      → 50.2%（加步数无效）
+        D 提示词写"平整地面/背景虚化"        → 53.7%（改文案无效）
+        E1 去掉 frame 里"石板路清晰可见"     → 57.2%（无效）
+        F 锚做保边平滑(hf 5.6/3.8%)          → 54.2/51.8%（无效）
+        F3 锚整图虚化(hf 1.5%)               → 23.3%（段7 有效，但段9 反被拖脏 13.5%→23.7%）
+        I 只处理锚的地面区(hf 7.7%)          → 32.9/35.9%（无效）
+        E0 干脆不给 image_2（单图）          → 11.0%（干净，但每段背景各自发挥，拼接会跳）
+        J1 **MeanShift + 12 色量化锚**       → 16.0%（干净且保布局）★
+        J2 线稿锚                            → 17.3%（略差，出镜像感）
+    结论：2.1 的 image_2 不是"参考布局"，而是"照着这张照片重渲染"——锚里的任何高频
+    纹理都会被逐像素复刻并按景别放大（全身景放大约 4 倍）。所以不是"锚脏"，而是
+    "锚太像照片"。唯一的解法是让 image_2 只剩色块布局、没有可复刻的纹理。
+    量化锚全片实跑：段5/7/9 = 17.4% / 16.0% / 16.9%，最差段从 58% 收敛到 17%，
+    脸 Lap 从 152 降到 75。干净段会略升 3~5 点，换最差段降 42 点，净收益极大。
+
+    colors 越大越保细节：首帧用 12（去纹理优先）；尾帧的图2 是本段首帧、要保服装
+    细节（袖长/蕾丝边），用 24 更稳。
+    """
+    if not path or not os.path.exists(path):
+        return path
+    base, _ext = os.path.splitext(path)
+    out = f"{base}_{tag}.png"
+    try:
+        if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(path):
+            return out
+        import cv2
+        import numpy as np
+        im = cv2.imread(path)
+        if im is None:
+            return path
+        sm = cv2.pyrMeanShiftFiltering(im, 24, 32)
+        z = sm.reshape(-1, 3).astype(np.float32)
+        cv2.setRNGSeed(0)  # kmeans 初始化固定，保证同一张锚多次跑结果一致
+        crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+        _, lbl, cen = cv2.kmeans(z, colors, None, crit, 3, cv2.KMEANS_PP_CENTERS)
+        q = cen.astype(np.uint8)[lbl.flatten()].reshape(im.shape)
+        cv2.imwrite(out, q)
+        print(f"  锚去纹理化 → {os.path.basename(out)}（{colors} 色量化，"
+              f"hf {hf_ratio(path):.1%} → {hf_ratio(out):.1%}）", flush=True)
+        return out
+    except Exception as e:
+        print(f"  锚量化失败（{e}），退回原锚——注意这会让出图纹理明显变脏", flush=True)
+        return path
+
+
 def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
     st = load_state(sb_path, sb)
     segs = sb["segments"]
@@ -872,7 +1094,17 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
     ref = ref_name(sb)
     # 种子：全片统一（2026-11-02 定）。动作差异由提示词驱动，构图/背景一致性由
     # 统一种子+统一画布保证；质检发现首尾帧位移不足时，重试自动 +attempt 换噪声。
-    base_seed = int(sb.get("keyframe_seed") or (100000 + seed_off))
+    # 2026-11-05：seed=100000 在本配置（int8 ray + viggle6 六步 + 768×1376）下
+    # 是已知坏种子（复刻模式，全图高频 61.8%）。默认值改成按分镜路径派生：
+    # 不同片子不同、同一片子可复现，且绝不会撞上 100000。
+    import hashlib
+    _h = hashlib.md5(os.path.abspath(sb_path).encode("utf-8")).hexdigest()
+    _default_seed = int(_h[:8], 16) % 2_000_000_000 + 1
+    _ks = int(sb.get("keyframe_seed") or 0)
+    if _ks == 100000:
+        print("[种子] keyframe_seed=100000 是已知坏种子，自动改用分镜派生的干净种子", flush=True)
+        _ks = 0
+    base_seed = (_ks or _default_seed) + seed_off
     sharp_max = float(sb.get("face_sharp_max") or 380)
 
     def seed_first(i):
@@ -900,27 +1132,36 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
         def wf21(name):
             return os.path.join(WF_DIR, name.replace(".json", f"{lora_suf}.json"))
         pr, _pc = render_prompts(sb, s)
-        # 2.1 场景锚（恒定）：第 1 段首帧生成后固化，之后所有帧的图2 都指它。
-        # 实测链式（拿上一段输出当图2）会代际累积花斑；恒定锚则背景锁死、无退化。
-        # 2026-11-02：分镜里写了 scene_ref（扩好图的主参考）就用它当全程恒定的图2，
-        # 不再用第 1 段首帧固化锚 —— 人物身份/光照/场景一次定死，全片不漂。
+        # 两张参考图（2026-11-05 18:16 用户定稿，见 SKILL.md「两张参考图」）：
+        #   image_1 = 人物参考图 ref；image_2 = 场景空镜 bg_ref（全片恒定、必须无人）
+        # bg_ref 存在就走新链路：原样喂图、不做 12 色量化、不固化首帧当锚、不链式。
+        # 没写 bg_ref 的老分镜仍走 scene_ref / 固化锚链路，保持兼容。
+        bg_base = os.path.basename((sb.get("bg_ref") or "").strip()) or None
+        bg_path = os.path.join(COMFY_INPUT, bg_base) if bg_base else None
+        use_bg = bool(bg_path and os.path.exists(bg_path))
+        if bg_base and not use_bg:
+            die(f"bg_ref 指向的场景空镜不存在：{bg_path}")
+        if use_bg and i == 1:
+            print(f"[两张参考图] 图1={os.path.basename(ref)}  图2={bg_base}（原样，不量化）", flush=True)
+        # 旧链路：场景锚（恒定）——第 1 段首帧生成后固化，之后所有帧的图2 都指它。
+        # 2026-11-02：分镜里写了 scene_ref 就用它当全程恒定的图2。
         scene_ref = sb.get("scene_ref")
         anchor = (os.path.join(COMFY_INPUT, scene_ref) if scene_ref
                   else os.path.join(COMFY_INPUT, f"{pfx}_anchor.png"))
         scene_txt = sb.get("scene_text") or SCENE_FROM_TXT
         # 外部指定的锚（scene_ref）也要先体检：脏锚会让全片每帧都复刻放大（见 ANCHOR_GUARD 注释）
-        if i == 1 and scene_ref and os.path.exists(anchor):
+        if i == 1 and not use_bg and scene_ref and os.path.exists(anchor):
             a_hf = hf_ratio(anchor)
             if a_hf is not None and a_hf > 0.20:
-                print(f"[段1] ⚠ 指定锚 {scene_ref} 高频 {a_hf:.1%} > 20%（疑似带斑驳纹理）——"
-                      f"换干净锚，否则全片帧都会被复刻污染", flush=True)
-        if use21 and not (os.path.exists(anchor) and (i > 1 or scene_ref)):
+                print(f"[段1] ⚠ 指定锚 {scene_ref} 高频 {a_hf:.1%} > 20%（带斑驳纹理）——"
+                      f"已自动做量化去纹理兜底，但锚本身脏会连布局一起歪，建议换干净锚", flush=True)
+        if use21 and not use_bg and not (os.path.exists(anchor) and (i > 1 or scene_ref)):
             # 场景锚还没建立（第 1 段或锚丢失）：图2 只有人物头像，改由文字搭景
             pr["first"] = pr["first"].replace(SCENE_FROM_IMG, scene_txt)
             pr["last"] = pr["last"].replace(SCENE_FROM_IMG, scene_txt)
         # 锚图卫生：这一帧会固化成全片图2，自动追加"无裁断肢体/无多余人体局部/无蒸汽"约束。
         # 分镜里 anchor_guard 可写自定义句覆盖，写 false 关闭（不推荐）。
-        if use21 and i == 1 and not scene_ref and not rec.get("first"):
+        if use21 and not use_bg and i == 1 and not scene_ref and not rec.get("first"):
             guard = sb.get("anchor_guard", ANCHOR_GUARD)
             if guard:
                 pr["first"] = pr["first"].rstrip("。") + "。" + str(guard).rstrip("。") + "。"
@@ -932,16 +1173,20 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
 
         ref_basename = os.path.basename(ref)
 
-        # 首帧：2511 走真链式（直接复制上一段尾帧）；2.1 不复制，图2 恒定指场景锚
+        # 首帧：chain 段一律复制上一段尾帧（byte-for-byte），两个后端都一样。
+        # 2026-11-05 修：2.1 分支原来「不复制首帧」，导致段间首尾是两张独立生成的图，
+        # 只能靠 0.25s 叠化糊接缝；但文档（工作流关系.md §3.2 / SKILL.md「改尾帧」）里
+        # chain 的语义本来就是「段 N 尾帧就是段 N+1 首帧，同一张图」。
+        # 2.1 的尾帧编辑模板又明确写「图2 是本段首帧，是同一个镜头」——
+        # 首帧不继承，这句话就成了假的，尾帧机位/服装都会漂。
+        # 要换机位/光影就写 chain:false 当切镜，别让连续动作段各自生首帧。
         if s.get("chain") and i > 1:
             prev = st["segments"].get(str(i - 1), {}).get("last")
             if prev and os.path.exists(prev):
-                if use21:
-                    print(f"[段{i}] 首帧：图2 场景锚 = 第1段首帧（恒定，不链式）")
-                else:
-                    shutil.copy(prev, os.path.join(COMFY_INPUT, first_name))
-                    print(f"[段{i}] 首帧 = 上一段尾帧（链式）")
-                    rec["first"] = os.path.join(COMFY_INPUT, first_name)
+                shutil.copy(prev, os.path.join(COMFY_INPUT, first_name))
+                rec["first"] = os.path.join(COMFY_INPUT, first_name)
+                print(f"[段{i}] 首帧 = 段{i - 1} 尾帧（链式，byte-for-byte）"
+                      + ("；图2 场景空镜仍恒定" if use21 else ""), flush=True)
             else:
                 print(f"[段{i}] 链式要求上一段尾帧缺失，改为独立生成")
                 s["chain"] = False
@@ -956,12 +1201,20 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
                     # 2.1：图1 = 用户原图（原比例，不补白——latent 跟它走，出图就是原比例）
                     # 图2 = 场景锚（第1段首帧）；锚还没建立时走单图 + 文字搭景
                     pad916 = os.path.join(COMFY_INPUT, ref_basename)
-                    if os.path.exists(anchor) and (i > 1 or scene_ref):
+                    if use_bg:
+                        # 新链路：图2 = 场景空镜，**原样喂，不量化**。
+                        # 量化是 seed=100000 时期为照片锚加的历史包袱；空镜 + 随机 seed 不需要。
+                        first_i2 = bg_base
+                    elif os.path.exists(anchor) and (i > 1 or scene_ref):
+                        first_i2 = os.path.basename(quant_anchor(anchor))
+                    else:
+                        first_i2 = None
+                    if first_i2 is not None:
                         outs = comfy_run(
                             wf21("Qwen21-SceneRef916.json"),
                             {
                                 10: {0: os.path.basename(pad916)},
-                                11: {0: os.path.basename(anchor)},
+                                11: {0: first_i2},
                                 40: {0: pr["first"]},
                                 32: {0: f"{pfx}_s{i:02d}_first"},
                                 30: {0: seed_first(i) + attempt},
@@ -990,14 +1243,19 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
                     )
                 src = os.path.join(COMFY_OUTPUT, outs["32"]["images"][-1]["filename"])
                 shutil.copy(src, os.path.join(COMFY_INPUT, first_name))
-                sharp = face_sharpness(os.path.join(COMFY_INPUT, first_name))
-                hfr = hf_ratio(os.path.join(COMFY_INPUT, first_name))
-                if attempt < 2 and ((sharp is not None and sharp > sharp_max) or (hfr is not None and hfr > 0.20)):
-                    print(f"[段{i}] 首帧进复刻模式（脸Lap {sharp and round(sharp)} / "
-                          f"全图高频 {hfr and f'{hfr:.1%}'}），第 {attempt + 1}/3 次重出...", flush=True)
+                rec.setdefault("first_sec", []).append(LAST_SEC)
+                _fp = os.path.join(COMFY_INPUT, first_name)
+                sharp = face_sharpness(_fp)
+                q = frame_quality(_fp)
+                hfr = q["hf"] if q else hf_ratio(_fp)
+                bad, why = frame_bad(sharp, q, sharp_max)
+                if attempt < 2 and bad:
+                    print(f"[段{i}] 首帧画质闸门命中（{why}），第 {attempt + 1}/3 次重出...", flush=True)
                     continue
                 rec["first_sharp"] = round(sharp, 1) if sharp is not None else None
                 rec["first_hf"] = round(hfr, 4) if hfr is not None else None
+                rec["first_edge"] = round(q["edge"], 1) if q else None
+                rec["first_body"] = round(q["body"], 4) if q else None
                 break
             rec["first"] = os.path.join(COMFY_INPUT, first_name)
             save_state(sb_path, st)
@@ -1029,12 +1287,16 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
                 if use21:
                     fix916 = to_916(os.path.join(COMFY_INPUT, first_name),
                                     os.path.join(COMFY_INPUT, f"{pfx}_first916_{i}.png"))
-                    scene2 = anchor if os.path.exists(anchor) else fix916
+                    if use_bg:
+                        fix_i2 = bg_base
+                    else:
+                        _s2 = anchor if os.path.exists(anchor) else fix916
+                        fix_i2 = os.path.basename(quant_anchor(_s2))
                     outs = comfy_run(
                         wf21("Qwen21-SceneRef916.json"),
                         {
                             10: {0: ref_basename},
-                            11: {0: os.path.basename(scene2)},
+                            11: {0: fix_i2},
                             40: {0: pr["pose_fix"]},
                             32: {0: f"{pfx}_s{i:02d}_fix"},
                             30: {0: seed_first(i) + attempt},
@@ -1052,6 +1314,7 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
                     )
                 src = os.path.join(COMFY_OUTPUT, outs["32"]["images"][-1]["filename"])
                 shutil.copy(src, os.path.join(COMFY_INPUT, first_name))
+                rec.setdefault("pose_fix_sec", []).append(LAST_SEC)
                 save_state(sb_path, st)
             if not ok:
                 try:
@@ -1068,7 +1331,7 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
 
         # 场景锚固化：第 1 段首帧定稿后复制为全程唯一的图2 场景基准
         # （放到 9:16 归一化之后再固化，锚就是最终画幅，不再二次 _fit_916 补白）
-        _need_anchor = use21 and not scene_ref and (i == 1 or not os.path.exists(anchor))
+        _need_anchor = use21 and not use_bg and not scene_ref and (i == 1 or not os.path.exists(anchor))
 
         # 尾帧：以首帧派生，并做转头幅度门控
         # 实测：end_action 写"视线移向远处"，编辑模式会演成转头 55°，H3 会把转头演成转身。
@@ -1076,6 +1339,7 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
         # （尾帧不能镜像——会把背景和服装也翻转，破坏与首帧的场景连续性）。
         if not rec.get("last") or not os.path.exists(rec["last"]):
             print(f"[段{i}] 生成尾帧（以首帧派生）...", flush=True)
+            ya = yb = None  # 三次都栽在复刻模式下时 for-else 会走到，别让这里 UnboundLocal
             for attempt in range(3):
                 if use21:
                     # 图1 = 用户原图（人物身份），图2 = 场景锚（缺锚时退回本段首帧）
@@ -1085,12 +1349,15 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
                     # 场景锚是第 1 段的首帧，跟本段隔着好几个动作/角度，模型照它画会把袖长、
                     # 衣摆、配饰重新编一遍（实测同段首尾袖子长短不一）。本段首帧本来就是在锚上
                     # 生成的，场景连续性不会丢，但服装细节有了同一镜头的硬基准。
-                    scene2 = first916
+                    # 尾帧图2 = 本段首帧（同一镜头的服装 / 机位基准，装束才不会前后不一）。
+                    # 新链路原样喂；旧链路才做 24 色量化。只喂一代，不会代际累积。
+                    tail_i2 = (os.path.basename(first916) if use_bg else
+                               os.path.basename(quant_anchor(first916, colors=24, tag="q24")))
                     outs = comfy_run(
                         wf21("Qwen21-SceneRef916.json"),
                         {
                             10: {0: ref_basename},
-                            11: {0: os.path.basename(scene2)},
+                            11: {0: tail_i2},
                             40: {0: pr["last"]},
                             32: {0: f"{pfx}_s{i:02d}_last"},
                             30: {0: seed_last(i) + attempt},
@@ -1108,16 +1375,20 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
                     )
                 src = os.path.join(COMFY_OUTPUT, outs["32"]["images"][-1]["filename"])
                 shutil.copy(src, os.path.join(COMFY_INPUT, last_name))
+                rec.setdefault("last_sec", []).append(LAST_SEC)
                 # 锐度门：脸部 Lap 超阈值 = 2.1 进了「高清复刻」模式，换种子重出。
                 # 放在 yaw 检查之前——过锐帧即使构图对了也不能用。
-                sharp = face_sharpness(os.path.join(COMFY_INPUT, last_name))
-                hfr = hf_ratio(os.path.join(COMFY_INPUT, last_name))
-                if (sharp is not None and sharp > sharp_max) or (hfr is not None and hfr > 0.20):
-                    print(f"[段{i}] 尾帧进复刻模式（脸Lap {sharp and round(sharp)} / "
-                          f"全图高频 {hfr and f'{hfr:.1%}'}），第 {attempt + 1}/3 次重出...", flush=True)
+                _lp = os.path.join(COMFY_INPUT, last_name)
+                sharp = face_sharpness(_lp)
+                q = frame_quality(_lp)
+                hfr = q["hf"] if q else hf_ratio(_lp)
+                bad, why = frame_bad(sharp, q, sharp_max)
+                if bad:
+                    print(f"[段{i}] 尾帧画质闸门命中（{why}），第 {attempt + 1}/3 次重出...", flush=True)
                     continue
                 rec["last_sharp"] = round(sharp, 1) if sharp is not None else None
                 rec["last_hf"] = round(hfr, 4) if hfr is not None else None
+                rec["last_edge"] = round(q["edge"], 1) if q else None
                 try:
                     ya, yb = D.face_yaw_signed(rec["first"]), D.face_yaw_signed(os.path.join(COMFY_INPUT, last_name))
                 except Exception:
@@ -1128,9 +1399,14 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
                     break
                 print(f"[段{i}] 尾帧转头过大（yaw {ya:+.2f} → {yb:+.2f}），第 {attempt + 1}/3 次重出...", flush=True)
             else:
-                print(f"[段{i}] 警告：尾帧转头幅度 3 次均超限（Δyaw {yb - ya:+.2f}），"
-                      f"H3 可能把转头演成转身，建议人工确认或把视线变化从 end_action 里去掉", flush=True)
-                rec["last_yaw_over"] = round(abs(yb - ya), 3)
+                if ya is not None and yb is not None:
+                    print(f"[段{i}] 警告：尾帧转头幅度 3 次均超限（Δyaw {yb - ya:+.2f}），"
+                          f"H3 可能把转头演成转身，建议人工确认或把视线变化从 end_action 里去掉", flush=True)
+                    rec["last_yaw_over"] = round(abs(yb - ya), 3)
+                else:
+                    print(f"[段{i}] 警告：尾帧 3 次重出仍不合格（复刻模式/姿态检测失败），"
+                          f"当前这张未通过质量门，建议人工确认或 --retry 换种子重跑", flush=True)
+                    rec["last_gate_failed"] = True
             rec["last"] = os.path.join(COMFY_INPUT, last_name)
             save_state(sb_path, st)
 
@@ -1164,6 +1440,18 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
             print(f"[段{i}] 锚图已固化——请目视确认：无畸形肢体/多余人体局部、无凭空道具、"
                   f"无蒸汽浮尘；不确定就跑 anchor_probe 做 3 种子冒烟验收", flush=True)
 
+        # 亮度归一到锚图（2026-11-05）：质检对「偏离锚 >8」是硬 FAIL，而这是提示词
+        # 决定的场景明暗，换种子重出修不掉（段2 实测 -12.8/-18.5 重出 3 次仍 FAIL）。
+        # 放在锚固化之后、质检之前，这样质检量到的是归一后的值。
+        # 新链路（bg_ref）已由提示词统一光照，且 align_exposure 曾把橱窗灯推爆过曝，
+        # 所以跳过；旧链路才按锚图归一。
+        _expo_ref = None if use_bg else (anchor if os.path.exists(anchor) else rec.get("first"))
+        if _expo_ref:
+            for k in ("first", "last"):
+                p = rec.get(k)
+                if p and os.path.exists(p):
+                    align_exposure(_expo_ref, p)
+
         # 首尾帧质检
         f1, f2 = Q.image_metrics(rec["first"]), Q.image_metrics(rec["last"])
         e1, e2 = f1.pop("_emb", None), f2.pop("_emb", None)
@@ -1189,15 +1477,17 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
                     issues.append(
                         f"{tag} 脸部过锐（Lap {sp:.0f} > {sharp_max:.0f}），"
                         "2.1 进了「高清复刻」模式；确认提示词是叙述式后换种子重跑")
-            # 全图高频占比：复刻模式的全身指标（脸部 Lap 达标但四肢斑驳时靠它兜底）
-            hfr = hf_ratio(path)
-            if hfr is not None:
+            # 分区画质闸门（2026-11-05）：全图 hf 只存档不拦截——街景的橱窗框 /
+            # 石板缝是合法硬边，会把 hf 顶到 24~26%；真正判脏看强边缘均值与人物区。
+            qc = frame_quality(path)
+            if qc is not None:
                 key = "first_hf" if tag == "首帧" else "last_hf"
-                rec[key] = round(hfr, 4)
-                if hfr > 0.20:
+                rec[key] = round(qc["hf"], 4)
+                rec["first_edge" if tag == "首帧" else "last_edge"] = round(qc["edge"], 1)
+                if qc["edge"] > 200 or qc["body"] > 0.35:
                     issues.append(
-                        f"{tag} 全图高频 {hfr:.1%} > 20%（复刻模式斑驳，四肢/身体皮肤"
-                        "有颗粒脏斑；脸部 Lap 可能达标，别只看脸）——换种子重跑")
+                        f"{tag} 画质闸门命中（强边缘均值 {qc['edge']:.0f} > 200 或 "
+                        f"人物区高频 {qc['body']:.1%} > 35%），疑似复刻模式斑驳——换种子重跑")
             # 特写段本来就要切头顶，留白/占比阈值不适用。
             # 无人脸（背影/侧后）时 insightface 不给 headroom，缺省 0 会把所有背影段误判 FAIL，
             # 此时退回人体检测框顶边（≈头顶含头发）来量留白。
@@ -1220,10 +1510,33 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
                             if os.path.exists(st["segments"].get("1", {}).get("first") or "")
                             else anchor)
                 av, ao = exposure_stats(base_img) if os.path.exists(base_img) else (None, None)
-                if av is not None and abs(ev - av) > 8:
+                # 两张参考图新链路 + 段级 light（2026-11-05 三镜实跑）：
+                # 用户明确要求机位/景别/光影逐段变化（远景柔光 → 橱窗暖光 → 侧逆光），
+                # 跨段亮度差 20+ 是设计结果，不是缺陷。旧闸门拿段1首帧卡 ±8 会把
+                # 段2（-22.6 / -19.8）、段3（-8.0）全判 FAIL，换种子重出也修不掉。
+                # 这种段只查「同一镜头内首/尾曝光是否跳」，跨段差异降级为提示存档。
+                designed_light = bool(use_bg and str(s.get("light") or "").strip())
+                if designed_light:
+                    other = rec["last"] if tag == "首帧" else rec["first"]
+                    ov = (exposure_stats(other)[0]
+                          if other and os.path.exists(other) else None)
+                    if ov is not None and abs(ev - ov) > 8:
+                        issues.append(f"{tag} 段内曝光跳变 {ev - ov:+.1f}（>±8），"
+                                      "同一镜头首尾帧亮度不一致；换种子重出或统一 light")
+                    elif av is not None and abs(ev - av) > 8:
+                        issues.append(f"[提示] {tag} 亮度偏离段1首帧 {ev - av:+.1f}"
+                                      "（本段 light 有意设计了不同光影，不计入 FAIL）")
+                elif av is not None and abs(ev - av) > 8:
                     issues.append(f"{tag} 亮度偏离场景锚 {ev - av:+.1f}（阈值 ±8），整段会偏亮/偏暗")
-                # 过曝阈值跟着锚走：主参考图本身偏亮时，帧跟着亮是正常的，别误判
-                over_th = max(0.015, (ao or 0) + 0.015)
+                # 过曝阈值跟着锚走：主参考图本身偏亮时，帧跟着亮是正常的，别误判。
+                # 新链路 + 段级 light（2026-11-05 三镜链式实跑）：白天街景的玻璃反光
+                # 和天空本来就有 ~2% 高亮像素，而段1首帧这个锚自身几乎 0%，
+                # ao+0.015 = 1.7% 会把 2.0% 判成「墙面或高光死白」，肉眼根本没有死白。
+                # 分段设计光影时放宽到 3%（仍能抓真过曝），跨段明暗由上面的曝光门管。
+                if designed_light:
+                    over_th = max(0.030, (ao or 0) + 0.020)
+                else:
+                    over_th = max(0.015, (ao or 0) + 0.015)
                 if eo > over_th:
                     issues.append(f"{tag} 过曝像素 {eo * 100:.1f}%（>{(over_th) * 100:.1f}% 相对锚），墙面或高光死白")
         sim = Q.cos(e1, e2) if (e1 is not None and e2 is not None) else None
@@ -1249,11 +1562,16 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
             bm = D.body_motion(rec["first"], rec["last"])
             if bm is None:
                 issues.append("姿态检测失败（画面里没有完整人体）")
-            elif bm["disp"] < 0.12:
+            # disp 是 12 个关键点（双臂+双腿+躯干）的平均，绝大多数段是"腿脚站定、只动上半身"，
+            # 平均会把手臂的大位移稀释掉：实测段1 右腕动了 0.88 躯干长，disp 才 0.14。
+            # 所以"手臂整体有明显变化"（arm≥0.20，约等于整条手臂离开原位）单列一条通过路径，
+            # 否则抱臂/叉腰这类贴身动作永远卡在 0.11 附近被误杀（段8 实测 0.11 / arm 0.22）。
+            if bm["disp"] < 0.12 and bm["arm"] < 0.20:
                 issues.append(
-                    "首尾帧几乎同姿态（关键点位移 {:.2f}，阈值 0.12）："
+                    "首尾帧几乎同姿态（关键点位移 {:.2f}，手臂 {:.2f}；阈值 disp 0.12 / arm 0.20）："
                     "H3 只做插值，两帧一样必然演成静止或乱编动作；"
-                    "把 end_action 改成手臂/躯干上的可见动作（手最可靠，腿改不动）".format(bm["disp"]))
+                    "把 end_action 改成手臂/躯干上的可见动作（手最可靠，腿改不动）".format(
+                        bm["disp"], bm["arm"]))
             else:
                 rec["motion"] = round(bm["disp"], 3)
                 print("[段{}] 动作量 OK（disp {:.2f}，主要变化：{}）".format(i, bm["disp"], bm["max_kpt"]), flush=True)
@@ -1262,11 +1580,16 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
         except Exception as e:
             print(f"[段{i}] 动作量检测跳过（{e}）", flush=True)
 
-        rec["qa_frames"] = {"verdict": "PASS" if not issues else "FAIL", "issues": issues,
+        # 2026-11-05：带「[提示]」前缀的属于"看着像问题、实测能接受"（主要是转头幅度），
+        # 不该把整段判 FAIL——否则每段都要为一条提示重出，纯浪费时间。
+        _hard = [x for x in issues if not x.startswith("[提示]")]
+        rec["qa_frames"] = {"verdict": "PASS" if not _hard else "FAIL", "issues": issues,
                             "id_sim": round(sim, 4) if sim else None,
                             "face_sharp": {"first": rec.get("first_sharp"),
                                            "last": rec.get("last_sharp")}}
-        print(f"[段{i}] 首尾帧质检: {'PASS' if not issues else 'FAIL'}", flush=True)
+        print(f"[段{i}] 首尾帧质检: {'PASS' if not _hard else 'FAIL'}"
+              f"{'（' + str(len(issues) - len(_hard)) + ' 条提示不计入）' if len(issues) > len(_hard) else ''}",
+              flush=True)
         for x in issues:
             print(f"        - {x}")
         save_state(sb_path, st)
@@ -1818,6 +2141,79 @@ def cmd_prompt(sb_path, sb, only=None, quiet=False):
     return 0
 
 
+def cmd_direct(sb_path, sb, ref_arg=None, bg_arg=None, prompt_arg=None,
+               out=None, seg=1, seed_off=0):
+    """两张参考图直接出一张帧图，不写分镜也能跑（2026-11-05 用户定稿）。
+
+        image_1 = 人物参考图   管身份 / 长相 / 服装
+        image_2 = 场景空镜     管场景 / 构图 / 光影，必须没有人
+
+    V6 原版双图工作流直出，随机 seed（禁 100000），不量化、不抠图、不合成、不加节点。
+    用途：试构图 / 试机位 / 试光影。正式出片仍走 `frames` 的首尾帧链路。
+
+    参数来源有两条：命令行 --ref/--bg/--prompt，或 --storyboard 里的
+    reference_images[0] / bg_ref / 第 N 段的 first 提示词。命令行优先。
+    """
+    import random
+    sb = sb or {}
+
+    def _stage(p):
+        """绝对路径的图片先拷进 COMFY_INPUT，工作流只能读 input 下的文件名。"""
+        if not p:
+            return None
+        ap_ = os.path.abspath(p)
+        if os.path.isfile(ap_) and os.path.dirname(ap_) != os.path.normpath(COMFY_INPUT):
+            dst = os.path.join(COMFY_INPUT, os.path.basename(ap_))
+            shutil.copy(ap_, dst)
+        return os.path.basename(ap_)
+
+    ref_base = (_stage(ref_arg) if ref_arg else
+                (os.path.basename(ref_name(sb)) if sb.get("reference_images") else None))
+    bg_base = (_stage(bg_arg) if bg_arg else
+               (str(sb.get("bg_ref") or "").strip() or None))
+    if not ref_base:
+        die("direct 需要 --ref（人物参考图），或在 --storyboard 里写 reference_images")
+    if not bg_base:
+        die("direct 需要 --bg（无人的场景空镜），或在 --storyboard 里写 bg_ref")
+    for f in (ref_base, bg_base):
+        if not os.path.exists(os.path.join(COMFY_INPUT, f)):
+            die(f"参考图不存在：{os.path.join(COMFY_INPUT, f)}")
+
+    if prompt_arg:
+        prompt = prompt_arg
+    elif sb.get("segments"):
+        k = max(1, min(int(seg or 1), len(sb["segments"])))
+        prompt = render_prompts(sb, sb["segments"][k - 1])[0]["first"]
+    else:
+        die("direct 需要 --prompt，或用 --storyboard 提供分镜提示词")
+
+    lora_suf = {"lightning4": "-L4", "viggle6": "-V6"}.get(sb.get("keyframe_lora"), "-V6")
+    wf = os.path.join(WF_DIR, f"Qwen21-SceneRef916{lora_suf}.json")
+    seed = int(sb.get("keyframe_seed") or 0)
+    if seed == 100000:
+        print("[种子] keyframe_seed=100000 是已知坏种子，direct 改用随机种子", flush=True)
+        seed = 0
+    seed = (seed or random.randint(1, 2 ** 31)) + int(seed_off or 0)
+
+    outs = comfy_run(wf, {
+        10: {0: ref_base}, 11: {0: bg_base},
+        40: {0: prompt},
+        32: {0: "direct_out"}, 30: {0: seed},
+    })
+    src = os.path.join(COMFY_OUTPUT, outs["32"]["images"][-1]["filename"])
+    dst = os.path.abspath(out or "direct_out.png")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copy(src, dst)
+
+    q = frame_quality(dst) or {"hf": 0, "edge": 0, "body": 0}
+    bad, why = frame_bad(face_sharpness(dst), q)
+    print(f"[direct] 图1={ref_base}  图2={bg_base}  seed={seed}")
+    print(f"[direct] 输出 {dst}")
+    print(f"[direct] hf={q['hf']:.1%} 强边缘={q['edge']:.0f} 人物区={q['body']:.1%} "
+          f"{'⚠ ' + why if bad else '画质闸门 PASS'}", flush=True)
+    return 0
+
+
 def cmd_director(sb_path, sb, out=None):
     """把分镜转成 H3LongVideoDirector 节点吃的 segments 数组。
 
@@ -1908,7 +2304,22 @@ def cmd_director_push(sb_path, sb, job=None, dry=False):
     made, skipped = [], []
     for i, s in enumerate(src_segs, 1):
         rec = (st.get("segments") or {}).get(str(i), {})
-        for side, src in (("start", rec.get("first")), ("end", rec.get("last"))):
+        chained = bool(s.get("chain", True)) and i > 1
+        first_src = rec.get("first")
+        if chained:
+            prev_end = (st.get("segments") or {}).get(str(i - 1), {}).get("last")
+            if prev_end and os.path.exists(prev_end):
+                # 2026-11-05 修：chain 段的首帧必须是上一段尾帧（同一张图，
+                # byte-for-byte），不能再用「本段独立生成的首帧」。
+                # 文档 工作流关系.md §3.2：首帧优先级 manual start > 链式继承；
+                # SKILL.md「改尾帧 = 整条链会往下重出」也写明同一张图。
+                # 之前这里给每段都塞一张独立 start_manual.png，把 Director 的
+                # ensure_keyframe_chain() 继承顶掉了 —— 段间首尾帧因此断开。
+                first_src = prev_end
+                print(f"  段{i} 首帧 ← 段{i - 1} 尾帧（链式，byte-for-byte）")
+            else:
+                print(f"  ⚠ 段{i} 链式但段{i - 1} 尾帧缺失，退回本段首帧")
+        for side, src in (("start", first_src), ("end", rec.get("last"))):
             if not src or not os.path.exists(src):
                 skipped.append(f"{i}/{side}")
                 continue
@@ -1926,10 +2337,15 @@ def cmd_director_push(sb_path, sb, job=None, dry=False):
             state = {}
     overrides = state.setdefault("keyframe_overrides", {})
     items = {int(x["segment"]): x for x in state.get("keyframes", []) if x.get("segment")}
+    # 链式/切镜按分镜写，别再写死 True：chain:false 的段本来就是独立镜头
+    for i, s in enumerate(src_segs, 1):
+        it = items.setdefault(i, {"segment": i})
+        it["continue_from_previous"] = bool(s.get("chain", True))
+        it["free_end"] = bool(s.get("free_end", False))
     for i, side, dst in made:
         posix = dst.replace("\\", "/")
         overrides.setdefault(str(i), {})[side] = posix
-        it = items.setdefault(i, {"segment": i, "continue_from_previous": True, "free_end": False})
+        it = items.setdefault(i, {"segment": i})
         it[f"{side}_frame"] = posix
         it[f"{side}_sha1"] = f"manual:{posix}"
         it[f"{side}_source"] = "manual"
@@ -2005,15 +2421,41 @@ def _new_director_job(sb, template_job=None):
     json.dump(cfg, open(os.path.join(jd, "config.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)
     if sb.get("reference_images"):
+        # 两张参考图（2026-11-05 用户定稿，Director 版）：
+        #   reference_1 = 人物参考图（身份锚，<Picture1>）
+        #   reference_2 = 无人的场景空镜 bg_ref（场景 / 构图 / 光影）
+        # Director 节点本来就有 reference_1..9 可选输入、config.json 默认也是两张，
+        # 所以只要把这两张写对即可，不用改 director.py、不用重启 ComfyUI。
+        # 注意：第二张是**无人空镜**，不是第二张人物照——后者会被 Qwen 画成两个人
+        # （repo run_h3_long_video.py build_qwen_keyframe_graph 的源码注释）。
         try:
-            dst_ref = os.path.join(jd, "reference_1.png")
-            shutil.copy(ref_name(sb), dst_ref)
-            # 2026-11-05 bug：只复制文件、没改 config，新任务会继承模板任务里的
-            # reference_images（往往是上一个项目的别人的脸），于是身份锚一直是错的人。
-            cfg["reference_images"] = [dst_ref.replace("\\", "/")]
+            refs = []
+            d1 = os.path.join(jd, "reference_1.png")
+            shutil.copy(ref_name(sb), d1)
+            refs.append(d1.replace("\\", "/"))
+            bg = str(sb.get("bg_ref") or "").strip()
+            if bg:
+                p2 = os.path.join(COMFY_INPUT, os.path.basename(bg))
+                if not os.path.exists(p2):
+                    p2 = os.path.abspath(bg)
+                if os.path.exists(p2):
+                    d2 = os.path.join(jd, "reference_2.png")
+                    shutil.copy(p2, d2)
+                    refs.append(d2.replace("\\", "/"))
+                    cfg["bg_ref"] = d2.replace("\\", "/")
+                else:
+                    print(f"  ⚠ bg_ref 不存在（{bg}），Director 只写一张人物参考图")
+            # 只复制文件、不改 config 会让新任务继承模板里的别人的脸（2026-11-05 老 bug）
+            cfg["reference_images"] = refs
+            print(f"  参考图 {len(refs)} 张：" + "、".join(os.path.basename(x) for x in refs))
         except Exception as e:
             print(f"  参考图没复制成功（{e}），Director 会用模板里的")
             cfg["reference_images"] = [ref_name(sb).replace("\\", "/")]
+    # cfg 的 reference_images / bg_ref 是上面才写进内存的，必须再落一次盘。
+    # 否则新任务会继承模板 config 里的旧真人图（2026-11-05 身份锚 bug 的残留），
+    # 且 bg_ref 永远不生效。
+    json.dump(cfg, open(os.path.join(jd, "config.json"), "w", encoding="utf-8"),
+              ensure_ascii=False, indent=1)
     json.dump({"status": "awaiting_review"},
               open(os.path.join(jd, "status.json"), "w", encoding="utf-8"))
     print(f"新建任务 {jid}（模板 {tmpl}，{len(segs)} 段）")
@@ -2065,9 +2507,15 @@ def write_director_workflow(sb_path, sb, job):
     # 不写的话打开工作流看到的是占位图（甚至点到 Queue 会拿占位图当身份锚）。
     try:
         ref_base = os.path.basename(ref_name(sb))
+        # 两张参考图：node 1 = 人物（reference_1），node 2 = 场景空镜（reference_2）。
+        # 老代码把 1 和 2 都写成同一张人物图，等于第二张参考图是摆设。
+        _bg = str(sb.get("bg_ref") or "").strip()
+        bg_base = os.path.basename(_bg) if _bg else None
         need = os.path.join(COMFY_INPUT, ref_base)
         if not os.path.exists(need):
             shutil.copy(ref_name(sb), need)
+        if bg_base and not os.path.exists(os.path.join(COMFY_INPUT, bg_base)) and os.path.isabs(_bg):
+            shutil.copy(_bg, os.path.join(COMFY_INPUT, bg_base))
         st = load_state(sb_path, sb)
         first = (st.get("segments", {}).get("1", {}) or {}).get("first")
         first_base = os.path.basename(first) if first and os.path.exists(first) else None
@@ -2077,8 +2525,11 @@ def write_director_workflow(sb_path, sb, job):
             w = n.get("widgets_values") or []
             if not w:
                 continue
-            if n.get("id") in (1, 2):
+            if n.get("id") == 1:
                 w[0] = ref_base
+            elif n.get("id") == 2:
+                # 有 bg_ref 就放场景空镜；老分镜没写就仍放人物图（兼容旧行为）
+                w[0] = bg_base or ref_base
             elif n.get("id") == 5 and first_base:
                 w[0] = first_base
     except Exception as e:
@@ -2247,7 +2698,7 @@ def _ensure_ratio_916(rec, sb):
             continue
         print(f"    {key} 帧不是 9:16，自动扩图...", flush=True)
         try:
-            outpaint_916(p, seed=int(sb.get("keyframe_seed") or 100000), scene=scene)
+            outpaint_916(p, seed=int(sb.get("keyframe_seed") or 20261105), scene=scene)
         except Exception as e:
             print(f"    扩图失败：{e}")
         if not _img_ratio_ok(p):
@@ -2544,7 +2995,7 @@ def cmd_merge(sb_path, sb, transition=None, out=None, join_dissolve=None):
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["check", "prompt", "adopt", "director", "push", "resume", "frames", "video", "merge", "anchor_probe"])
+    ap.add_argument("stage", choices=["check", "prompt", "adopt", "director", "direct", "push", "resume", "frames", "video", "merge", "anchor_probe"])
     ap.add_argument("--storyboard")
     ap.add_argument("--seg", type=int)
     ap.add_argument("--frames-dir", help="adopt 用：外部首尾帧目录，默认 <分镜名>.frames/")
@@ -2562,13 +3013,18 @@ def main():
     ap.add_argument("--max-try", type=int, default=3,
                     help="video 用：每段最多尝试几次（默认 3；做对照测试时设 1，避免 FAIL 后自动重跑）")
     ap.add_argument("--anchor", help="anchor_probe 用：候选锚图（绝对路径或 input 下的文件名）")
+    ap.add_argument("--ref", help="direct 用：image_1 人物参考图（input 下文件名或绝对路径）")
+    ap.add_argument("--bg", help="direct 用：image_2 无人的场景空镜（input 下文件名或绝对路径）")
+    ap.add_argument("--prompt", help="direct 用：直接给的提示词；不写就从 --storyboard 取该段首帧提示词")
     a = ap.parse_args()
 
     if a.stage == "resume":
         return cmd_resume(a.job)
-    if not a.storyboard:
-        ap.error("--storyboard 必填（只有 resume 不需要）")
-    sb = json.load(open(a.storyboard, encoding="utf-8"))
+    if not a.storyboard and a.stage != "direct":
+        ap.error("--storyboard 必填（只有 resume / direct 不需要）")
+    sb = json.load(open(a.storyboard, encoding="utf-8")) if a.storyboard else {}
+    if a.stage == "direct":
+        return cmd_direct(a.storyboard, sb, a.ref, a.bg, a.prompt, a.out, a.seg, a.seed_off)
     if a.stage == "check":
         return cmd_check(a.storyboard, sb)
     if a.stage == "prompt":
