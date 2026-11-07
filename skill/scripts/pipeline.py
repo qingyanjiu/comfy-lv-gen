@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from functools import lru_cache
 
 ROOT = r"D:/Comfy-Desktop/ComfyUI-Installs/h3-long-video-repo"
 WF_DIR = os.path.join(ROOT, "example_workflows")
@@ -63,11 +64,30 @@ def die(msg):
     sys.exit(1)
 
 
+@lru_cache(maxsize=256)
 def obj_info(name):
-    # 节点类型名可能带空格（例如 "Image Median Blur"），不做 URL 编码会抛 InvalidURL
+    # 节点类型名可能带空格（例如 "Image Median Blur"），不做 URL 编码会抛 InvalidURL。
+    # 缓存：build_prompt 每个节点都查一次，缓存后同一类型只联网一次，也少挨 502。
     with urllib.request.urlopen(
             f"{API}/object_info/{urllib.parse.quote(name, safe='')}", timeout=15) as r:
         return json.load(r)[name]
+
+
+def wait_service(limit=180):
+    """桌面版 ComfyUI 会在大模型换入换出后自动重启，期间 /object_info、/api/prompt
+    全部返回 502。等它重新监听再继续，别让整条关键帧链被一次重启打断
+    （2026-11-07 实测：Qwen2.1 双图编辑每跑完 1~2 张就轮转一次日志）。"""
+    t0 = time.time()
+    while time.time() - t0 < limit:
+        try:
+            with urllib.request.urlopen(f"{API}/system_stats", timeout=5) as r:
+                if r.status == 200:
+                    print(f"    [服务自愈] ComfyUI 已恢复（等待 {int(time.time()-t0)}s）", flush=True)
+                    return True
+        except Exception:
+            pass
+        time.sleep(3)
+    return False
 
 
 def build_prompt(wf):
@@ -104,8 +124,14 @@ def build_prompt(wf):
     return prompt
 
 
-def comfy_run(wf_path, edits, timeout=1200):
-    """edits: {node_id: {index: value} | callable(nodes_dict)}"""
+def comfy_run(wf_path, edits, timeout=1200, restarts=4):
+    """edits: {node_id: {index: value} | callable(nodes_dict)}
+
+    2026-11-07：ComfyUI 桌面版在 Qwen2.1 双图编辑跑完一两张后会自动重启进程
+    （日志每次停在 `Prompt executed in 35s` 后轮转），重启窗口里 /object_info
+    和 /api/prompt 直接 502。这里做「等恢复 → 重新提交这张图」自愈；
+    每次重提交都用同一套 edits/seed，产物文件名不变，state 仍能正常续跑。
+    """
     wf = json.load(open(wf_path, encoding="utf-8"))
     nodes = {n["id"]: n for n in wf["nodes"]}
     for nid, patch in edits.items():
@@ -116,34 +142,64 @@ def comfy_run(wf_path, edits, timeout=1200):
             continue
         for idx, val in patch.items():
             nodes[nid]["widgets_values"][int(idx)] = val
-    data = json.dumps({"prompt": build_prompt(wf), "client_id": "h3lv"}).encode()
-    req = urllib.request.Request(f"{API}/api/prompt", data=data, headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            pid = json.load(r)["prompt_id"]
-    except urllib.error.HTTPError as e:
-        die(f"提交失败 {e.code}: {e.read().decode('utf-8', 'ignore')[:600]}")
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        time.sleep(5)
+
+    for attempt in range(restarts + 1):
         try:
-            with urllib.request.urlopen(f"{API}/history/{pid}", timeout=15) as r:
-                hist = json.load(r)
-        except Exception:
+            data = json.dumps({"prompt": build_prompt(wf), "client_id": "h3lv"}).encode()
+            req = urllib.request.Request(f"{API}/api/prompt", data=data,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                pid = json.load(r)["prompt_id"]
+        except urllib.error.HTTPError as e:
+            if e.code not in (502, 503, 504) or attempt >= restarts:
+                die(f"提交失败 {e.code}: {e.read().decode('utf-8', 'ignore')[:600]}")
+            print(f"    [服务自愈] 提交时 ComfyUI 重启（HTTP {e.code}），"
+                  f"第 {attempt + 1}/{restarts} 次重试", flush=True)
+            wait_service()
             continue
-        if pid in hist:
-            st = hist[pid].get("status", {})
-            if st.get("status_str") == "error":
-                for m in st.get("messages", []):
-                    if m[0] == "execution_error":
-                        die(f"执行出错: {m[1].get('exception_message')}")
-                die("执行出错")
-            global LAST_SEC
-            LAST_SEC = round(time.time() - t0, 1)
-            return hist[pid].get("outputs", {})
-        if int(time.time() - t0) % 30 < 6:
-            print(f"    生成中 {int(time.time()-t0)}s", flush=True)
-    die("生成超时")
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+            if attempt >= restarts:
+                die(f"提交失败: {e}")
+            print(f"    [服务自愈] 连接断开（{type(e).__name__}），"
+                  f"第 {attempt + 1}/{restarts} 次重试", flush=True)
+            wait_service()
+            continue
+
+        t0 = time.time()
+        lost, broken = 0, False
+        while time.time() - t0 < timeout:
+            time.sleep(5)
+            try:
+                with urllib.request.urlopen(f"{API}/history/{pid}", timeout=15) as r:
+                    hist = json.load(r)
+            except Exception:
+                lost += 1
+                if lost >= 6:  # 连续约 30s 不可达 → 判定服务重启，这张图重提交
+                    if attempt >= restarts:
+                        die("渲染中服务反复重启，放弃")
+                    print("    [服务自愈] 渲染中服务重启，等恢复后重提交这张图", flush=True)
+                    wait_service()
+                    broken = True
+                    break
+                continue
+            lost = 0
+            if pid in hist:
+                st = hist[pid].get("status", {})
+                if st.get("status_str") == "error":
+                    for m in st.get("messages", []):
+                        if m[0] == "execution_error":
+                            die(f"执行出错: {m[1].get('exception_message')}")
+                    die("执行出错")
+                global LAST_SEC
+                LAST_SEC = round(time.time() - t0, 1)
+                return hist[pid].get("outputs", {})
+            if int(time.time() - t0) % 30 < 6:
+                print(f"    生成中 {int(time.time()-t0)}s", flush=True)
+        else:
+            die("生成超时")
+        if broken:
+            continue
+    die("多次服务重启，放弃")
 
 
 # ---------------------------------------------------------------- 状态
@@ -405,16 +461,20 @@ def cmd_check(sb_path, sb):
     # 两张参考图（2026-11-05 用户定稿）：没写 bg_ref 会静默退回老的照片锚 + 量化链路，
     # 画质和背景一致性都差一档，所以显式提示。
     is_t2i = (sb.get("keyframe_backend") or "").strip() == "krea2_t2i"
+    # 文生视频（用户没给参考图）：分镜写了两张参考图的提示词，由 `refs` 造图并回写。
+    # 造完之后和「用户直接给了图」完全等价，下面所有规则都按图生视频走。
+    needs_refs = bool((sb.get("ref_person_prompt") or "").strip()
+                      and (sb.get("ref_bg_prompt") or "").strip())
     if is_t2i:
-        # 2026-11-07 用户定：纯文本（没给参考图）的片子，后面各段首尾帧也要连续。
+        # 2026-11-07 晚纠正：t2i 直出全部关键帧是理解反了，只留作实验对照。
+        warns.append("[已废弃] keyframe_backend=krea2_t2i（t2i 直出关键帧）不是文生视频正路；"
+                     "请用 `refs` 先造人物图 + 无人空镜，再走 `frames` 双图链路")
         if not (sb.get("t2i_base_prompt") or "").strip():
-            errs.append("纯文本 t2i 分镜必须写 t2i_base_prompt（所有帧共用的人物/场景/机位锁）")
-        for _i, _s in enumerate(segs, 1):
-            if _i > 1 and _s.get("chain") is False:
-                warns.append(f"第 {_i} 段写了 chain:false：纯文本任务默认全链连续，"
-                             "只有真要换机位/换场景才写 false")
-        warns.append("纯文本任务跑 `t2i` 出关键帧（Krea2），不要跑 `frames`；"
-                     "段 N 首帧会自动 byte-for-byte 复制段 N-1 尾帧")
+            errs.append("t2i 实验分镜必须写 t2i_base_prompt（所有帧共用的人物/场景/机位锁）")
+        warns.append("实验链路：跑 `t2i` 出关键帧；段 N 首帧 byte-for-byte 复制段 N-1 尾帧")
+    elif needs_refs and not sb.get("reference_images"):
+        warns.append("还没跑 `refs`：分镜已写 ref_person_prompt / ref_bg_prompt，"
+                     "先执行 `refs` 生成两张参考图，再回来 check → frames")
     elif not (sb.get("bg_ref") or "").strip():
         warns.append("没写 bg_ref（无人的场景空镜）：将退回旧的「首帧固化锚 + 12 色量化」链路；"
                      "新片子建议写 bg_ref 指向一张纯背景空镜")
@@ -480,9 +540,11 @@ def cmd_check(sb_path, sb):
                     f"改成画面内横向移动（人物大小不变）"
                 )
                 break
-        # 纯文本 t2i 分镜的 chain 默认就是 True（用户 2026-11-07 定：后面首尾帧也要连续），
-        # 没写 = 连续动作段，别按旧口径误报「独立镜头」。
-        _chained = ((s.get("chain", True) is not False) if is_t2i else bool(s.get("chain")))
+        # 文生视频（refs 造图）与已废弃的 t2i 实验链路，chain 缺省都视为连续动作段：
+        # 用户 2026-11-07 明确要求「没给参考图的，后面首尾帧也要连续」。
+        _default_chain = is_t2i or needs_refs
+        _chained = ((s.get("chain", True) is not False) if _default_chain
+                    else bool(s.get("chain")))
         if i > 1 and not _chained and not s.get("transition"):
             warns.append("第 {} 段未设 chain=true 且没写 transition，将按独立镜头处理（需要转场）；"
                          "换机位的切镜请显式写 transition: cut".format(i))
@@ -493,8 +555,9 @@ def cmd_check(sb_path, sb):
     miss = [str(i) for i, s in enumerate(segs, 1) if not (s.get("dir") or {}).get("heading")]
     if miss:
         warns.append(f"未写 dir 契约的段：{','.join(miss)}（方向只能从文字猜，出反向构图时无从校验，建议补 heading/body/face）")
-    if not sb.get("reference_images") and not is_t2i:
-        errs.append("缺 reference_images（身份锚点）")
+    if not sb.get("reference_images") and not is_t2i and not needs_refs:
+        errs.append("缺 reference_images（身份锚点）；没给图的话请先写 ref_person_prompt / "
+                    "ref_bg_prompt 并跑 `refs`")
     elif sb.get("reference_images"):
         for r in sb["reference_images"]:
             if not os.path.exists(os.path.join(COMFY_INPUT, r)) and not os.path.exists(r):
@@ -1044,11 +1107,18 @@ def frame_quality(img_path, thresh=60):
         return None
 
 
-def frame_bad(sharp, q, sharp_max=380):
-    """首/尾帧画质闸门：脸过锐 / 边缘过硬 / 人物区斑驳，任一命中就换种子重出。"""
+def frame_bad(sharp, q, sharp_max=380, fx=False):
+    """首/尾帧画质闸门：脸过锐 / 边缘过硬 / 人物区斑驳，任一命中就换种子重出。
+
+    2026-11-07 卡牌战斗实跑：发光特效题材（符文光带 / 光柱光丝 / 光翼网格 /
+    环形光浪）和人物一起落在中央人物区，edge 与 body 会结构性超标（实测
+    edge 205 / body 50.4%），但人物脸和衣服干干净净——按项目「静态指标测不出、
+    验收只能实跑冒烟」的铁律，段里写 lighting_fx:true 时这两项只存档不重出，
+    脸部锐度门仍保留，画面靠拼图人工确认 + 换种子闸门兜底。
+    """
     if sharp is not None and sharp > sharp_max:
         return True, f"脸Lap {sharp:.0f}>{sharp_max:.0f}"
-    if q is None:
+    if q is None or fx:
         return False, ""
     if q["edge"] > 200:
         return True, f"强边缘均值 {q['edge']:.0f}>200"
@@ -1202,7 +1272,13 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
         # 2.1 的尾帧编辑模板又明确写「图2 是本段首帧，是同一个镜头」——
         # 首帧不继承，这句话就成了假的，尾帧机位/服装都会漂。
         # 要换机位/光影就写 chain:false 当切镜，别让连续动作段各自生首帧。
-        if s.get("chain") and i > 1:
+        # 文生视频（refs 造图）分镜：chain 缺省视为连续，与 check / push / cmd_t2i 一致。
+        # 有参考图的图生视频仍要求显式 chain:true（既有语义，不动）。
+        _ref_mode = bool((sb.get("ref_person_prompt") or "").strip()
+                         and (sb.get("ref_bg_prompt") or "").strip())
+        _chained = ((s.get("chain", True) is not False) if _ref_mode
+                    else bool(s.get("chain")))
+        if _chained and i > 1:
             prev = st["segments"].get(str(i - 1), {}).get("last")
             if prev and os.path.exists(prev):
                 shutil.copy(prev, os.path.join(COMFY_INPUT, first_name))
@@ -1270,7 +1346,7 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
                 sharp = face_sharpness(_fp)
                 q = frame_quality(_fp)
                 hfr = q["hf"] if q else hf_ratio(_fp)
-                bad, why = frame_bad(sharp, q, sharp_max)
+                bad, why = frame_bad(sharp, q, sharp_max, fx=bool(s.get("lighting_fx")))
                 if attempt < 2 and bad:
                     print(f"[段{i}] 首帧画质闸门命中（{why}），第 {attempt + 1}/3 次重出...", flush=True)
                     continue
@@ -1404,7 +1480,7 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
                 sharp = face_sharpness(_lp)
                 q = frame_quality(_lp)
                 hfr = q["hf"] if q else hf_ratio(_lp)
-                bad, why = frame_bad(sharp, q, sharp_max)
+                bad, why = frame_bad(sharp, q, sharp_max, fx=bool(s.get("lighting_fx")))
                 if bad:
                     print(f"[段{i}] 尾帧画质闸门命中（{why}），第 {attempt + 1}/3 次重出...", flush=True)
                     continue
@@ -1507,9 +1583,15 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
                 rec[key] = round(qc["hf"], 4)
                 rec["first_edge" if tag == "首帧" else "last_edge"] = round(qc["edge"], 1)
                 if qc["edge"] > 200 or qc["body"] > 0.35:
-                    issues.append(
-                        f"{tag} 画质闸门命中（强边缘均值 {qc['edge']:.0f} > 200 或 "
-                        f"人物区高频 {qc['body']:.1%} > 35%），疑似复刻模式斑驳——换种子重跑")
+                    msg = (f"{tag} 画质指标偏高（强边缘均值 {qc['edge']:.0f} > 200 或 "
+                           f"人物区高频 {qc['body']:.1%} > 35%）")
+                    if s.get("lighting_fx"):
+                        # 发光特效本来就是人物区里的高频/强边缘，静态指标结构性失效。
+                        # 按「验收只能实跑冒烟」铁律降级存档，靠拼图人工确认。
+                        issues.append(f"[提示] {msg}，本段是发光特效，须看拼图确认人物脸部干净")
+                    else:
+                        issues.append(f"{tag} 画质闸门命中（强边缘均值 {qc['edge']:.0f} > 200 或 "
+                                      f"人物区高频 {qc['body']:.1%} > 35%），疑似复刻模式斑驳——换种子重跑")
             # 特写段本来就要切头顶，留白/占比阈值不适用。
             # 无人脸（背影/侧后）时 insightface 不给 headroom，缺省 0 会把所有背影段误判 FAIL，
             # 此时退回人体检测框顶边（≈头顶含头发）来量留白。
@@ -1542,8 +1624,13 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
                     other = rec["last"] if tag == "首帧" else rec["first"]
                     ov = (exposure_stats(other)[0]
                           if other and os.path.exists(other) else None)
-                    if ov is not None and abs(ev - ov) > 8:
-                        issues.append(f"{tag} 段内曝光跳变 {ev - ov:+.1f}（>±8），"
+                    # 发光特效题材（符文点亮 / 光卡浮出 / 光柱与光浪）本来就会让
+                    # 同一镜头内亮度抬高 8~15，这是剧情要求、不是曝光漂移。
+                    # 段里写 lighting_fx:true 时把段内阈值放宽到 ±14（默认仍 ±8）。
+                    fx = s.get("lighting_fx") is True
+                    tol_ev = 14 if fx else 8
+                    if ov is not None and abs(ev - ov) > tol_ev:
+                        issues.append(f"{tag} 段内曝光跳变 {ev - ov:+.1f}（>±{tol_ev}），"
                                       "同一镜头首尾帧亮度不一致；换种子重出或统一 light")
                     elif av is not None and abs(ev - av) > 8:
                         issues.append(f"[提示] {tag} 亮度偏离段1首帧 {ev - av:+.1f}"
@@ -2315,7 +2402,11 @@ def cmd_director_push(sb_path, sb, job=None, dry=False):
         print(f"任务 {job} 是 {len(dst_segs)} 段、分镜是 {len(src_segs)} 段，另建一个任务")
         job = _new_director_job(sb)
         jd = os.path.join(root, job)
-        cfg = json.load(open(os.path.join(jd, "config.json"), encoding="utf-8"))
+        # 2026-11-07 修：cfg_path 是函数开头按旧 job 算的，另建任务后必须同步更新，
+        # 否则下面 json.dump(cfg, cfg_path) 会把新任务的配置写回旧任务，
+        # 把历史任务的 segments / 秒数 / 提示词全部覆盖（3段5s 冒烟时实测踩到）。
+        cfg_path = os.path.join(jd, "config.json")
+        cfg = json.load(open(cfg_path, encoding="utf-8"))
         dst_segs = cfg.get("segments") or []
 
     st = load_state(sb_path, sb)
@@ -3102,12 +3193,68 @@ def gen_krea2_t2i(prompt, seed, w, h, prefix, out_path, steps=8, unet=None, time
     die(f"Krea2 t2i 超时（{timeout}s）：{prefix}")
 
 
-def cmd_t2i(sb_path, sb, only=None, retry=False, seed_off=0):
-    """纯文本分镜：Krea2 t2i 出首尾帧 + chain 段首帧严格复制上段尾帧。
+def cmd_refs(sb_path, sb, retry=False):
+    """文生视频（用户没给参考图）第一步：用 Krea2 t2i 造两张参考图
+    —— 人物设定图 + 无人场景空镜，回写分镜，之后**完全回到双图 frames 链路**。
 
-    分镜必填 `keyframe_backend: "krea2_t2i"` 和 `t2i_base_prompt`
-    （人物/场景/机位/画风的静态锁，所有帧共用，只有动作句逐帧变）。
+    2026-11-07 用户纠正：「不是要先生成人物参考图吗」。
+    纯文本 ≠ 让 t2i 直接把全部关键帧出了；t2i 只负责造参考图。
+    造完之后身份锚、链式首尾帧、9:16 硬锁、push/resume 全是图生视频的既定规则。
     """
+    import hashlib
+    person_prompt = (sb.get("ref_person_prompt") or "").strip()
+    bg_prompt = (sb.get("ref_bg_prompt") or "").strip()
+    if not person_prompt or not bg_prompt:
+        die("文生视频分镜必须写 ref_person_prompt（人物参考图）与 ref_bg_prompt（无人场景空镜）")
+
+    pfx = sb.get("prefix") or PFX
+    w, h = sb.get("final_size", [832, 1472])
+    _h = hashlib.md5(os.path.abspath(sb_path).encode("utf-8")).hexdigest()
+    base_seed = int(sb.get("ref_seed") or 0) or (int(_h[:8], 16) % 2_000_000_000 + 1)
+    p_seed = int(sb.get("ref_person_seed") or 0) or base_seed
+    b_seed = int(sb.get("ref_bg_seed") or 0) or base_seed + 1
+    for label, sd in (("人物参考图", p_seed), ("无人场景空镜", b_seed)):
+        if sd == 100000:
+            die(f"refs 的 {label} seed=100000 是坏种子，换一个")
+
+    # 尊重分镜里已写好的文件名，便于复跑、也便于人工替换成自己挑的图
+    person = (sb.get("ref_person_name") or (sb.get("reference_images") or [None])[0]
+              or f"{pfx}_ref_person.png")
+    bg = sb.get("ref_bg_name") or sb.get("bg_ref") or f"{pfx}_ref_bg.png"
+    person_path = os.path.join(COMFY_INPUT, os.path.basename(person))
+    bg_path = os.path.join(COMFY_INPUT, os.path.basename(bg))
+    steps = int(sb.get("t2i_steps") or 8)
+    unet = sb.get("t2i_unet") or None
+
+    print(f"[refs] 文生视频第一步：Krea2 造两张参考图 / {w}x{h} / {steps} 步 CFG1", flush=True)
+    for label, prompt, seed, path, tag in (
+            ("人物参考图 (image_1)", person_prompt, p_seed, person_path, "PERSON"),
+            ("无人场景空镜 (image_2 / bg_ref)", bg_prompt, b_seed, bg_path, "BG")):
+        if os.path.exists(path) and not retry:
+            print(f"  {label} 已存在，跳过：{os.path.basename(path)}", flush=True)
+            continue
+        print(f"  生成 {label} / seed={seed}", flush=True)
+        gen_krea2_t2i(prompt, seed, w, h, f"{pfx}_REF{tag}", path, steps, unet)
+
+    # 回写分镜：造完图之后就等价于「用户给了两张参考图」的图生视频分镜
+    sb["reference_images"] = [os.path.basename(person)]
+    sb["bg_ref"] = os.path.basename(bg)
+    sb["ref_pad_916"] = False        # 原生 9:16，别再 pad
+    sb.pop("keyframe_backend", None)  # 别留 krea2_t2i，否则 check 分流到已废弃链路
+    json.dump(sb, open(sb_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    print(f"\n[refs] 分镜已回写：reference_images={sb['reference_images']}  bg_ref={sb['bg_ref']}")
+    print("下一步：check → frames → push → resume（段 2+ 写 chain:true 或留空）", flush=True)
+    return 0
+
+
+def cmd_t2i(sb_path, sb, only=None, retry=False, seed_off=0):
+    """【已废弃】纯文本分镜用 Krea2 t2i 直接出全部首尾帧 + 链式复制。
+
+    2026-11-07 晚用户纠正：没给参考图时应当先用 `refs` 造人物图 + 空镜，
+    再走双图 `frames` 链路；t2i 直出关键帧是理解反了，仅保留作实验对照。
+    """
+    print("[已废弃] t2i 直出全部关键帧不是文生视频的正路；"
+          "请改用 `refs` 先造两张参考图，再跑 `frames` 双图链路", flush=True)
     import hashlib
     base = (sb.get("t2i_base_prompt") or "").strip()
     if not base:
@@ -3174,7 +3321,7 @@ def cmd_t2i(sb_path, sb, only=None, retry=False, seed_off=0):
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["check", "prompt", "adopt", "director", "direct", "t2i", "push", "resume", "frames", "video", "merge", "anchor_probe"])
+    ap.add_argument("stage", choices=["check", "prompt", "adopt", "director", "direct", "refs", "t2i", "push", "resume", "frames", "video", "merge", "anchor_probe"])
     ap.add_argument("--storyboard")
     ap.add_argument("--seg", type=int)
     ap.add_argument("--frames-dir", help="adopt 用：外部首尾帧目录，默认 <分镜名>.frames/")
@@ -3215,6 +3362,8 @@ def main():
     if a.stage == "push":
         return cmd_director_push(a.storyboard, sb, a.job, a.dry_run)
 
+    if a.stage == "refs":
+        return cmd_refs(a.storyboard, sb, a.retry)
     if a.stage == "t2i":
         return cmd_t2i(a.storyboard, sb, a.seg, a.retry, a.seed_off)
     if a.stage == "frames":
