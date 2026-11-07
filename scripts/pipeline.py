@@ -404,7 +404,18 @@ def cmd_check(sb_path, sb):
         errs.append("segments 为空")
     # 两张参考图（2026-11-05 用户定稿）：没写 bg_ref 会静默退回老的照片锚 + 量化链路，
     # 画质和背景一致性都差一档，所以显式提示。
-    if not (sb.get("bg_ref") or "").strip():
+    is_t2i = (sb.get("keyframe_backend") or "").strip() == "krea2_t2i"
+    if is_t2i:
+        # 2026-11-07 用户定：纯文本（没给参考图）的片子，后面各段首尾帧也要连续。
+        if not (sb.get("t2i_base_prompt") or "").strip():
+            errs.append("纯文本 t2i 分镜必须写 t2i_base_prompt（所有帧共用的人物/场景/机位锁）")
+        for _i, _s in enumerate(segs, 1):
+            if _i > 1 and _s.get("chain") is False:
+                warns.append(f"第 {_i} 段写了 chain:false：纯文本任务默认全链连续，"
+                             "只有真要换机位/换场景才写 false")
+        warns.append("纯文本任务跑 `t2i` 出关键帧（Krea2），不要跑 `frames`；"
+                     "段 N 首帧会自动 byte-for-byte 复制段 N-1 尾帧")
+    elif not (sb.get("bg_ref") or "").strip():
         warns.append("没写 bg_ref（无人的场景空镜）：将退回旧的「首帧固化锚 + 12 色量化」链路；"
                      "新片子建议写 bg_ref 指向一张纯背景空镜")
     if int(sb.get("keyframe_seed") or 0) == 100000:
@@ -469,7 +480,10 @@ def cmd_check(sb_path, sb):
                     f"改成画面内横向移动（人物大小不变）"
                 )
                 break
-        if i > 1 and not s.get("chain") and not s.get("transition"):
+        # 纯文本 t2i 分镜的 chain 默认就是 True（用户 2026-11-07 定：后面首尾帧也要连续），
+        # 没写 = 连续动作段，别按旧口径误报「独立镜头」。
+        _chained = ((s.get("chain", True) is not False) if is_t2i else bool(s.get("chain")))
+        if i > 1 and not _chained and not s.get("transition"):
             warns.append("第 {} 段未设 chain=true 且没写 transition，将按独立镜头处理（需要转场）；"
                          "换机位的切镜请显式写 transition: cut".format(i))
 
@@ -479,9 +493,9 @@ def cmd_check(sb_path, sb):
     miss = [str(i) for i, s in enumerate(segs, 1) if not (s.get("dir") or {}).get("heading")]
     if miss:
         warns.append(f"未写 dir 契约的段：{','.join(miss)}（方向只能从文字猜，出反向构图时无从校验，建议补 heading/body/face）")
-    if not sb.get("reference_images"):
+    if not sb.get("reference_images") and not is_t2i:
         errs.append("缺 reference_images（身份锚点）")
-    else:
+    elif sb.get("reference_images"):
         for r in sb["reference_images"]:
             if not os.path.exists(os.path.join(COMFY_INPUT, r)) and not os.path.exists(r):
                 errs.append(f"参考图不存在: {r}")
@@ -856,7 +870,15 @@ def ref_name(sb):
     清晰度 335→133 还出彩虹马赛克，被否决；这里只 **pad 画布 + 墙色渐变**，
     人物像素不重绘，所以不掉清晰度。分镜里写 `ref_pad_916: false` 可关掉。
     """
-    r = sb["reference_images"][0]
+    refs = sb.get("reference_images") or []
+    if not refs:
+        # 纯文本 t2i（2026-11-07）：没有用户参考图时，拿自己出的段1首帧当身份锚，
+        # 否则 push / merge 会因 sb["reference_images"][0] 直接 KeyError，
+        # 而且新任务会继承模板 config 里别人的真人图（身份锚老 bug）。
+        pfx = sb.get("prefix") or PFX
+        p = os.path.join(COMFY_INPUT, f"{pfx}_s01_first.png")
+        return p if os.path.exists(p) else ""
+    r = refs[0]
     p = os.path.join(COMFY_INPUT, r)
     if not os.path.exists(p):
         p = os.path.abspath(r)
@@ -2420,7 +2442,8 @@ def _new_director_job(sb, template_job=None):
     os.makedirs(jd)
     json.dump(cfg, open(os.path.join(jd, "config.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)
-    if sb.get("reference_images"):
+    if sb.get("reference_images") or (sb.get("keyframe_backend") or "").strip() == "krea2_t2i":
+        # 纯文本 t2i 也要写 reference_images，否则新任务继承模板里的旧真人图。
         # 两张参考图（2026-11-05 用户定稿，Director 版）：
         #   reference_1 = 人物参考图（身份锚，<Picture1>）
         #   reference_2 = 无人的场景空镜 bg_ref（场景 / 构图 / 光影）
@@ -2992,10 +3015,166 @@ def cmd_merge(sb_path, sb, transition=None, out=None, join_dissolve=None):
     return 0
 
 
+# ---------------------------------------------------------------- 纯文本 t2i 关键帧
+# 2026-11-07 用户定：没给参考图（纯文本）的片子，关键帧用
+# `image_krea2_turbo_t2i_int8` 那套出图更好，且后面各段首尾帧必须连续。
+# 该工作流是纯 t2i（EmptyLatentImage，无任何图像输入），所以：
+#   - 身份/场景一致性靠「所有帧共用同一段 t2i_base_prompt + 同一 seed」；
+#     实测同 seed 换动作描述，双人长相/服装/场地都稳（k2_probe_1/2.png）。
+#   - 段间连续靠 byte-for-byte 复制：段 N 首帧 = 段 N-1 尾帧，不重新生成。
+#   - 原生 9:16 出图，不需要 16:9→9:16 的模糊铺底适配。
+KREA2_UNET = "krea2_aingmix_kroma_v10_int8_convrot.safetensors"
+KREA2_CLIP = "qwen3vl_4b_fp8_scaled.safetensors"
+KREA2_VAE = "qwen_image_vae.safetensors"
+
+
+def krea2_t2i_graph(prompt, seed, w, h, prefix, steps=8, unet=None):
+    """等价复刻 image_krea2_turbo_t2i_int8.json 的真实档位（用户实际设置）：
+    unet = Aingmix Kroma v1.0 int8 / clip = qwen3vl_4b_fp8_scaled (type krea2)
+    vae = qwen_image_vae / 8 步 / CFG 1.0 / euler+simple
+    prompt_enhance=false、enable_lora=false（子图里就是关的，别打开，否则测的是扩写器）。
+    """
+    return {
+        "1": {"class_type": "UNETLoader",
+              "inputs": {"unet_name": unet or KREA2_UNET, "weight_dtype": "default"}},
+        "2": {"class_type": "CLIPLoader",
+              "inputs": {"clip_name": KREA2_CLIP, "type": "krea2", "device": "default"}},
+        "3": {"class_type": "VAELoader", "inputs": {"vae_name": KREA2_VAE}},
+        "4": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["2", 0]}},
+        "5": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["4", 0]}},
+        "6": {"class_type": "EmptyLatentImage",
+              "inputs": {"width": int(w), "height": int(h), "batch_size": 1}},
+        "7": {"class_type": "KSampler",
+              "inputs": {"model": ["1", 0], "seed": int(seed), "steps": int(steps), "cfg": 1.0,
+                         "sampler_name": "euler", "scheduler": "simple",
+                         "positive": ["4", 0], "negative": ["5", 0],
+                         "latent_image": ["6", 0], "denoise": 1.0}},
+        "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}},
+        "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": prefix}},
+    }
+
+
+def gen_krea2_t2i(prompt, seed, w, h, prefix, out_path, steps=8, unet=None, timeout=600):
+    """提交一次 Krea2 t2i，等完成并下载到 out_path。带进度心跳（见 SKILL.md 长任务节）。"""
+    body = json.dumps({"prompt": krea2_t2i_graph(prompt, seed, w, h, prefix, steps, unet),
+                       "client_id": "h3krea2"}).encode()
+    req = urllib.request.Request(API + "/prompt", data=body,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            res = json.load(r)
+    except urllib.error.HTTPError as e:
+        die("Krea2 t2i 提交失败: " + e.read().decode("utf-8", "ignore")[:900])
+    pid = res.get("prompt_id")
+    if not pid:
+        die("Krea2 t2i 提交失败: " + json.dumps(res, ensure_ascii=False)[:400])
+    print(f"  prompt_id {pid}", flush=True)
+    t0 = time.time()
+    last_tick = -1
+    while time.time() - t0 < timeout:
+        try:
+            with urllib.request.urlopen(API + "/history/" + pid, timeout=15) as r:
+                hst = json.load(r)
+            if pid in hst:
+                stt = hst[pid].get("status", {})
+                if stt.get("status_str") == "error":
+                    for m in stt.get("messages", []):
+                        if m[0] == "execution_error":
+                            die("Krea2 t2i 执行失败: " + str(m[1].get("exception_message"))[:900])
+                    die("Krea2 t2i 执行失败")
+                items = (hst[pid].get("outputs", {}).get("9") or {}).get("images") or []
+                if items:
+                    im = items[0]
+                    url = (API + "/view?filename=" + urllib.parse.quote(im["filename"]) +
+                           "&subfolder=" + urllib.parse.quote(im.get("subfolder", "")) +
+                           "&type=" + im.get("type", "output"))
+                    with urllib.request.urlopen(url, timeout=120) as r:
+                        open(out_path, "wb").write(r.read())
+                    print(f"  -> {os.path.basename(out_path)}  {time.time()-t0:.0f}s", flush=True)
+                    return out_path
+        except Exception:
+            pass
+        el = int(time.time() - t0)
+        if el // 15 > last_tick:
+            last_tick = el // 15
+            print(f"    ...{prefix} 渲染中 {el}s", flush=True)
+        time.sleep(3)
+    die(f"Krea2 t2i 超时（{timeout}s）：{prefix}")
+
+
+def cmd_t2i(sb_path, sb, only=None, retry=False, seed_off=0):
+    """纯文本分镜：Krea2 t2i 出首尾帧 + chain 段首帧严格复制上段尾帧。
+
+    分镜必填 `keyframe_backend: "krea2_t2i"` 和 `t2i_base_prompt`
+    （人物/场景/机位/画风的静态锁，所有帧共用，只有动作句逐帧变）。
+    """
+    import hashlib
+    base = (sb.get("t2i_base_prompt") or "").strip()
+    if not base:
+        die("纯文本分镜必须写 t2i_base_prompt（所有帧共用的人物/场景/机位锁）")
+    st = load_state(sb_path, sb)
+    segs = sb["segments"]
+    pfx = sb.get("prefix") or PFX
+    w, h = sb.get("final_size", [832, 1472])
+    steps = int(sb.get("t2i_steps") or 8)
+    unet = sb.get("t2i_unet") or None
+    _h = hashlib.md5(os.path.abspath(sb_path).encode("utf-8")).hexdigest()
+    default_seed = int(_h[:8], 16) % 2_000_000_000 + 1
+    seed = int(sb.get("keyframe_seed") or 0) or default_seed
+    if seed == 100000:
+        print("[种子] 100000 是坏种子，改回分镜派生值", flush=True)
+        seed = default_seed
+    seed += seed_off
+    print(f"[纯文本 t2i] Krea2 / {w}x{h} / {steps} 步 CFG1 / seed={seed} / {len(segs)} 段", flush=True)
+    for i, s in enumerate(segs, 1):
+        if only and i != only:
+            continue
+        rec = st["segments"].setdefault(str(i), {})
+        try:
+            pr, _ = render_prompts(sb, s)
+        except Exception:
+            # 纯文本分镜没写全 prompt_* 时模板会缺变量；t2i 只需要动作句，
+            # 静态锁全在 t2i_base_prompt 里，不需要套 Qwen 双图模板。
+            pr = {"first": s.get("open_action") or "", "last": s.get("end_action") or ""}
+        first_path = os.path.join(COMFY_INPUT, f"{pfx}_s{i:02d}_first.png")
+        last_path = os.path.join(COMFY_INPUT, f"{pfx}_s{i:02d}_last.png")
+        if retry:
+            for k in ("first", "last"):
+                rec.pop(k, None)
+                try:
+                    os.remove(first_path if k == "first" else last_path)
+                except OSError:
+                    pass
+        # 纯文本默认链式（用户 2026-11-07 定）：不写 chain 就当连续动作段。
+        chained = (s.get("chain", True) is not False) and i > 1
+        if chained:
+            prev = st["segments"].get(str(i - 1), {}).get("last")
+            if not prev or not os.path.exists(prev):
+                die(f"段{i} 链式要求段{i-1} 尾帧存在，先跑 t2i 不带 --seg")
+            shutil.copy(prev, first_path)
+            rec["first"] = first_path
+            print(f"[段{i}] 首帧 = 段{i-1} 尾帧（链式，byte-for-byte）", flush=True)
+        if not rec.get("first") or not os.path.exists(rec["first"]):
+            print(f"[段{i}] t2i 生成首帧", flush=True)
+            act = s.get("prompt_first") or s.get("open_action") or pr["first"]
+            gen_krea2_t2i(base + "\n" + act, seed, w, h, f"{pfx}_F{i:02d}", first_path,
+                          steps, unet)
+            rec["first"] = first_path
+        if not rec.get("last") or not os.path.exists(rec["last"]):
+            print(f"[段{i}] t2i 生成尾帧", flush=True)
+            act = s.get("prompt_last") or s.get("end_action") or pr["last"]
+            gen_krea2_t2i(base + "\n" + act, seed, w, h, f"{pfx}_L{i:02d}", last_path,
+                          steps, unet)
+            rec["last"] = last_path
+    save_state(sb_path, st)
+    print(f"\n完成 {len(segs)} 段关键帧（state 已登记）。下一步：push --storyboard <分镜> → resume", flush=True)
+    return 0
+
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["check", "prompt", "adopt", "director", "direct", "push", "resume", "frames", "video", "merge", "anchor_probe"])
+    ap.add_argument("stage", choices=["check", "prompt", "adopt", "director", "direct", "t2i", "push", "resume", "frames", "video", "merge", "anchor_probe"])
     ap.add_argument("--storyboard")
     ap.add_argument("--seg", type=int)
     ap.add_argument("--frames-dir", help="adopt 用：外部首尾帧目录，默认 <分镜名>.frames/")
@@ -3036,6 +3215,8 @@ def main():
     if a.stage == "push":
         return cmd_director_push(a.storyboard, sb, a.job, a.dry_run)
 
+    if a.stage == "t2i":
+        return cmd_t2i(a.storyboard, sb, a.seg, a.retry, a.seed_off)
     if a.stage == "frames":
         return cmd_frames(a.storyboard, sb, a.seg, a.retry, a.seed_off) or 0
     if a.stage == "anchor_probe":
