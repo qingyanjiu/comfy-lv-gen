@@ -19,30 +19,34 @@ agent   ：跑工序 · 读质检 · 按失败码修参数重跑
 工作流   ：Qwen 首尾帧 → H3 视频 → ffmpeg 合并
 ```
 
-## 两条链路：开工第一步先判断「有没有参考图」（2026-11-07 用户定）
+## 两条链路：开工第一步先判断「有没有参考图」（2026-11-07 用户定稿）
 
 用户把两类任务明确分开了：「**之前做的是有参考图的**，那个你已经知道了；
-**现在文生视频的要遵循的规则**也要记录并更新到 skill」。两条链路的规则各自独立，
-**不能混用**，开工前必须先分流：
+**现在文生视频的要遵循的规则**也要记录并更新到 skill」。
 
-| 用户给了什么 | 走哪条 | 关键帧命令 | 身份靠什么锁 | 权威规则章节 |
+**⚠ 2026-11-07 晚用户纠正（别再理解反）**：用户没给参考图，**不等于让 t2i
+直接把关键帧全出了**。正路是先用 Krea2 造出两张参考图，然后**完全回到已经定稿的
+双图 `frames` 链路**。用户原话：「不是要先生成人物参考图吗你到底有没有在听我说」。
+
+| 用户给了什么 | 第一步 | 之后（两条链路完全相同） | 身份靠什么锁 | 规则章节 |
 |---|---|---|---|---|
-| 人物图（+ 无人场景空镜） | ① 图生视频 / 双图链路 | `frames` / `direct` | `image_1` 人物参考图 | 下面「两张参考图（首尾帧的心智模型）」 |
-| **只有文字，没有任何图** | ② **文生视频 / 纯文本链路** | **`t2i`** | `t2i_base_prompt` 静态锁 + 全片同 seed | 「纯文本任务 / 文生视频：Krea2 t2i + 全链连续」 |
+| 人物图（+ 无人场景空镜） | — | `frames` 双图编辑 | 用户给的 `image_1` | 「两张参考图」 |
+| **只有文字，没有任何图** | **`refs`：Krea2 造人物图 + 无人空镜** | **`frames` 双图编辑** | `refs` 造出来的人物图当 `image_1` | 「文生视频」 |
 
-- 纯文本分镜**没有** `reference_images`，跑 `frames` 会直接 KeyError；
-  有参考图的分镜跑 `t2i` 会丢掉人物身份锚。
-- `check` 按 `keyframe_backend == "krea2_t2i"` 自动分流：纯文本豁免
-  「缺 reference_images」错误、`chain` 缺省视为连续动作段。
-- **有参考图那条的规则不要套到纯文本上**：`bg_ref` / 场景空镜 / 双图分工 /
-  逐段换 `camera`+`light` 都是图生视频专用；纯文本是全片同一机位、静态锁写死。
-- 两条链路共用的仍然成立：9:16 硬锁、`chain` 段首尾帧 byte-for-byte、坏种子
-  100000 禁用、长任务进度心跳、Director `push/resume` 出片。
+- 从第二步起是**同一套**：Qwen2.1 双图编辑、首帧图2=空镜、尾帧图2=本段首帧、
+  `chain` 段首尾帧 byte-for-byte 相连、9:16 硬锁、禁坏种子 100000、
+  `push → resume` 出片。**不存在「纯文本专用出帧链路」**。
+- 唯一差别只是参考图**谁提供**：用户给，或者 `refs` 造。
+- **`t2i` 直出全部关键帧是当天理解反了的弯路，已废弃**：命令保留作实验对照，
+  `check` 会对 `keyframe_backend: "krea2_t2i"` 告警；正片不要用。
+- `check` 分流：分镜写了 `ref_person_prompt` + `ref_bg_prompt` 但还没有
+  `reference_images` → 提示先跑 `refs`，不报「缺身份锚」。
 
 ## 两张参考图（首尾帧的心智模型，**2026-11-05 18:16 已接入 pipeline**）
 
 > 这一节是**① 有参考图 / 图生视频**链路，用户已确认掌握。
-> 纯文本（文生视频）请直接跳到后面的「纯文本任务 / 文生视频」章节。
+> 用户没给参考图的文生视频：先用 `refs` 造出这两张图，然后**回到本节**走同一条双图链路；
+> 规则见后面「文生视频」章节。
 
 ```
 image_1 = 人物参考图    管身份 / 长相 / 服装（权重最高）
@@ -1793,162 +1797,149 @@ H3 的 `first_frame` **不做等比适配**，非 9:16 的帧会被直接拉伸�
 4. 验收口径：`python -c "from PIL import Image; ..."` 把 20 张帧的宽高比打印一遍，
    全部应等于 0.5625（±0.01）。别只看一两张。
 
-## 纯文本任务 / 文生视频：Krea2 t2i + 全链连续（2026-11-07 用户定，**完整规则**）
+## 文生视频（用户没给参考图）：先造参考图，再走双图链路
+（2026-11-07 晚用户纠正定稿）
 
 用户原话：「对于这种没给参考图的，就是纯文本的，**后面首尾帧也要连续**，
-另外利用这个工作流出的图更好 `image_krea2_turbo_t2i_int8`」。
+另外利用这个工作流出的图更好 `image_krea2_turbo_t2i_int8`」；
+随后纠正「**不是要先生成人物参考图吗**」。
 
-### 必须遵守的 8 条（逐条检查，别省）
+### 一句话规则
 
-1. **分流**：没给参考图就走这条；分镜写 `keyframe_backend: "krea2_t2i"`，
-   跑 **`t2i`**，不要跑 `frames` / `direct`。
-2. **静态锁**：`t2i_base_prompt` 写死人物 / 服装 / 场地 / 机位 / 画风 /
-   卡面无文字 / 场景正面清单，所有帧共用、绝不逐帧改写；
-   `prompt_first` / `prompt_last` **只写这一帧的动作差异**，一句话。
-3. **同 seed**：全片一个 `keyframe_seed`（禁 100000）。Krea2 同 seed 换动作句，
-   双人长相 / 发型 / 服装 / 场地才稳（实测 `k2_probe_1/2.png`）。
-4. **全链连续**：段 2+ **不写 `chain`**（缺省即连续）；段 N 首帧
-   byte-for-byte 复制段 N-1 尾帧，不重新生成。只有真要换机位 / 换场景才写
+`t2i` 只负责**造两张参考图**；造完之后关键帧一律走 `frames` 双图编辑。
+别把「纯文本」理解成「整条片子不用参考图」——是**不用用户给的图**。
+
+### 必须遵守的 8 条
+
+1. **分流**：没给图 → 分镜写 `ref_person_prompt` / `ref_bg_prompt`，先跑 `refs`。
+2. **`refs` 造两张原生 9:16 图**：人物设定图 + 无人场景空镜，各用独立 seed
+   （禁 100000），自动回写分镜的 `reference_images` / `bg_ref` / `ref_pad_916:false`。
+   已存在同名图默认跳过，换图用 `--retry`。
+3. **人物参考图**：干净无缝背景、全身完整、正面、四肢不被裁、无道具/家具/文字；
+   双人题材就并排站两个角色并写清「只有这两个人、没有第三个人」。
+4. **场景空镜**：**完全没有人、人影或人体局部**，只含场景要素，从零生成；
+   不能是抠图/透明底，也不能把生成结果喂回去（会代际累积锐化）。
+5. **回写后 `check → frames`**：这时和「用户直接给了图」完全等价；
+   首帧图2=空镜（原样、不量化），尾帧图2=本段首帧。
+6. **段 2+ 首尾帧相连**：写 `chain:true`（文生视频不写也默认连续），
+   段 N 首帧 byte-for-byte 复制段 N-1 尾帧；只有真换机位/换场景才
    `chain:false + transition:cut`。
-5. **原生 9:16**：`final_size: [832, 1472]` 直接出图，不做 16:9→9:16 适配，
-   更不能用 reflect pad（会复制出倒立人物）。
-6. **帧数**：N 段只需 **N+1 次 t2i**（段 1 首帧 + N 条尾帧），其余 N-1 张首帧全是复制。
-7. **出片顺序**：`check → t2i → push → resume`；`push` 后把 job `config.json` 设成
-   `static_compact=false` / `chain_segments=true` / `transition_mode=none`
-   （链式按铁律**硬切**，不叠化糊接缝、不剪静止帧，保住完整时长）。
-8. **验收口径**：pipeline 端和 Director 端各验一次 **md5 三处两两相等**；
-   成片看链式接缝的相邻帧 MAE（应 < 10），不是靠 0.25s 叠化糊过去。
+7. **`push → resume`**：显式新建任务（`_new_director_job(sb)`）；job config 设
+   `chain_segments=true` / `transition_mode=none` / `static_compact=false`
+   （链式硬切、不叠化、不剪帧）。
+8. **验收**：pipeline 端 + Director 端 md5 全相等、`continue_from_previous` 对齐；
+   成片看链式接缝 MAE（<10）与 QA `static_ratio`。
 
-### 分镜字段（必填 / 禁止）
+### 分镜字段
 
 | 字段 | | 说明 |
 |---|---|---|
-| `keyframe_backend` | ✅ | 固定 `"krea2_t2i"`，`check` 靠它分流 |
-| `t2i_base_prompt` | ✅ | 静态锁，缺了 `t2i` 直接报错 |
+| `ref_person_prompt` | ✅ | 人物设定图提示词：干净棚拍背景、全身、正面、四肢完整 |
+| `ref_bg_prompt` | ✅ | 无人场景空镜提示词，明写「没有任何人物/人影/人体局部」 |
+| `ref_person_seed` / `ref_bg_seed` | 建议 | 两个不同 seed，禁 100000；不写则按分镜路径派生 |
+| `ref_person_name` / `ref_bg_name` | 可选 | 输出文件名；不写用 `<prefix>_ref_person.png` / `_ref_bg.png` |
+| `final_size` | ✅ | `[832,1472]`，9:16 硬锁 |
 | `prefix` | ✅ | 帧文件名前缀，别和别的片子撞车 |
-| `final_size` | ✅ | `[832, 1472]`，与 Director 对齐 |
-| `seconds` / `seconds_per_segment` | ✅ | 每段时长 |
-| `keyframe_seed` | 建议 | 全片一个，禁 100000；不写则按分镜路径派生 |
-| 每段 `prompt_first` / `prompt_last` | ✅ | 只写动作差异，别重复静态锁 |
-| 每段 `prompt_video` / `prompt_segment` | ✅ | Director 的视频 / 整段提示词 |
-| 每段 `open_action` / `end_action` / `motion` | ✅ | `check` 必查，`t2i` 也拿它兜底 |
-| 每段 `beats` / `scene_items` | 建议 | 时间锚与场景正面清单 |
-| `chain` | ❌ 别写 | 缺省即连续；写了 `false` `check` 会提醒 |
-| `reference_images` / `bg_ref` | ❌ 别写 | 纯文本用不上，写了反而误导 |
-| 逐段换 `camera` / `shot` / `light` | ❌ 别写 | 机位 / 光影写死在静态锁，全片同一机位 |
-
-### 和双图链路的区别
-
-| | 双图链路（有参考图） | 纯文本链路 |
-|---|---|---|
-| 输入 | image_1 人物图 + image_2 无人空镜 | 只有文字，没有任何图 |
-| 出图 | `frames`（Qwen2.1 双图编辑） | `t2i`（Krea2 纯文生图） |
-| 身份一致性 | 图 1 锁身份 | 所有帧共用 `t2i_base_prompt` + 同一 seed |
-| 段间 | `chain:true` 复制上段尾帧 | **同样必须复制**（纯文本默认全链连续） |
-| 画幅 | 参考图先 pad 成 9:16 | 原生 9:16，不要做宽幅适配 |
-
-### 分镜怎么写
-
-```json
-{
-  "keyframe_backend": "krea2_t2i",
-  "prefix": "k2card",
-  "final_size": [832, 1472],
-  "seconds_per_segment": 15,
-  "t2i_base_prompt": "...人物长相/服装/场地/机位/画风/无文字/场景正面清单，全部写死...",
-  "segments": [
-    {"prompt_first": "...站姿...", "prompt_last": "...动作收尾...",
-     "prompt_video": "...", "prompt_segment": "...",
-     "open_action": "...", "end_action": "...", "motion": "...", "beats": ["..."]}
-  ]
-}
-```
-
-- `t2i_base_prompt` **是静态锁**：人物、服装、场地、机位、画风、卡面无文字、
-  场景正面清单全写这里，每张帧都拼在动作句前面，绝不逐帧改写。
-- `prompt_first` / `prompt_last` **只写这一帧的动作差异**，一句话，别重复静态描述。
-- 所有帧**同一个 seed**（`keyframe_seed`，禁 100000）。实测 Krea2 同 seed 换动作句，
-  双人长相 / 发型 / 服装 / 场地都稳（`k2_probe_1.png` / `k2_probe_2.png`）。
-- 段 2+ **不写 `chain`**（默认就是连续）；`cmd_t2i` 会把段 N-1 尾帧
-  byte-for-byte 复制成段 N 首帧，不重新生成。只有真要换机位 / 换场景才写 `chain:false`。
+| `t2i_steps` / `t2i_unet` | 可选 | 造参考图的步数/权重覆盖，默认 8 步 + Aingmix Kroma v1.0 |
+| `reference_images` / `bg_ref` | ⚠ 自动 | **由 `refs` 回写**，不用手写；跑完 refs 后自动出现 |
+| `keyframe_backend: "krea2_t2i"` | ❌ 别写 | 已废弃的 t2i 直出关键帧链路，check 会告警 |
+| 每段 `chain` | 建议 | 段 2+ 写 `true`；不写也默认连续 |
+| 每段 `lighting_fx` | 建议 | 发光特效题材写 `true`：曝光门按 ±14、画质指标只存档（见下文坑清单） |
 
 ### 命令
 
 ```bash
-$PY $SK check  --storyboard s.json    # 校验 t2i_base_prompt、链式提醒
-$PY $SK t2i    --storyboard s.json    # Krea2 出段1首 + 各段尾，链式复制首帧
+$PY $SK check  --storyboard s.json    # 提醒先跑 refs
+$PY $SK refs   --storyboard s.json    # Krea2 造两张参考图 + 回写分镜
+$PY $SK check  --storyboard s.json    # 回写后应零错误
+$PY $SK frames --storyboard s.json    # Qwen2.1 双图编辑出首尾帧
 $PY $SK push   --storyboard s.json
 $PY $SK resume --job <id>
 ```
 
+### 档位（造参考图用，抄用户工作流真实设置）
+
+`image_krea2_turbo_t2i_int8.json` 是子图结构、纯 t2i（顶层 6 节点，子图里
+`EmptyLatentImage`，**没有任何图像输入**）。`pipeline.py` 用等价精简 API 图复刻，不导入子图：
+
+- unet `krea2_aingmix_kroma_v10_int8_convrot.safetensors`（11-6 装的 Aingmix Kroma v1.0，
+  **不是**官方 `krea2_turbo_int8_convrot`）
+- clip `qwen3vl_4b_fp8_scaled.safetensors`（type `krea2`）/ vae `qwen_image_vae.safetensors`
+- 8 步 / CFG 1.0 / euler + simple / `ConditioningZeroOut` 当负向（CFG=1 负向本来就无效）
+- `prompt_enhance=false`、`enable_lora=false`（用户工作流就是关的，见手册 §4.1）
+- 832×1472 实测 18–24s/张
+
+### 为什么不能让 t2i 直出关键帧（2026-11-07 走过的弯路，别重复）
+
+- t2i 没有图像输入，做不了「拿本段首帧当参考改尾帧」，身份只能靠静态锁 + 同 seed 硬撑；
+  双图链路有 `image_1` 身份锚 + 尾帧图2=本段首帧，服装/机位/场景逐帧锁死，强得多。
+- 逐帧 t2i 把身份漂移分散到 N+1 张图上；链式复制只解决段间，段内两帧仍可能换脸/换衣服。
+- 双图链路有既定的画质闸门、曝光闸门、链式重出、Director 灌帧一整套配套；
+  t2i 直出要另写一套，且已实测不如双图。
+- 60s 纯文本链式版（任务 `20261107_191155_08f6f0f7`）作为**对照数据保留**：
+  QA 零 flagged、接缝 MAE 0.4~6.5。它只证明「链式比独立切镜好」，
+  **不证明「t2i 直出关键帧是对的」**。
+
 ### 链式验收与 Director 配置
 
-`push` 之后必须核对（纯文本是全链，**别沿用切镜版的配置**）：
+`push` 后必须核对（文生视频是全链，**别沿用切镜版配置**）：
 
 | job `config.json` 键 | 值 | 为什么 |
 |---|---|---|
 | `chain_segments` | `true` | 全链连续 |
 | `transition_mode` | `"none"` | 只支持 `fade` / `generated` / `none`；首尾帧本就是同一张，硬切即可 |
-| `static_compact` | `false` | 不剪静止帧，N×15s 保住完整时长 |
+| `static_compact` | `false` | 不剪静止帧，保住完整时长 |
 | `final_width` / `final_height` | `832` / `1472` | 9:16 硬锁 |
 
 两处 **md5** 都要验，缺一处都可能是「push 用独立 `start_manual` 顶掉链式」的老 bug：
 
 ```text
-pipeline 端 : k2card_s01_last.png == k2card_s02_first.png（三处两两相等）
+pipeline 端 : <prefix>_s01_last.png == <prefix>_s02_first.png
 Director 端 : seg01_end_manual.png == seg02_start_manual.png
-state 端   : keyframes[*].continue_from_previous 全为 true
+state 端   : keyframes[*].continue_from_previous 与分镜 chain 对齐
 ```
 
-成片再量接缝：链式硬切在 t=15/30/45s 的相邻帧 MAE 应 < 10；
-出现几十的峰值说明首尾帧根本没接上，不是「剪帧不够」。
-
-### 档位（抄用户工作流真实设置，别改）
-
-`image_krea2_turbo_t2i_int8.json` 是子图结构、纯 t2i（顶层 6 节点，子图里
-`EmptyLatentImage`，**没有任何图像输入**）。`pipeline.py` 用等价精简 API 图复刻，不导入子图：
-
-- unet `krea2_aingmix_kroma_v10_int8_convrot.safetensors`
-  （用户 11-6 装的 Aingmix Kroma v1.0，**不是**官方 `krea2_turbo_int8_convrot`）
-- clip `qwen3vl_4b_fp8_scaled.safetensors`（type `krea2`）/ vae `qwen_image_vae.safetensors`
-- 8 步 / CFG 1.0 / euler + simple / `ConditioningZeroOut` 当负向（CFG=1 负向本来就无效）
-- **`prompt_enhance=false`、`enable_lora=false`**（用户工作流就是关的；打开就变成测
-  LLM 扩写器和 `krea2_darkbrush` 风格 LoRA，不是测提示词本身，见手册 §4.1）
-- 实测 21–24s/张（832×1472，8GB 卡）
-
-### 为什么纯文本反而更该链式
-
-t2i 没有图像输入，**做不了「拿本段首帧当参考去改尾帧」**，段内身份只能靠静态锁 +
-同 seed；段间如果再各自生首帧，人物会一段一个样。全链复制把身份漂移压到只剩
-「每条尾帧一次 t2i」，是纯文本下最稳的结构。
-
-### 坑清单（只增不删，2026-11-07 实跑）
+### 坑清单（只增不删，2026-11-07）
 
 | # | 坑 | 后果 / 规避 |
 |---|---|---|
-| 1 | 给 t2i 链路喂图 / 加 `LoadImage` | Krea2 子图是 `EmptyLatentImage`，没有图像输入，喂不进去；别照搬双图链路 |
-| 2 | 静态锁逐帧改写，或每帧换 seed | 人物一段一个样；静态锁全片共用、seed 全片同一个 |
-| 3 | 段间各自生成首帧 | 链式断：切镜版接缝 MAE 峰值 **65.0**、QA 报 `last_frame_drift`；必须 byte-for-byte 复制 |
-| 4 | 开 `prompt_enhance` 或风格 LoRA | 测的是 LLM 扩写器 / `krea2_darkbrush`，不是你的提示词（手册 §4.1） |
-| 5 | 写 `frames` / `direct` / `bg_ref` / `reference_images` | 纯文本用不上；`frames` 会因缺 `reference_images` 直接 KeyError |
-| 6 | 16:9 出图再转 9:16 | 多余；**reflect pad 会复制出倒立人物**，正解见「9:16 是硬锁」节 |
-| 7 | 以为「镜头全程固定」能锁住机位 | H3 仍偶发推近（实跑 t≈22s / 37s 半身特写），已知边界，别拿尾帧 SSIM 当唯一口径 |
-| 8 | 长任务不打进度心跳 | 会被误判「卡住」；`gen_krea2_t2i` / `resume` 轮询都要带 15–30s 心跳 |
-| 9 | `push` 复用上一个同段数的任务 | 会覆盖旧任务的 config / 关键帧；用 `_new_director_job(sb)` 显式新建 |
+| 1 | 没给图就直接跑 `frames` / `direct` | 缺 `reference_images` 直接 KeyError；先 `refs` |
+| 2 | 用 `t2i` 直出全部关键帧 | 已废弃的错误链路，身份靠静态锁硬撑；正片用 `refs → frames` |
+| 3 | 人物参考图里有道具/文字/裁断四肢/第三个人 | 瑕疵会被逐像素复刻放大；棚拍干净背景 + 全身完整 |
+| 4 | 场景空镜里有人或人影 | 模型会画出第二个人；空镜必须完全无人 |
+| 5 | `refs` 两张图用同一个 seed / 用 100000 | 构图撞车 / 已知坏种子；两张用不同干净 seed |
+| 6 | 段间各自生成首帧 | 链式断：独立切镜版接缝 MAE 峰值 65.0、QA 报 `last_frame_drift`；必须 byte-for-byte 复制 |
+| 7 | 16:9 出图再转 9:16 | 多余；**reflect pad 会复制出倒立人物**，正解见「9:16 是硬锁」节 |
+| 8 | 发光特效题材不写 `lighting_fx` | 符文/光柱/光浪把段内曝光抬 8~26、人物区高频顶到 50%，会被曝光门与画质门误杀并重出 3 次；写 `lighting_fx:true` 后曝光按 ±14、画质指标降级为提示，靠拼图人工确认 |
+| 9 | 「镜头全程固定」当成能锁住机位 | H3 仍偶发推近，已知边界，别拿尾帧 SSIM 当唯一口径 |
+| 10 | ComfyUI 桌面版自动重启时不重试 | Qwen2.1 双图编辑每跑完 1~2 张就轮转日志、窗口期全 502；`comfy_run` 已加 `wait_service` + 重提交自愈 |
+| 11 | `push` 复用上一个同段数的任务 | 会覆盖旧任务 config / 关键帧；用 `_new_director_job(sb)` 显式新建 |
 
-### 实跑（2026-11-07 19:12–19:25，纯文本链式 60s）
+### 实跑（2026-11-07 21:03–21:31，3 段 × 5s 端到端）
 
-- 任务 `20261107_191155_08f6f0f7`；`t2i` 出 5 张帧约 90s（18s/张），
-  pipeline 端与 Director 端 **md5 三处全相等**，`continue_from_previous` 全 true。
-- config：`chain_segments=true` / `transition_mode=none` / `static_compact=false`。
-- 成片 `output/card-duel/星界卡牌对决_纯文本链式_60s.mp4`：
-  **832×1472 / 24fps / 1440 帧 / 60.0s / 38.6MB**，`status=completed`、4/4 段、12m38s。
-  **QA 零 flagged**（首尾 SSIM 0.949–0.968、static_ratio 全 0）；
-  t=15/30/45s 链式接缝 MAE 仅 **0.4~6.5**，全片中位 3.93。
-- 对照上一版「4 段独立切镜」：同位置峰值 65.0、段 1 `last_frame_drift`。
-  → **纯文本用 Krea2 t2i + 全链硬切，身份稳定性和接缝都明显优于独立切镜版**。
-- 样本：`k2_probe_sheet.png`（同 seed 身份稳定）、`k2card_frames_sheet.png`（5 张关键帧）、
-  `k2card_final_video_sheet.png`（成片抽帧）、`sb_k2card.json`（分镜）。
+按 `refs → check → frames → push → resume` 完整跑通，任务 `20261107_212131_16c0f4f6`。
+
+- **参考图**：`refs` 用 Krea2 出 `k2ref_person.png`（双人全身、干净棚拍背景）
+  与 `k2ref_bg.png`（无人空镜），各 832×1472、独立 seed 913601 / 913602；
+  `refs` 自动回写 `reference_images` / `bg_ref`，回写后 `check` 零错误。
+- **关键帧**：`frames` 走 Qwen2.1 双图编辑，出 4 张 + 2 次链式复制；
+  pipeline 端 `k2chain_s01_last == k2chain_s02_first`、
+  `k2chain_s02_last == k2chain_s03_first` md5 全相等；Director 端
+  `seg01_end == seg02_start`、`seg02_end == seg03_start` 同样相等，
+  `continue_from_previous=[False, True, True]`。
+- **配置**：`chain_segments=true` / `transition_mode=none` / `static_compact=false`。
+- **成片**：`output/card-duel/星界卡牌对决_先造参考图_3段5s.mp4`，
+  832×1472 / 24fps / 360 帧 / **15.0s** / 9.7MB，3/3 段 completed、8m44s。
+  **QA 零 flagged**（首尾 SSIM 0.961–0.973、static_ratio 全 0）；
+  全片相邻帧 MAE 中位 1.72，t≈10s 链式接缝峰值仅 6.5。
+- **已知边界**：① t≈5.1s 有一帧 MAE 44.0 的景别跳变（段 1 全身远景 →
+  段 2 中近景），首尾帧 md5 仍相等，是 H3 段内自行推近，属手册 §12.4 已记录坑，
+  **不是链路断**；② 三段关键帧姿态闸门报 `disp 0.02~0.11`（双人正面站定、
+  靠光效推进，估点器低估），但成片 static_ratio 全 0，没有定格。
+- **服务自愈**：本次 `frames` 期间 ComfyUI 桌面版两次自动重启（502），
+  加 `wait_service` + 重提交后续跑 4m14s 一次通过，见手册 §12.5。
+- 样本：`k2ref_sheet.png`（两张参考图）、`k2chain_frames_sheet.png`（4 帧动作链）、
+  `k2chain_final_video_sheet.png`（成片抽帧）、`sb_k2chain.json`（完整分镜，含 ref prompts）。
 
 ## 9:16 是硬锁，不是默认档（2026-11-07 卡牌战斗 60s 实跑）
 
