@@ -1941,6 +1941,102 @@ state 端   : keyframes[*].continue_from_previous 与分镜 chain 对齐
 - 样本：`k2ref_sheet.png`（两张参考图）、`k2chain_frames_sheet.png`（4 帧动作链）、
   `k2chain_final_video_sheet.png`（成片抽帧）、`sb_k2chain.json`（完整分镜，含 ref prompts）。
 
+## 台词配音：voice 阶段（2026-11-07 用户定，「视频里得有配套语音」）
+
+用户原话：「不是让你识别，我是说你**生成视频的时候要把配套的语音给生成进去**，
+现在都是乱七八糟的声音」。
+
+**根因**：H3 是音视频**联合生成**，音轨不是后期贴的，是模型跟画面一起"哼"出来的。
+中文发音在 H3 上含混不可控；只写「环境音：低频嗡鸣…」它就吐一堆无意义嗡鸣＋
+含混人声。提示词里点名台词只能让**口型对上**，救不出清晰可懂的语音。
+
+**所以配音是出片流程的正式一步，不是 agent 手工贴一次**：分镜写 `dialogue` →
+`voice` 阶段用中文配音引擎生成逐句语音 → 按全片时间轴 `adelay` 对齐 →
+与压到很轻的 H3 原音轨混合（保留一点环境底噪）→ 替换音轨输出成片。
+
+### 分镜怎么写
+
+```json
+{
+  "voice_cast": {"male": "zh-CN-YunjianNeural", "female": "zh-CN-XiaoyiNeural",
+                 "narrator": "zh-CN-YunyangNeural"},
+  "voice_bg_gain": 0.10,
+  "segments": [
+    {"seconds": 5,
+     "dialogue": [
+       {"at": 0.6, "speaker": "male",   "text": "决斗开始！我的回合，抽卡！", "rate": "+10%"},
+       {"at": 3.0, "speaker": "female", "text": "亮牌吧，让我看看你的手牌。", "rate": "+6%"}
+     ],
+     "soundscape": "与画面一致的低频能量嗡鸣、卡牌破空与光尘流动的细微环境声，音量平稳，不出现清晰说话声或哼唱",
+     "music": "不加任何背景音乐"}
+  ]
+}
+```
+
+| 字段 | | 说明 |
+|---|---|---|
+| 每段 `dialogue` | ✅ | 台词列表；`at` 是**段内**秒，自动累加成全片时间轴 |
+| `speaker` | ✅ | `male` / `female` / `narrator`，映射到 `voice_cast` 音色；也可单句写 `voice` 覆盖 |
+| `rate` | 可选 | 语速，如 `+10%`；决斗喊话可快一点 |
+| `voice_cast` | 可选 | 三种角色对应的 edge-tts 音色，默认 Yunjian / Xiaoyi / Yunyang |
+| `voice_bg_gain` | 可选 | H3 原音轨保留的音量，默认 `0.10`（压成很轻的环境底噪）；设 `0` = 完全静音原轨 |
+| `soundscape` / `music` | 建议 | 写清楚「不出现清晰说话声/哼唱」，别让 H3 再吐含混人声 |
+
+### 命令
+
+```bash
+$PY $SK check  --storyboard s.json
+$PY $SK refs   --storyboard s.json    # 文生视频才需要
+$PY $SK frames --storyboard s.json
+$PY $SK push   --storyboard s.json
+$PY $SK resume --job <id>
+$PY $SK voice  --storyboard s.json --src <成片.mp4> --out <配音版.mp4>
+```
+
+- `--src` 默认 `ComfyUI-Shared/output/h3_long_video/long_video.mp4`（Director 成片）；
+  `--out` 默认 `<分镜名>_配音.mp4`。
+- 只重编码音轨、`-c:v copy`，几秒完成，不重跑视频。
+- 依赖 `edge-tts`（`pip install edge-tts`），走本机代理 `127.0.0.1:10808`；
+  没网或没装会直接报错，不会静默出一条空音轨。
+- `VIDEO_TMPL` 会把 `dialogue` 渲染成「对白（中文，人物按时间顺序开口，口型与台词一致）：
+  0.6s 左侧男子开口说「…」」挂到视频提示词里；**手写的 `prompt_video` / `prompt_segment`
+  也会自动追加这一行**，所以换任何链路口型都对得上。
+
+### 验收
+
+- `ffmpeg -i 成片` 确认有 `Audio: aac`，时长与视频一致。
+- 逐秒 RMS 能量：每句台词的秒应有明显峰值（实跑 0.012→0.085），
+  `max_volume` 不应到 0 dB（削波）。`alimiter=limit=0.95` 已兜底。
+- 台词清单会打印出来核对时间点；要改词/改音色直接改分镜 `dialogue` 再跑 `voice`。
+- ⚠ **别加 `-shortest`**：H3 音轨常比视频短几十毫秒，加了会把视频流截掉 4 帧
+  （360→356）。`amix` 用 `duration=first`，音频略短无妨，视频流必须完整。
+
+### 实跑（2026-11-07 21:40–22:15，3×5s 二采 + 配音）
+
+- 分镜 `output/card-duel/sb_k2chain.json`：`two_pass:true / steps:4 / two_pass_steps:2`、
+  6 句中文决斗台词（男 `zh-CN-YunjianNeural`、女 `zh-CN-XiaoyiNeural`）、
+  `voice_bg_gain:0.10`。
+- 新建任务 `20261107_215715_387640d2`，config 核对 `two_pass_default=true`、
+  段级全 True、对白行已进提示词、链式 md5 全相等；`resume` **16m54s**（二采单段
+  ~8m47s，单采整片 3 段才 8m44s）。
+- 二采成片 QA **零 flagged**，首帧 SSIM **0.997~0.998**（单采是 0.961~0.973）、
+  static_ratio 全 0；`voice` 出 6 句台词，只换音轨、`-c:v copy`。
+- 最终成片 `output/card-duel/星界卡牌对决_3段5s_二采_配音版.mp4`：
+  **832×1472 / 24fps / 360 帧 / 15.0s / 11.5MB**，视频 H.264 + AAC 48kHz stereo，
+  mean -25.0dB / max -5.8dB 无削波，逐秒 RMS 峰值与 6 句台词时间点对齐。
+- 抽帧 `k2chain_2pass_voiced_sheet.png`：全片同一机位同一双人，光效按亮牌 →
+  巨兽虚影 → 光流对撞推进，二采后脸部/服装/符文光带更清晰、无斑驳噪点。
+
+### 二采默认（2026-11-05 用户定，2026-11-07 补进 Director 链路）
+
+- 出视频**不说就是二采开**：一采 `steps: 4` + 二采 `two_pass_steps: 2`。
+- 分镜顶层 `two_pass: true` 即可，`_new_director_job` 会写
+  `two_pass_default` 和段级 `two_pass`；段级同名可覆盖。
+- ⚠ 之前 Director 任务模板里 `two_pass_default` 是 `false`，导致 skill 文档写"默认开"、
+  实际跑出来全是单采（2026-11-07 21:57 修）。**新建任务后务必核对 config**。
+- 二采是 `MinimaxH3LatentUpscaler3D` 放大 latent 再 2 步精修，耗时明显高于单采；
+  8GB 卡 `two_pass_scale: 2.0` 若 OOM 就降到 1.5。
+
 ## 9:16 是硬锁，不是默认档（2026-11-07 卡牌战斗 60s 实跑）
 
 - **现象**：想用 16:9 宽幅（1344×768）跑 Director，改 job `config.json` 的

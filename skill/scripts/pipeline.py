@@ -826,10 +826,31 @@ def action_locks(s, sb=None):
     }
 
 
+def _dialogue_line(sb, s):
+    """把分镜 dialogue 渲染成给 H3 的对白提示词（开口顺序 / 口型）。
+
+    2026-11-07 用户反馈「这都说的啥呀」：H3 是音视频联合生成，中文发音含混，
+    只写「环境音」它就哼一堆无意义嗡鸣。提示词里点名台词能让口型对上，
+    但**清晰可懂的语音必须由 voice 阶段用中文配音生成后混流**（见 cmd_voice）。
+    """
+    items = s.get("dialogue") or []
+    who = {"male": "左侧男子", "female": "右侧女子", "narrator": "画外旁白"}
+    if not items:
+        return "对白：全程不出现清晰可辨的说话声、哼唱、含混人声或嗡鸣。"
+    parts = []
+    for x in items:
+        t = float(x.get("at", 0))
+        sp = who.get(str(x.get("speaker") or ""), str(x.get("speaker") or "人物"))
+        parts.append(f"{t:.1f}s {sp}开口说「{str(x.get('text') or '').strip()}」")
+    return ("对白（中文，人物按时间顺序开口，口型与台词一致）：" + "；".join(parts)
+            + "。除上述台词外不出现其它说话声、哼唱、含混人声或嗡鸣。")
+
+
 def seg_vars(sb, s):
     """合并全局与分段字段，并补上 head / frame / move / gaze 的默认值。"""
     d = dict(sb)
     d.update(s)
+    d["dialogue_line"] = _dialogue_line(sb, s)
     d["head"] = s.get("head") or DEFAULT_HEAD
     d["frame"] = s.get("frame") or DEFAULT_FRAME
     d["move"] = s.get("move") or ""
@@ -1847,7 +1868,7 @@ VIDEO_TMPL = (
     "{beats_timeline}\n"
     # 2026-11-05 用户给的格式里有 soundscape / music 两段：H3 是带音轨生成的，
     # 我们以前从来没描述过声音，等于把这一半留给模型随便编。
-    "{soundscape_line}\n{music_line}\n"
+    "{soundscape_line}\n{music_line}\n{dialogue_line}\n"
     "不穿模、不跳帧、不切镜，无文字、字幕和水印。"
 )
 
@@ -1914,6 +1935,10 @@ def render_prompts(sb, s):
             # 否则用户自己写的那段经常漏掉袖长/衣摆/配饰，首尾两帧各编一套。
             if key in ("first", "last") and sb.get("keyframe_backend", "qwen21") != "2511":
                 txt = txt.rstrip("。") + "。" + _consistency_tail(key, v)
+            # 手写 video/segment 提示词也要挂上台词，否则 H3 不知道谁在什么时候开口。
+            # 模板路径已由 VIDEO_TMPL 的 {dialogue_line} 提供，这里只补自定义分支。
+            if key in ("video", "segment") and s.get("dialogue") and "对白（中文" not in txt:
+                txt = txt.rstrip() + "\n" + v["dialogue_line"]
             out[key] = txt
             custom.append(key)
         else:
@@ -2336,7 +2361,7 @@ def cmd_director(sb_path, sb, out=None):
         s = r["s"]
         segs.append({
             "seconds": float(s.get("seconds") or sb.get("seconds_per_segment") or 5),
-            "two_pass": bool(s.get("two_pass", False)),
+            "two_pass": bool(s.get("two_pass", sb.get("two_pass", False))),
             "prompt": r["prompts"]["segment"],
         })
     out = out or (os.path.splitext(sb_path)[0] + ".director.json")
@@ -2518,7 +2543,7 @@ def _new_director_job(sb, template_job=None):
         pr = render_prompts(sb, s)[0]
         seg = {
             "seconds": float(s.get("seconds") or sb.get("seconds_per_segment") or 5),
-            "two_pass": bool(s.get("two_pass", False)),
+            "two_pass": bool(s.get("two_pass", sb.get("two_pass", False))),
             "prompt": pr["segment"],
             # 首/尾帧提示词只在用户手写过 prompt_first / prompt_last 时才写进任务，
             # 这样面板里那个「尾帧提示词」框显示的就是他自己那句话，可以直接改；
@@ -2528,6 +2553,14 @@ def _new_director_job(sb, template_job=None):
         }
         segs.append(seg)
     cfg["segments"] = segs
+    # 二采（2026-11-07 用户要求「开一下」）：分镜顶层 two_pass / two_pass_steps 兜底，
+    # 段级同名可覆盖。默认 4+2，是用户 11-05 定的出片参数。
+    if "two_pass" in sb:
+        cfg["two_pass_default"] = bool(sb["two_pass"])
+    if sb.get("two_pass_steps"):
+        cfg["two_pass_steps"] = int(sb["two_pass_steps"])
+    if sb.get("steps"):
+        cfg["steps"] = int(sb["steps"])
     jid = time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
     jd = os.path.join(root, jid)
     os.makedirs(jd)
@@ -2610,7 +2643,7 @@ def write_director_workflow(sb_path, sb, job):
     node.setdefault("properties", {})["h3_job_id"] = job
     wv = node.get("widgets_values") or []
     segs = [{"seconds": float(s.get("seconds") or sb.get("seconds_per_segment") or 5),
-             "two_pass": bool(s.get("two_pass", False)),
+             "two_pass": bool(s.get("two_pass", sb.get("two_pass", False))),
              "prompt": render_prompts(sb, s)[0]["segment"]}
             for s in (sb.get("segments") or [])]
     if len(wv) > 16:
@@ -2913,6 +2946,91 @@ def Q_and_judge(m):
 def Q_verdict(issues):
     import qa as QA
     return QA.verdict(issues)
+
+
+# ---------------------------------------------------------------- voice
+def cmd_voice(sb_path, sb, src=None, out=None):
+    """出片后铺中文台词配音，把 H3 自带那条含混音轨压成很轻的环境底噪。
+
+    2026-11-07 用户反馈「视频里都是乱七八糟的声音」：H3 是音视频联合生成，
+    中文发音含混、只写「环境音」就会哼出无意义嗡鸣。提示词里点名台词能让
+    口型对上，但清晰可懂的语音必须单独生成再混流。所以台词写进分镜
+    `dialogue`，由本阶段生成语音并按时间轴对齐，属于出片流程的正式一步。
+    """
+    import asyncio
+    # edge-tts 走 websocket 连微软，本机需代理（与 HF 下载同一个 10808）
+    os.environ.setdefault("HTTPS_PROXY", "http://127.0.0.1:10808")
+    os.environ.setdefault("HTTP_PROXY", "http://127.0.0.1:10808")
+    try:
+        import edge_tts
+    except ImportError:
+        die("缺 edge-tts：先 pip install edge-tts（需能连外网，本机走 127.0.0.1:10808）")
+
+    cast = {"male": "zh-CN-YunjianNeural", "female": "zh-CN-XiaoxiaoNeural",
+            "narrator": "zh-CN-YunyangNeural"}
+    cast.update(sb.get("voice_cast") or {})
+    bg_gain = float(sb.get("voice_bg_gain", 0.12))
+    segs = sb.get("segments") or []
+
+    # 段内时间 → 全片时间轴
+    cues, t0 = [], 0.0
+    for i, s in enumerate(segs, 1):
+        sec = float(s.get("seconds") or sb.get("seconds_per_segment") or 5)
+        for c in (s.get("dialogue") or []):
+            txt = str(c.get("text") or "").strip()
+            if not txt:
+                continue
+            cues.append({"at": t0 + float(c.get("at", 0)), "text": txt,
+                         "speaker": str(c.get("speaker") or "male"),
+                         "voice": c.get("voice"), "rate": c.get("rate") or "+8%",
+                         "seg": i})
+        t0 += sec
+    if not cues:
+        die("分镜没写 dialogue（台词），voice 阶段无事可做；台词格式见 SKILL.md")
+
+    src = src or os.path.join(COMFY_OUTPUT, "h3_long_video", "long_video.mp4")
+    if not os.path.exists(src):
+        die(f"源成片不存在：{src}（用 --src 指定）")
+    out = out or (os.path.splitext(sb_path)[0] + "_配音.mp4")
+    ff = ffmpeg_exe()
+    tmp = tempfile.mkdtemp(prefix="h3voice_")
+    try:
+        async def synth():
+            for k, c in enumerate(cues):
+                c["path"] = os.path.join(tmp, f"line{k:02d}.mp3")
+                await edge_tts.Communicate(c["text"], c["voice"] or cast.get(c["speaker"], cast["male"]),
+                                           rate=c["rate"]).save(c["path"])
+        asyncio.run(synth())
+        print(f"[voice] 生成 {len(cues)} 句中文配音 / 总时长 {t0:.1f}s / 原音轨压到 {bg_gain:.2f}", flush=True)
+        for c in cues:
+            print(f"  段{c['seg']} t={c['at']:.1f}s [{c['speaker']}] {c['text']}", flush=True)
+
+        # 每句统一成 48k 立体声并按时间点延迟，再与压低后的原音轨混合
+        parts = [f"[0:a]volume={bg_gain},aformat=sample_rates=48000:channel_layouts=stereo[bg]"]
+        ins = ["-i", src]
+        labels = ["[bg]"]
+        for k, c in enumerate(cues, 1):
+            ins += ["-i", c["path"]]
+            ms = int(round(c["at"] * 1000))
+            parts.append(f"[{k}:a]aformat=sample_rates=48000:channel_layouts=stereo,"
+                         f"adelay={ms}|{ms},volume=1.0[a{k}]")
+            labels.append(f"[a{k}]")
+        parts.append("".join(labels) + f"amix=inputs={len(labels)}:duration=first:normalize=0,"
+                     "alimiter=limit=0.95[out]")
+        # 不加 -shortest：H3 音轨常比视频短几十毫秒，带上它会把视频流截掉几帧。
+        # amix 用 duration=first 以原音轨为准，音频略短无妨，视频流必须完整。
+        cmd = [ff, "-hide_banner", "-loglevel", "error", "-y"] + ins + [
+            "-filter_complex", ";".join(parts),
+            "-map", "0:v", "-map", "[out]", "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out]
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+        if r.returncode != 0:
+            die(f"ffmpeg 混音失败：{(r.stderr or '')[-800:]}")
+        os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
+        print(f"[voice] 成片：{out}（{os.path.getsize(out)/1e6:.1f} MB）", flush=True)
+        return 0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ---------------------------------------------------------------- merge
@@ -3321,9 +3439,10 @@ def cmd_t2i(sb_path, sb, only=None, retry=False, seed_off=0):
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["check", "prompt", "adopt", "director", "direct", "refs", "t2i", "push", "resume", "frames", "video", "merge", "anchor_probe"])
+    ap.add_argument("stage", choices=["check", "prompt", "adopt", "director", "direct", "refs", "t2i", "push", "resume", "frames", "video", "voice", "merge", "anchor_probe"])
     ap.add_argument("--storyboard")
     ap.add_argument("--seg", type=int)
+    ap.add_argument("--src", help="voice 用：源成片 mp4，默认 Director 的 long_video.mp4")
     ap.add_argument("--frames-dir", help="adopt 用：外部首尾帧目录，默认 <分镜名>.frames/")
     ap.add_argument("--no-normalize", action="store_true", help="adopt 用：不要裁成精确 9:16")
     ap.add_argument("--out", help="输出路径：director 默认 <分镜名>.director.json，merge 默认 Shared/output/h3-long-video/<标题>.mp4")
@@ -3366,6 +3485,8 @@ def main():
         return cmd_refs(a.storyboard, sb, a.retry)
     if a.stage == "t2i":
         return cmd_t2i(a.storyboard, sb, a.seg, a.retry, a.seed_off)
+    if a.stage == "voice":
+        return cmd_voice(a.storyboard, sb, a.src, a.out)
     if a.stage == "frames":
         return cmd_frames(a.storyboard, sb, a.seg, a.retry, a.seed_off) or 0
     if a.stage == "anchor_probe":
