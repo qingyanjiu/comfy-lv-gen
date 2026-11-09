@@ -165,15 +165,14 @@ def validate_config(config):
     if transition_mode not in {"fade", "generated", "none"}:
         raise RuntimeError("transition_mode must be fade, generated, or none")
     aspect_ratio = str(config.get("aspect_ratio", ""))
-    if "9:16" not in aspect_ratio:
-        raise RuntimeError("This H3 flow is locked to a 9:16 portrait aspect ratio")
+    if not ("9:16" in aspect_ratio or "16:9" in aspect_ratio):
+        raise RuntimeError("aspect_ratio must be 9:16 or 16:9")
     final_width = int(config.get("final_width", 0))
     final_height = int(config.get("final_height", 0))
-    target_ratio = 9 / 16
     actual_ratio = final_width / final_height if final_height else 0
-    if final_width >= final_height or abs(actual_ratio - target_ratio) > 0.02:
+    if not (abs(actual_ratio - 9 / 16) <= 0.02 or abs(actual_ratio - 16 / 9) <= 0.03):
         raise RuntimeError(
-            "final_width/final_height must keep the aligned 9:16 portrait preset; "
+            "final_width/final_height must be 9:16 portrait or 16:9 landscape; "
             f"got {final_width}x{final_height}"
         )
     if float(config.get("fps", 24)) != 24:
@@ -186,9 +185,10 @@ def validate_config(config):
                 "Qwen backends can hit the size exactly; got "
                 f"{keyframe_width}x{keyframe_height}"
             )
-        if keyframe_width >= keyframe_height:
+        _kf_ratio = keyframe_width / keyframe_height if keyframe_height else 0
+        if not (abs(_kf_ratio - 9 / 16) <= 0.02 or abs(_kf_ratio - 16 / 9) <= 0.03):
             raise RuntimeError(
-                "keyframe_width/keyframe_height must stay portrait; got "
+                "keyframe_width/keyframe_height must be 9:16 or 16:9; got "
                 f"{keyframe_width}x{keyframe_height}"
             )
     references = config.get("reference_images")

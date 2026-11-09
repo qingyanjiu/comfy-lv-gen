@@ -18,5 +18,6 @@ runninghub.local.json
 # 本地临时备份（改代码前手存的 .bak / .bak-日期）
 *.bak
 *.bak-*
+*.capsule-bak
 *.orig
 
