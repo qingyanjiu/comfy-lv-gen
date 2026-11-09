@@ -44,6 +44,14 @@ import qa_lib as Q  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import direction as D  # noqa: E402
 
+# 背景一致性闸门（2026-11-09）：提示级，只记录 + 打印，不阻断出片。
+# 独立模块，缺依赖时静默降级，保证老分镜照样能跑。
+try:
+    import consistency  # noqa: E402
+except Exception as _ce:  # noqa: BLE001
+    consistency = None
+    print(f"[一致性] 模块不可用，跳过背景质检：{_ce}", flush=True)
+
 PFX = "h3lv"
 
 # 编辑模型改不动腿：实测写了「两腿前后互换」，生成结果腿照抄首帧。
@@ -68,9 +76,12 @@ def die(msg):
 def obj_info(name):
     # 节点类型名可能带空格（例如 "Image Median Blur"），不做 URL 编码会抛 InvalidURL。
     # 缓存：build_prompt 每个节点都查一次，缓存后同一类型只联网一次，也少挨 502。
+    # 未注册的类型（比如刚加的本地 custom node，还没重启 ComfyUI）返回 None，
+    # 由 build_prompt 跳过，不要整条工作流直接挂掉。
     with urllib.request.urlopen(
             f"{API}/object_info/{urllib.parse.quote(name, safe='')}", timeout=15) as r:
-        return json.load(r)[name]
+        payload = json.load(r)
+    return payload.get(name)
 
 
 def wait_service(limit=180):
@@ -96,6 +107,9 @@ def build_prompt(wf):
         if n["type"] in ("MarkdownNote", "Note"):
             continue
         info = obj_info(n["type"])
+        if not info:
+            print(f"    [跳过] 节点类型未注册：{n['type']}（重启 ComfyUI 后自动生效）", flush=True)
+            continue
         ordered = list(info["input"].get("required", {}).keys()) + list(info["input"].get("optional", {}).keys())
         links = {i["name"]: i for i in n.get("inputs") or []}
         inputs, wv, wi = {}, list(n.get("widgets_values") or []), 0
@@ -453,8 +467,111 @@ def estimate_action_seconds(s):
 
 
 # ---------------------------------------------------------------- check
+def _check_source_frames(sb_path, sb, cfg, segs):
+    """复刻分镜专用校验。
+
+    普通生成的规则（5s 下限、open_action/motion、reference_images、动作幅度）
+    对复刻没有意义：刀长由原片决定，动作由原片首尾帧决定，身份锚就是原帧本身。
+    2026-11-09 前这里直接套普通规则，26 刀短剪分镜被刷了上百条假错误。
+    """
+    errs, warns = [], []
+    src = cfg.get("dir") or ""
+    if not src or not os.path.isdir(src):
+        errs.append(f"source_frames.dir 不存在：{src or '(空)'}")
+    wf = os.path.join(WF_DIR, cfg.get("workflow") or "Qwen21-SingleRef916-L4.json")
+    if not os.path.isfile(wf):
+        errs.append(f"重绘工作流不存在：{wf}")
+    pattern = cfg.get("pattern") or "shot_{i:03d}_{which}.jpg"
+    total, orig_ok, short = 0.0, 0, []
+    for i, s in enumerate(segs, 1):
+        sec = float(s.get("seconds") or 0)
+        total += sec
+        if sec and sec < 0.92:
+            short.append(str(i))
+        pair_ok = True
+        for which in ("first", "last"):
+            try:
+                name = pattern.format(i=i, idx=i, which=which)
+            except Exception as exc:  # noqa: BLE001
+                errs.append(f"source_frames.pattern 格式错误：{exc}")
+                pair_ok = False
+                break
+            if src and os.path.isdir(src) and not os.path.isfile(os.path.join(src, name)):
+                errs.append(f"第 {i} 段缺原帧 {name}")
+                pair_ok = False
+        if pair_ok:
+            orig_ok += 1
+
+    if short:
+        warns.append(f"段 {','.join(short)} 的时长 < 0.92s：H3 最短 22 帧会把它拉长，"
+                     "剪成片时按原片节奏裁切")
+    st_path = state_path(sb_path)
+    done = 0
+    if os.path.isfile(st_path):
+        try:
+            st = json.load(open(st_path, encoding="utf-8"))
+            done = sum(1 for v in (st.get("segments") or {}).values()
+                       if v.get("first") and v.get("last")
+                       and os.path.exists(v["first"]) and os.path.exists(v["last"]))
+        except Exception:
+            pass
+    warns.append("首尾帧真值统一记在 state.first/last（Shared/input 下的规范名），"
+                 "out_dir 只是副本；push / video 直接读 state")
+    if consistency:
+        warns.extend(consistency.contract_warnings(sb))
+
+    print(f"分镜: {sb.get('title','(未命名)')}  [复刻链路] 共 {len(segs)} 段 / {total:.1f}s")
+    print(f"原片首尾帧齐全 {orig_ok}/{len(segs)} 段；state 已登记首尾帧 {done} 段")
+    print(f"下一步: pipeline.py source_frames --storyboard {os.path.basename(sb_path)} "
+          "[--segs 4,8] [--force]  →  push → resume")
+    for e in errs:
+        print(f"  [错误] {e}")
+    for w in warns:
+        print(f"  [提醒] {w}")
+    if not errs and not warns:
+        print("  校验通过")
+    return 0 if not errs else 1
+
+
+def _check_frame_exact(sb_path, sb, cfg):
+    """逐帧精确复刻分镜专用校验：不套 9:16 / 5s 下限 / 动作字段 / 参考图规则。"""
+    import frame_exact as FE
+
+    errs, warns = [], []
+    src = cfg.get("source_video") or ""
+    if not src or not os.path.isfile(src):
+        errs.append(f"frame_exact.source_video 不存在：{src or '(空)'}")
+    start, end = float(cfg.get("start") or 0), float(cfg.get("end") or 0)
+    if end <= start:
+        errs.append("frame_exact.end 必须大于 start")
+    est = None
+    if os.path.isfile(src):
+        meta = FE._probe(src)
+        rate = float(cfg.get("fps") or meta["fps"])
+        est = int(round((end - start) * rate))
+        if est > int(cfg.get("max_frames") or FE.DEFAULTS["max_frames"]):
+            warns.append(f"预计 {est} 帧 > max_frames={cfg.get('max_frames') or 80}；"
+                         "长镜头请显式调高 max_frames")
+    warns.extend(FE.check_warnings(sb))
+    warns.append("本链路直接产出成片：不需要 frames / push / video；"
+                 "分刀生成时才用 merge 拼时间轴")
+    print(f"分镜: {sb.get('title','(未命名)')}  [逐帧精确复刻] "
+          f"{start:.3f}s → {end:.3f}s / 约 {est} 帧 / 源画幅 {cfg.get('size') or '继承源片'}")
+    for e in errs:
+        print(f"  [错误] {e}")
+    for w in warns:
+        print(f"  [提醒] {w}")
+    if not errs and not warns:
+        print("  校验通过")
+    return 0 if not errs else 1
+
+
 def cmd_check(sb_path, sb):
     segs = sb.get("segments") or []
+    if isinstance(sb.get("frame_exact"), dict):
+        return _check_frame_exact(sb_path, sb, sb["frame_exact"])
+    if isinstance(sb.get("source_frames"), dict):
+        return _check_source_frames(sb_path, sb, sb["source_frames"], segs)
     errs, warns = [], []
     if not segs:
         errs.append("segments 为空")
@@ -481,6 +598,9 @@ def cmd_check(sb_path, sb):
     if int(sb.get("keyframe_seed") or 0) == 100000:
         warns.append("keyframe_seed=100000 是已知坏种子；frames 阶段会自动替换成分镜派生的干净种子，"
                      "建议把该字段从分镜里删掉")
+    # 2026-11-09 一致性契约：背景是资产不是产物；复刻走同源帧链路而不是 frames。
+    if consistency:
+        warns.extend(consistency.contract_warnings(sb))
     total = 0
     for i, s in enumerate(segs, 1):
         sec = float(s.get("seconds") or sb.get("seconds_per_segment") or 5)
@@ -1384,7 +1504,11 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
         # 代价是挎包/发缝等不对称细节左右互换，记录在 state 的 mirrored 字段）。
         dv, dv_ok = D.get_dir(s)
         target = dv.get("body")
-        if dv_ok and target in (D.LEFT, D.RIGHT) and not rec.get("pose_fixed"):
+        # 链式段（i>1 且 chained）的首帧是上一段尾帧 byte-for-byte 继承来的，
+        # 不能再用 comfy_run 重生成（会破坏链式连续性、且用人物参考图当 image_1 会把背景打回卧室）。
+        # 只跳过「重生成」分支；链式段本就不该做姿态修正，朝向由上一镜尾帧决定。
+        # 2026-11-09 从 repo 副本合并回来：这条 guard 此前只存在于 repo 版，造成两份源码分叉。
+        if dv_ok and target in (D.LEFT, D.RIGHT) and not rec.get("pose_fixed") and not (_chained and i > 1):
             try:
                 nf = D.count_faces(rec["first"])
                 if nf and nf > 1:
@@ -1527,6 +1651,16 @@ def cmd_frames(sb_path, sb, only=None, retry=False, seed_off=0):
                           f"当前这张未通过质量门，建议人工确认或 --retry 换种子重跑", flush=True)
                     rec["last_gate_failed"] = True
             rec["last"] = os.path.join(COMFY_INPUT, last_name)
+            # 2026-11-09 背景一致性闸门：首/尾帧背景区结构 / 色调 / 布局对比。
+            # 只做提示级——光效题材、机位推拉本来就会让背景区变化，拦错比漏报更伤。
+            if consistency and rec.get("first") and os.path.exists(rec["first"]):
+                try:
+                    # 统一走 consistency.report：打印格式 / 标签 / 阈值只有一份实现
+                    _soft = bool(s.get("lighting_fx")) or bool(s.get("camera_move"))
+                    rec["bg_qa"] = consistency.report(
+                        rec["first"], rec["last"], soft=_soft, label=f"[段{i}] ")
+                except Exception as _be:  # noqa: BLE001
+                    print(f"[段{i}] 背景质检跳过（{_be}）", flush=True)
             save_state(sb_path, st)
 
         # 画幅归一：4:5 关键帧用扩图 LoRA 真实扩成 9:16（失败退回铺墙色）
@@ -2275,6 +2409,28 @@ def cmd_prompt(sb_path, sb, only=None, quiet=False):
     return 0
 
 
+def comfy_free(unload_models=True):
+    """跑完主动卸载模型 + 清显存。
+
+    8G 卡跑 Qwen2.1 时整条链要 staged 20.7G（6.9 主模型 + 8.9 文本编码 + 4.2 KV + 0.6 VAE），
+    ComfyUI 只能把权重摊在系统内存里流式加载；不释放就接着跑下一张，提交内存顶满后
+    进程会卡死在 "KVCacheModel prepared ... Staged" 之后（无异常栈、无 WER）。
+    设 COMFY_FREE_AFTER=0 可关闭。
+    """
+    if os.getenv("COMFY_FREE_AFTER", "1") == "0":
+        return
+    try:
+        req = urllib.request.Request(
+            f"{API}/free",
+            data=json.dumps({"unload_models": unload_models, "free_memory": True}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=30).read()
+        print("[free] 已卸载模型并清显存", flush=True)
+    except Exception as exc:  # 服务已挂时不要连带失败
+        print(f"[free] 跳过：{exc}", flush=True)
+
+
 def cmd_direct(sb_path, sb, ref_arg=None, bg_arg=None, prompt_arg=None,
                out=None, seg=1, seed_off=0):
     """两张参考图直接出一张帧图，不写分镜也能跑（2026-11-05 用户定稿）。
@@ -2345,6 +2501,7 @@ def cmd_direct(sb_path, sb, ref_arg=None, bg_arg=None, prompt_arg=None,
     print(f"[direct] 输出 {dst}")
     print(f"[direct] hf={q['hf']:.1%} 强边缘={q['edge']:.0f} 人物区={q['body']:.1%} "
           f"{'⚠ ' + why if bad else '画质闸门 PASS'}", flush=True)
+    comfy_free()
     return 0
 
 
@@ -3439,9 +3596,11 @@ def cmd_t2i(sb_path, sb, only=None, retry=False, seed_off=0):
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["check", "prompt", "adopt", "director", "direct", "refs", "t2i", "push", "resume", "frames", "video", "voice", "merge", "anchor_probe"])
+    ap.add_argument("stage", choices=["check", "prompt", "adopt", "director", "direct", "refs", "t2i", "push", "resume", "frames", "source_frames", "frame_exact", "video", "voice", "merge", "anchor_probe"])
     ap.add_argument("--storyboard")
-    ap.add_argument("--seg", type=int)
+    ap.add_argument("--seg", type=int, help="单段序号，给 frames / t2i / anchor_probe 用")
+    ap.add_argument("--segs", help="source_frames 用：段号列表 '4,8' 或 all；不写 = 全部段")
+    ap.add_argument("--force", action="store_true", help="source_frames 用：忽略断点，强制重绘")
     ap.add_argument("--src", help="voice 用：源成片 mp4，默认 Director 的 long_video.mp4")
     ap.add_argument("--frames-dir", help="adopt 用：外部首尾帧目录，默认 <分镜名>.frames/")
     ap.add_argument("--no-normalize", action="store_true", help="adopt 用：不要裁成精确 9:16")
@@ -3489,6 +3648,17 @@ def main():
         return cmd_voice(a.storyboard, sb, a.src, a.out)
     if a.stage == "frames":
         return cmd_frames(a.storyboard, sb, a.seg, a.retry, a.seed_off) or 0
+    if a.stage == "source_frames":
+        import source_frames
+        # --seg 4 与 --segs 4,8 都接受；--segs 优先
+        return source_frames.run(a.storyboard, sb,
+                                 segs=a.segs or (str(a.seg) if a.seg else None),
+                                 force=a.force)
+    if a.stage == "frame_exact":
+        import frame_exact
+        r = frame_exact.run(sb.get("frame_exact") or {})
+        print(json.dumps(r, ensure_ascii=False, indent=2))
+        return 0 if r.get("success") else 1
     if a.stage == "anchor_probe":
         import anchor_probe
         return anchor_probe.probe(a.storyboard, a.anchor)
