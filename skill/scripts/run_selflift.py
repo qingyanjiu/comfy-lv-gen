@@ -10,10 +10,17 @@
 
 用法：
   python run_selflift.py ref                 # 用 Krea2 t2i 造人物参考图
-  python run_selflift.py seg 1               # 只跑第 1 段
+  python run_selflift.py plate               # 造全片唯一无人空镜板
+  python run_selflift.py seg 1               # 只跑第 1 段（逐段人在回路）
   python run_selflift.py all                 # 5 段顺序跑
-  python run_selflift.py merge               # 黑场过场 + 拼接
+  python run_selflift.py status              # 逐段状态 JSON（Director 面板轮询）
+  python run_selflift.py set --seg 2 --seed 123 --body "..." --first-frame x.png
+  python run_selflift.py merge               # 0.25s 短叠化 + 拼接
   python run_selflift.py probe               # 只打印每段时长/fps/帧数
+
+逐段人在回路（2026-11-11）：Director 面板用 `status` / `set` / `seg N` 驱动。
+段级 `first_frame_override` 可指定任意图片作本段首帧（优先于上段尾帧）；
+重出某段或改了该段提示词，本段及之后各段会被标为 stale，必须按序重跑（链路串行）。
 """
 import argparse
 import copy
@@ -180,9 +187,104 @@ def extract_last_frame(video, out_png):
     return out_png
 
 
+def extract_first_frame(video, out_png):
+    """抽第 0 帧给面板展示（真实首帧，不是参考图）。"""
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", video, "-vf",
+                    "select='eq(n,0)'", "-frames:v", "1", "-update", "1", out_png],
+                   check=True)
+    if not os.path.exists(out_png):
+        P.die(f"首帧抽取失败：{video}")
+    return out_png
+
+
+def seg_status(cfg):
+    """逐段状态 JSON：Director 面板轮询用，不改动任何文件。
+
+    stale = 本段提示词/seed 被改过，或上段尾帧比本段视频新（first_frame 已失效）。
+    stale 会自动向后传染，因为 first_frame 是串行依赖。
+    """
+    segs = []
+    for i, sg in enumerate(cfg["segments"]):
+        vid = os.path.join(SEG_DIR, f"{cfg['prefix']}_{sg['id']}.mp4")
+        first = os.path.join(REF_DIR, f"{cfg['prefix']}_s{i+1:02d}_first.png")
+        last = os.path.join(REF_DIR, f"{cfg['prefix']}_s{i+1:02d}_last.png")
+        done = os.path.exists(vid)
+        segs.append({
+            "index": i + 1,
+            "id": sg["id"],
+            "title": sg.get("title", ""),
+            "seed": sg.get("seed"),
+            "body": sg.get("body", ""),
+            "first_frame_override": sg.get("first_frame_override"),
+            "done": done,
+            "stale": False,
+            "video": vid if done else None,
+            "first_frame": first if os.path.exists(first) else None,
+            "last_frame": last if os.path.exists(last) else None,
+            "mtime": os.path.getmtime(vid) if done else 0,
+        })
+    stale_from = None
+    for i, item in enumerate(segs):
+        if not item["done"]:
+            continue
+        edited = cfg["segments"][i].get("updated_at", 0) > item["mtime"] + 1
+        prev = segs[i-1]["last_frame"] if i > 0 else None
+        superseded = bool(prev and os.path.getmtime(prev) > item["mtime"] + 1)
+        if edited or superseded:
+            stale_from = i
+            break
+    if stale_from is not None:
+        for j in range(stale_from, len(segs)):
+            segs[j]["stale"] = True
+    finals = []
+    if os.path.isdir(FINAL_DIR):
+        finals = sorted(f for f in os.listdir(FINAL_DIR) if f.lower().endswith(".mp4"))
+    return {
+        "title": cfg.get("title", ""),
+        "cfg": CFG_PATH,
+        "prefix": cfg.get("prefix", ""),
+        "join_mode": cfg.get("join_mode", "dissolve"),
+        "chain_first_frame": bool(cfg.get("chain_first_frame")),
+        "segments": segs,
+        "finals": finals,
+    }
+
+
+def cmd_set(cfg, args):
+    """面板改 seed / 提示词 / 首帧覆盖：直接写回分镜 json，并打 updated_at 让状态判 stale。"""
+    idx = args.seg - 1
+    if not (0 <= idx < len(cfg["segments"])):
+        P.die(f"段号越界：{args.seg}（共 {len(cfg['segments'])} 段）")
+    sg = cfg["segments"][idx]
+    changed = []
+    if args.seed is not None:
+        sg["seed"] = int(args.seed)
+        changed.append(f"seed={sg['seed']}")
+    if args.body is not None:
+        sg["body"] = args.body
+        changed.append("body")
+    if args.first_frame is not None:
+        if args.first_frame.strip().lower() in ("", "none", "auto", "clear"):
+            sg.pop("first_frame_override", None)
+            changed.append("first_frame=自动承接上段尾帧")
+        else:
+            sg["first_frame_override"] = args.first_frame.strip()
+            changed.append(f"first_frame={sg['first_frame_override']}")
+    if changed:
+        sg["updated_at"] = time.time()
+        with open(CFG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    print(f"段 {args.seg} 已更新：{', '.join(changed) or '无改动'}", flush=True)
+
+
 def run_seg(cfg, idx):
+    os.makedirs(SEG_DIR, exist_ok=True)
+    os.makedirs(REF_DIR, exist_ok=True)
     seg = dict(cfg["segments"][idx])
-    if cfg.get("chain_first_frame") and idx > 0:
+    if seg.get("first_frame_override"):
+        seg["first_frame"] = seg["first_frame_override"]
+        print(f"    首帧覆盖（面板指定）：{seg['first_frame']}", flush=True)
+    elif cfg.get("chain_first_frame") and idx > 0:
         prev_name = f"{cfg['prefix']}_s{idx:02d}_last.png"
         if os.path.exists(os.path.join(P.COMFY_INPUT, prev_name)):
             seg["first_frame"] = prev_name
@@ -215,6 +317,7 @@ def run_seg(cfg, idx):
     print(f"  -> {dst}  ({dt/60:.1f} 分钟)", flush=True)
     probe(dst)
     shots(dst, seg["id"])
+    extract_first_frame(dst, os.path.join(REF_DIR, f"{cfg['prefix']}_s{idx+1:02d}_first.png"))
     if cfg.get("chain_first_frame"):
         last_name = f"{cfg['prefix']}_s{idx+1:02d}_last.png"
         last_local = extract_last_frame(dst, os.path.join(REF_DIR, last_name))
@@ -557,9 +660,14 @@ def cmd_merge(cfg, join=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["ref", "plate", "seg", "all", "merge", "probe", "graph"])
+    ap.add_argument("cmd", choices=["ref", "plate", "seg", "all", "merge", "probe", "graph", "status", "set"])
     ap.add_argument("idx", nargs="?", type=int, default=0)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--seg", type=int, default=0, help="set 命令的目标段号（1 起）")
+    ap.add_argument("--seed", type=int, default=None, help="set：换 seed 重出用")
+    ap.add_argument("--body", default=None, help="set：替换该段提示词正文")
+    ap.add_argument("--first-frame", dest="first_frame", default=None,
+                    help="set：指定本段首帧图文件名；auto/clear 恢复自动承接")
     ap.add_argument("--cfg", default=DEFAULT_CFG, help="分镜 json 路径；产物写到同目录")
     ap.add_argument("--join", choices=["black", "dissolve", "cut"], default=None,
                     help="段间接续：black=0.8s 纯黑；dissolve=0.25s 短叠化（项目原来的方式）；cut=首尾帧直连硬切")
@@ -592,6 +700,10 @@ def main():
                         print(f"    补抽尾帧：{ln}", flush=True)
                 continue
             run_seg(cfg, i)
+    elif a.cmd == "status":
+        print(json.dumps(seg_status(cfg), ensure_ascii=False), flush=True)
+    elif a.cmd == "set":
+        cmd_set(cfg, a)
     elif a.cmd == "probe":
         for s in cfg["segments"]:
             p = os.path.join(SEG_DIR, f"{cfg['prefix']}_{s['id']}.mp4")

@@ -36,6 +36,9 @@ agent   ：跑工序 · 读质检 · 按失败码修参数重跑
 | **只有文字，没有任何图** | **`refs`：Krea2 造人物图 + 无人空镜** | **`frames` 双图编辑** | `refs` 造出来的人物图当 `image_1` | 「文生视频」 |
 | **长视频 / 多段成片（默认）** | 人物图 + 一张无人空镜板 | **`run_selflift.py`：SelfLift ref2va 逐段直出 + 尾帧接首帧** | 同一人物图 + 全片唯一空镜板 + `first_frame` | 「分段接续链路」 |
 
+**逐段可干预入口**：Director 节点第 5 个 tab「SelfLift 逐段」，见本章「逐段人在回路」；
+一段段跑、看每段真实首/尾帧、换 seed 重出、指定首帧图、改提示词。
+
 **⚠ 复刻链路最容易犯的错**：把首帧 A 当输入去推尾帧。实测 2.1 与 2511 都会把
 构图焊死在 A 上（拿不到原片尾帧的拉远/换机位），2.1 还容易触发「高清复刻」过锐。
 正解是**两帧各从对应原片帧独立重绘**，同模型 + 同提示词 + 同 seed + 同预处理，
@@ -260,6 +263,72 @@ ffmpeg -y -v error -i final.mp4 -vf "fps=1,scale=268:-1" -frames:v 39 qa/_sec/%0
 **ComfyUI 重启刷新模型列表后才会报 `value_not_in_list`**（跑着跑着段 3 突然失败就是这个）。
 驱动副本与 cfg 的 `clip_name` 已换成 nvfp4；用户的原工作流
 `user/default/workflows/H3-SelfLift_单图参考.json` 没动，把 int8 放回去即可恢复。
+
+## 逐段人在回路：Director 面板第 5 个 tab（2026-11-11 用户定）
+
+用户 07:09：「以后长视频就用这个方式来做，那 direct 工作流就得做修改了，
+先一段段跑，然后我可以修改每段的首尾帧，然后改提示词」。
+确认过的两个选择：**重出 + 换首帧图**（不是回到旧「先生成首尾帧」）、
+**交互做在 ComfyUI Director 面板**（不是本地 HTML 页）。
+
+### 改造落点（**没有动控件顺序**）
+
+| 文件 | 作用 |
+|---|---|
+| `h3-long-video-repo/selflift_panel.py` | 新增 7 个 HTTP 路由 + 异步任务状态机；只做编排，出片仍调 `run_selflift.py` |
+| `h3-long-video-repo/director.py` | 只加 3 行胶水 `register_routes(...)`；旧 18 个路由与 `execute` 完全不动 |
+| `web/director.js` | 新增第 5 个 tab「SelfLift 逐段」，**默认打开**；旧 4 个 tab 原样保留 |
+| `scripts/run_selflift.py` | 新增 `status` / `set` 命令、抽真实首帧、`first_frame_override`、`stale` 判定 |
+| `tests/test_selflift_panel.py` | 静态回归：路由数、路径白名单、tab、控件数 22 不变 |
+
+**关键：这次没加任何 widget**。Director 节点仍是 22 项 `widgets_values`，
+所以 `example_workflows/H3-Long-Video-Director.json`、`build_director_workflow.py`、
+`test_graph.py` 的顺序断言都不用改（回归测试里有 `test_widget_count_unchanged` 兜底）。
+以后若真要加控件，仍必须追加到**末尾**并同步那 4 处。
+
+### 面板能做什么
+
+1. 填分镜 json 绝对路径（或「新建片」从 skill 模板开目录）→ 点「打开 / 刷新」
+2. 每段一张卡：**真实首帧 / 尾帧**缩略图、seed、提示词 textarea、状态徽章
+3. 「生成本段」/「按此 seed 重出」/「换随机 seed 重出」→ 只跑这一段，不连跑 5 段
+4. 「设为本段首帧图」上传任意图片 → 写段级 `first_frame_override`，
+   **优先于上段尾帧**（`run_seg` 先判 override 才判 chain）
+5. 「恢复自动承接」清掉 override，回到尾帧接首帧
+6. 「保存提示词」直接写回 `segments[].body`（`head` / `tail` 全片共用锚不动）
+7. 全段就绪后「拼接成片」，`dissolve`（默认）/ `cut` / `black` 可选
+
+### 后端路由（`/h3-long-video/selflift/*`）
+
+| 路由 | 作用 |
+|---|---|
+| `GET status?cfg=` | 逐段状态：首/尾帧与视频 URL、seed、body、done/stale、成片列表、当前任务日志 |
+| `POST set` | 改 seed / body / first_frame（`auto` 清覆盖），打 `updated_at` |
+| `POST run` | 异步跑单段（3~4 分钟，线程 + 轮询，不卡 HTTP）；带 seed 先写回再出片 |
+| `POST merge` | 异步拼接 |
+| `POST init` | 从 `assets/segments.selflift.example.json` 复制出新片目录 |
+| `POST upload` | 图片存进 ComfyUI input，写 `first_frame_override` |
+| `GET media?path=` | 片目录 / input 下的图片与视频，白名单防路径穿越 |
+
+### 铁律（这次新增）
+
+- **串行依赖**：段 N 的 `first_frame` 来自段 N−1 尾帧。改了第 N 段的提示词 / seed / 尾帧，
+  第 N…末段自动标 `stale`，必须**按序重跑**；只重出中间一段不算接上。
+- `stale` 两种触发：段级 `updated_at` 比视频新，或上段尾帧比本段视频新；命中一次就向后传染。
+- **生成实现仍唯一**：面板不复制出片逻辑，全部 subprocess 调 `run_selflift.py seg N --cfg ...`。
+- **改 `director.py` / `web/director.js` 要重启桌面版**才生效；
+  绝不用 Stop-Process 杀后端、绝不另起临时 ComfyUI。
+- 面板默认 cfg 只是片例占位，别拿它当默认路径；新片用「新建片」。
+
+**⚠ 长视频不要点节点画布上的「运行」按钮**：那个仍走旧 Director 链路
+（`execute` → `run_h3_long_video.py` → 首尾帧 → push/resume），本次没改它。
+新链路完全在「SelfLift 逐段」tab 里，不经过节点 execute；旧 4 个 tab 只在
+逐像素锁背景 / 竖屏短片时才用。
+
+### 边界
+
+- `first_frame_override` 只锁第 0 帧，段内光线仍会自演亮度循环（见「验收命令」）。
+- 空镜板是语义级参考，机位变化时透视不严格对齐。
+- 上传的图不做 Lab 色彩对齐；若来自过编辑模型，喂之前自己先对齐。
 
 ## 一致性来源：素材 / 资产 / 契约（2026-11-09 新增）
 

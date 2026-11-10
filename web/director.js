@@ -1274,6 +1274,264 @@ function countSegments(node, ui) {
   }
 }
 
+const SELFLIFT_DEFAULT_CFG =
+  "D:/Comfy-Desktop/output/rooftop-dusk-v2/segments.json";
+
+/** SelfLift 逐段人在回路（2026-11-11）：面板里的第 5 个 tab。
+ *
+ *  一段段跑 → 看每段首/尾帧 → 换 seed 重出 / 指定任意图作首帧 → 改提示词 → 继续。
+ *  后端是 selflift_panel.py 的 /h3-long-video/selflift/* 路由，
+ *  生成实现仍是 skill/scripts/run_selflift.py（唯一入口），这里只做 UI。
+ */
+function buildSelfLiftPane(host) {
+  const KEY = "h3_selflift_cfg";
+  const style = document.createElement("style");
+  style.textContent = `
+    .h3-sl-body { display:flex; flex-direction:column; gap:8px; color:#ddd; font-size:12px; }
+    .h3-sl-bar { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+    .h3-sl-input { background:#20232a; color:#e8ecf2; border:1px solid #3a404c; border-radius:4px; padding:4px 6px; font-size:12px; min-width:0; }
+    .h3-sl-bar .h3-sl-input:first-child { flex:1 1 300px; }
+    .h3-sl-btn { background:#263244; color:#e8ecf2; border:1px solid #3f5573; border-radius:4px; padding:5px 9px; font-size:12px; cursor:pointer; }
+    .h3-sl-btn:hover { background:#33465f; }
+    .h3-sl-btn.primary { background:#2f5d8a; border-color:#4a7fb5; }
+    .h3-sl-status { padding:5px 8px; border-radius:4px; background:#1d222b; border-left:3px solid #4a7fb5; }
+    .h3-sl-status[data-kind="error"] { border-left-color:#c85a5a; color:#ffb4b4; }
+    .h3-sl-status[data-kind="ok"] { border-left-color:#4caf7d; }
+    .h3-sl-status[data-kind="running"] { border-left-color:#e0a44a; }
+    .h3-sl-task { display:none; max-height:140px; overflow:auto; background:#11141a; color:#9fb0c4; padding:6px; font-size:11px; white-space:pre-wrap; margin:0; }
+    .h3-sl-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:10px; }
+    .h3-sl-card { background:#1d2129; border:1px solid #343b47; border-radius:6px; padding:8px; display:flex; flex-direction:column; gap:6px; }
+    .h3-sl-card[data-stale="true"] { border-color:#b07a3a; }
+    .h3-sl-head { display:flex; justify-content:space-between; align-items:center; gap:6px; }
+    .h3-sl-badge { color:#9fb0c4; font-size:11px; }
+    .h3-sl-card[data-stale="true"] .h3-sl-badge { color:#e8b26a; }
+    .h3-sl-imgs { display:flex; gap:6px; }
+    .h3-sl-imgbox { flex:1 1 0; min-width:0; }
+    .h3-sl-imgbox img { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:3px; cursor:zoom-in; background:#000; }
+    .h3-sl-label { color:#98a4b3; font-size:11px; }
+    .h3-sl-noimg { background:#11141a; aspect-ratio:16/9; display:flex; align-items:center; justify-content:center; color:#666; border-radius:3px; }
+    .h3-sl-row { display:flex; flex-wrap:wrap; gap:5px; align-items:center; }
+    .h3-sl-row .h3-sl-input { width:100px; }
+    .h3-sl-textarea { width:100%; box-sizing:border-box; background:#161a21; color:#e8ecf2; border:1px solid #343b47; border-radius:4px; padding:6px; font-size:11px; line-height:1.5; resize:vertical; }
+    .h3-sl-finals { display:flex; flex-wrap:wrap; gap:8px; }
+    .h3-sl-link { color:#8fb8e8; font-size:11px; }
+  `;
+  host.appendChild(style);
+
+  const bar = makeElement("div", "h3-sl-bar");
+  const cfgInput = makeElement("input", "h3-sl-input");
+  cfgInput.type = "text";
+  cfgInput.placeholder = "分镜 json 绝对路径（产物写到同目录）";
+  cfgInput.value = localStorage.getItem(KEY) || SELFLIFT_DEFAULT_CFG;
+  const openBtn = makeElement("button", "h3-sl-btn", "打开 / 刷新");
+  const newTitle = makeElement("input", "h3-sl-input");
+  newTitle.placeholder = "新片标题";
+  newTitle.style.width = "110px";
+  const newBtn = makeElement("button", "h3-sl-btn", "新建片");
+  const joinSel = makeElement("select", "h3-sl-input");
+  [["dissolve", "0.25s 叠化"], ["cut", "硬切"], ["black", "0.8s 黑场"]]
+    .forEach(([value, text]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      joinSel.appendChild(option);
+    });
+  const mergeBtn = makeElement("button", "h3-sl-btn", "拼接成片");
+  bar.append(cfgInput, openBtn, newTitle, newBtn, joinSel, mergeBtn);
+
+  const status = makeElement("div", "h3-sl-status", "未加载");
+  const taskBox = makeElement("pre", "h3-sl-task");
+  const finalsBox = makeElement("div", "h3-sl-finals");
+  const list = makeElement("div", "h3-sl-list");
+  host.append(bar, status, taskBox, finalsBox, list);
+
+  let timer = null;
+  let signature = "";
+  const cfgPath = () => cfgInput.value.trim();
+  const say = (text, kind = "info") => {
+    status.textContent = text;
+    status.dataset.kind = kind;
+  };
+
+  async function refresh() {
+    const cfg = cfgPath();
+    if (!cfg) return;
+    try {
+      const res = await api.fetchApi(
+        `/h3-long-video/selflift/status?cfg=${encodeURIComponent(cfg)}`,
+        { cache: "no-store" },
+      );
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "状态读取失败");
+      render(data);
+    } catch (error) {
+      say(`读取失败：${error.message}`, "error");
+    }
+  }
+
+  async function post(url, body) {
+    try {
+      await postJson(url, body);
+      signature = ""; // 强制重建卡片，显示刚写回的 seed / 提示词 / 首帧
+      await refresh();
+    } catch (error) {
+      say(`操作失败：${error.message}`, "error");
+    }
+  }
+
+  function makeCard(seg) {
+    const card = makeElement("div", "h3-sl-card");
+    if (seg.stale) card.dataset.stale = "true";
+    const head = makeElement("div", "h3-sl-head");
+    head.appendChild(makeElement("strong", "", `第 ${seg.index} 段 · ${seg.title || seg.id}`));
+    head.appendChild(makeElement("span", "h3-sl-badge",
+      seg.stale ? "需重出（上游已变）" : seg.done ? "已生成" : "待生成"));
+
+    const imgs = makeElement("div", "h3-sl-imgs");
+    [["首帧", seg.first_url], ["尾帧", seg.last_url]].forEach(([label, url]) => {
+      const box = makeElement("div", "h3-sl-imgbox");
+      box.appendChild(makeElement("span", "h3-sl-label", label));
+      if (url) {
+        const img = document.createElement("img");
+        img.src = url;
+        img.loading = "lazy";
+        img.title = "点开看大图";
+        img.addEventListener("click", () => window.open(url, "_blank"));
+        box.appendChild(img);
+      } else {
+        box.appendChild(makeElement("div", "h3-sl-noimg", "暂无"));
+      }
+      imgs.appendChild(box);
+    });
+
+    const row = makeElement("div", "h3-sl-row");
+    const seedInput = makeElement("input", "h3-sl-input");
+    seedInput.type = "number";
+    seedInput.value = seg.seed ?? "";
+    row.append(makeElement("span", "h3-sl-label", "seed"), seedInput);
+    const runBtn = makeElement("button", "h3-sl-btn primary",
+      seg.done ? "按此 seed 重出" : "生成本段");
+    const rerollBtn = makeElement("button", "h3-sl-btn", "换随机 seed 重出");
+    const clearBtn = makeElement("button", "h3-sl-btn", "恢复自动承接");
+    row.append(runBtn, rerollBtn, clearBtn);
+
+    const prompt = makeElement("textarea", "h3-sl-textarea");
+    prompt.value = seg.body || "";
+    prompt.rows = 5;
+    prompt.placeholder = "本段提示词正文（head / tail 全片共用锚不变）";
+    const saveBtn = makeElement("button", "h3-sl-btn", "保存提示词");
+
+    const fileRow = makeElement("div", "h3-sl-row");
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = "image/*";
+    fileInput.className = "h3-sl-label";
+    const uploadBtn = makeElement("button", "h3-sl-btn", "设为本段首帧图");
+    const overrideNote = makeElement("span", "h3-sl-label",
+      seg.first_frame_override
+        ? `首帧覆盖：${seg.first_frame_override}`
+        : "首帧：自动承接上段尾帧");
+    fileRow.append(fileInput, uploadBtn, overrideNote);
+
+    runBtn.addEventListener("click", () => post("/h3-long-video/selflift/run", {
+      cfg: cfgPath(), seg: seg.index, seed: Number(seedInput.value) || undefined,
+    }));
+    rerollBtn.addEventListener("click", () => post("/h3-long-video/selflift/run", {
+      cfg: cfgPath(), seg: seg.index,
+      seed: Math.floor(Math.random() * 1000000000),
+    }));
+    clearBtn.addEventListener("click", () => post("/h3-long-video/selflift/set", {
+      cfg: cfgPath(), seg: seg.index, first_frame: "auto",
+    }));
+    saveBtn.addEventListener("click", () => post("/h3-long-video/selflift/set", {
+      cfg: cfgPath(), seg: seg.index, body: prompt.value,
+    }));
+    uploadBtn.addEventListener("click", async () => {
+      if (!fileInput.files?.length) { say("先选一张图片", "error"); return; }
+      const form = new FormData();
+      form.append("cfg", cfgPath());
+      form.append("seg", String(seg.index));
+      form.append("file", fileInput.files[0]);
+      try {
+        await postFormData("/h3-long-video/selflift/upload", form);
+        signature = "";
+        await refresh();
+      } catch (error) {
+        say(`上传失败：${error.message}`, "error");
+      }
+    });
+
+    card.append(head, imgs, row, prompt, saveBtn, fileRow);
+    return card;
+  }
+
+  function render(data) {
+    const task = data.task || {};
+    if (task.running) {
+      say(`正在跑：${task.kind}（约 3~4 分钟，可继续编辑其它段）`, "running");
+      taskBox.style.display = "block";
+      taskBox.textContent = (task.log || "").slice(-1500);
+    } else {
+      taskBox.style.display = task.error ? "block" : "none";
+      if (task.error) taskBox.textContent = `${task.error}\n${(task.log || "").slice(-1200)}`;
+      const ready = data.segments.filter((s) => s.done && !s.stale).length;
+      say(`${data.title || "未命名"} · ${ready}/${data.segments.length} 段就绪 · `
+        + `${data.chain_first_frame ? "尾帧接首帧（串行）" : "独立段"} · 过场 ${data.join_mode}`,
+      task.error ? "error" : "info");
+    }
+    finalsBox.replaceChildren(...(data.finals || []).map((item) => {
+      const link = makeElement("a", "h3-sl-link", `▶ ${item.name}`);
+      link.href = item.url;
+      link.target = "_blank";
+      return link;
+    }));
+    // body 不入签名：轮询不会重建卡片、不会冲掉正在输入的提示词
+    const sig = JSON.stringify([
+      data.segments.map((s) => [s.index, s.id, s.done, s.stale, s.seed,
+        s.first_frame_override, s.first_url, s.last_url, s.video_url]),
+      data.finals,
+    ]);
+    if (sig === signature) return;
+    signature = sig;
+    list.replaceChildren(...data.segments.map(makeCard));
+  }
+
+  function start() {
+    stop();
+    signature = "";
+    refresh();
+    timer = setInterval(refresh, 3000);
+  }
+  function stop() {
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  openBtn.addEventListener("click", () => {
+    localStorage.setItem(KEY, cfgPath());
+    start();
+  });
+  newBtn.addEventListener("click", async () => {
+    try {
+      const data = await postJson("/h3-long-video/selflift/init", {
+        title: newTitle.value.trim() || "未命名长片",
+      });
+      cfgInput.value = data.cfg;
+      localStorage.setItem(KEY, data.cfg);
+      say(`新片已建立：${data.cfg} — ${data.note}`, "ok");
+      start();
+    } catch (error) {
+      say(`新建失败：${error.message}`, "error");
+    }
+  });
+  mergeBtn.addEventListener("click", () => post("/h3-long-video/selflift/merge", {
+    cfg: cfgPath(), join: joinSel.value,
+  }));
+
+  start();
+  return { start, stop, refresh };
+}
+
 function installPanel(node) {
   ensureStyles();
   const root = makeElement("div", "h3-director-panel");
@@ -1454,6 +1712,8 @@ function installPanel(node) {
 
   const tabsBar = makeElement("div", "h3-director-tabs");
   const panes = makeElement("div", "h3-director-panes");
+  const selfliftBody = makeElement("div", "h3-sl-body");
+  const selfliftCtl = buildSelfLiftPane(selfliftBody);
 
   const tabSpecs = [
     {
@@ -1481,6 +1741,14 @@ function installPanel(node) {
       emptyText: "",
     },
   ];
+
+  // 第 5 个 tab：SelfLift 逐段人在回路（长视频新默认，旧链路 4 个 tab 原样保留）
+  tabSpecs.push({
+    key: "selflift",
+    label: "SelfLift 逐段",
+    body: selfliftBody,
+    emptyText: "填分镜 json 路径，点「打开 / 刷新」即可逐段生成。",
+  });
 
   const tabs = [];
   for (const spec of tabSpecs) {
@@ -1514,6 +1782,8 @@ function installPanel(node) {
   for (const tab of tabs) {
     tab.button.addEventListener("click", () => setActiveTab(tab.key));
   }
+  const selfliftTab = tabs.find((tab) => tab.key === "selflift");
+  if (selfliftTab) selfliftTab.empty.style.display = "none";
 
   const keyframeTab = tabs.find((tab) => tab.key === "keyframes");
   if (keyframeTab) keyframeTab.pane.insertBefore(backendNote, editor);
@@ -1561,6 +1831,7 @@ function installPanel(node) {
     error,
     meta,
     tabs,
+    selflift: selfliftCtl,
     setActiveTab,
     setNotice,
     rewriting: false,
@@ -1573,7 +1844,7 @@ function installPanel(node) {
     keyframeHandlers: {},
   };
 
-  setActiveTab(node.properties?.h3_tab || "keyframes");
+  setActiveTab(node.properties?.h3_tab || "selflift");
 
   const currentJobId = () => ui.jobId || node.properties?.h3_job_id || "";
   const refreshOnce = () => {
@@ -2372,6 +2643,7 @@ app.registerExtension({
     const originalRemoved = node.onRemoved;
     node.onRemoved = function () {
       stopPolling(node);
+      this.h3DirectorUI?.selflift?.stop?.();
       return originalRemoved?.apply(this, arguments);
     };
     const originalConfigure = node.onConfigure;

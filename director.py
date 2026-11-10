@@ -1195,6 +1195,15 @@ def _refresh_stale_status(job_dir, status):
 
 if PromptServer is not None:
 
+    # SelfLift 逐段人在回路（2026-11-11）：路由放在独立模块里，
+    # 与下面 18 个旧链路路由互不干扰；注册失败也不能拖垮节点加载。
+    try:
+        sys.path.insert(0, str(ROOT))
+        import selflift_panel
+        selflift_panel.register_routes(PromptServer.instance.routes, web)
+    except Exception as _selflift_exc:  # noqa: BLE001
+        print(f"[H3] SelfLift 面板路由注册失败：{_selflift_exc}", flush=True)
+
     @PromptServer.instance.routes.get("/h3-long-video/status/{job_id}")
     async def h3_long_video_status(request):
         try:
