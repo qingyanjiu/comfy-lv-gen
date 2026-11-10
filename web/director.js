@@ -1379,7 +1379,7 @@ function buildSelfLiftPane(host) {
     }
   }
 
-  function makeCard(seg) {
+  function makeCard(seg, total) {
     const card = makeElement("div", "h3-sl-card");
     if (seg.stale) card.dataset.stale = "true";
     const head = makeElement("div", "h3-sl-head");
@@ -1391,6 +1391,12 @@ function buildSelfLiftPane(host) {
     [["首帧", seg.first_url], ["尾帧", seg.last_url]].forEach(([label, url]) => {
       const box = makeElement("div", "h3-sl-imgbox");
       box.appendChild(makeElement("span", "h3-sl-label", label));
+      if (label === "尾帧" && url) {
+        const download = makeElement("a", "h3-sl-link", "↓ 下载");
+        download.href = url;
+        download.setAttribute("download", "");
+        box.appendChild(download);
+      }
       if (url) {
         const img = document.createElement("img");
         img.src = url;
@@ -1461,7 +1467,50 @@ function buildSelfLiftPane(host) {
       }
     });
 
-    card.append(head, imgs, row, prompt, saveBtn, fileRow);
+    // 尾帧：替换供下段接续 / 锁定本段（节点原生有 last_frame 输入，默认关闭）
+    const tailRow = makeElement("div", "h3-sl-row");
+    const tailFile = document.createElement("input");
+    tailFile.type = "file";
+    tailFile.accept = "image/*";
+    tailFile.className = "h3-sl-label";
+    const tailNextBtn = makeElement("button", "h3-sl-btn", "替换尾帧→下段首帧");
+    const tailLockBtn = makeElement("button", "h3-sl-btn", "锁定本段尾帧");
+    const tailClearBtn = makeElement("button", "h3-sl-btn", "解除尾帧锁");
+    if (seg.index >= total) {
+      tailNextBtn.disabled = true;
+      tailNextBtn.title = "末段没有下一段";
+    }
+    tailNextBtn.title = "只改喂给下一段的帧图，不重出本段；后续段自动标 stale";
+    tailLockBtn.title = "把这张图接到本段 last_frame 输入，需重出本段；会切 FL2VA/Hybrid";
+    const tailNote = makeElement("span", "h3-sl-label",
+      seg.last_frame_override
+        ? `尾帧锁：${seg.last_frame_override}（需重出本段）`
+        : "尾帧替换只改下段接续；要改本段画面请重出本段");
+    tailRow.append(tailFile, tailNextBtn, tailLockBtn, tailClearBtn, tailNote);
+
+    const postTail = async (mode) => {
+      if (!tailFile.files?.length) { say("先选一张图片", "error"); return; }
+      const form = new FormData();
+      form.append("cfg", cfgPath());
+      form.append("seg", String(seg.index));
+      form.append("mode", mode);
+      form.append("file", tailFile.files[0]);
+      try {
+        const result = await postFormData("/h3-long-video/selflift/frame", form);
+        say(result.note || "已提交", "ok");
+        signature = "";
+        await refresh();
+      } catch (error) {
+        say(`尾帧操作失败：${error.message}`, "error");
+      }
+    };
+    tailNextBtn.addEventListener("click", () => postTail("next_first"));
+    tailLockBtn.addEventListener("click", () => postTail("last_lock"));
+    tailClearBtn.addEventListener("click", () => post("/h3-long-video/selflift/set", {
+      cfg: cfgPath(), seg: seg.index, last_frame: "auto",
+    }));
+
+    card.append(head, imgs, row, prompt, saveBtn, fileRow, tailRow);
     return card;
   }
 
@@ -1488,12 +1537,13 @@ function buildSelfLiftPane(host) {
     // body 不入签名：轮询不会重建卡片、不会冲掉正在输入的提示词
     const sig = JSON.stringify([
       data.segments.map((s) => [s.index, s.id, s.done, s.stale, s.seed,
-        s.first_frame_override, s.first_url, s.last_url, s.video_url]),
+        s.first_frame_override, s.last_frame_override,
+        s.first_url, s.last_url, s.video_url]),
       data.finals,
     ]);
     if (sig === signature) return;
     signature = sig;
-    list.replaceChildren(...data.segments.map(makeCard));
+    list.replaceChildren(...data.segments.map((s) => makeCard(s, data.segments.length)));
   }
 
   function start() {
