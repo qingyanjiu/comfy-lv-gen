@@ -1,6 +1,6 @@
 ---
 name: h3-long-video
-description: 端到端长视频流水线——从一段想法生成分镜脚本（含每段秒数），逐段生成首尾帧并质检，人工确认后用 H3 出分段视频、质检、按顺序合并成片（保留音轨）。分镜出完会把每段的首帧/尾帧/视频提示词摊开成一个可编辑的预览页，用户可以直接改。当用户要做多段/长视频、"帮我把这段做成视频""生成分镜再出片"时使用。触发词：分镜、长视频、多段、成片、流水线、批量出片、改提示词。
+description: 端到端长视频流水线。**2026-11-11 起长视频默认走 `H3-SelfLift_单图参考` ref2va 直出 + 分段接续（尾帧接首帧 + 全片唯一无人空镜板），见「分段接续链路」**，比首尾帧链路更快、段间观感也更自然（2026-11-11 用户判定）；旧的 Qwen2.1 首尾帧 → Director 链路只在需要逐像素锁背景时用。当用户要做多段/长视频、"帮我把这段做成视频""生成分镜再出片"时使用。触发词：分镜、长视频、多段、成片、流水线、批量出片、改提示词、分段接续。
 ---
 
 # H3 长视频流水线
@@ -19,28 +19,424 @@ agent   ：跑工序 · 读质检 · 按失败码修参数重跑
 工作流   ：Qwen 首尾帧 → H3 视频 → ffmpeg 合并
 ```
 
-## 两条链路：开工第一步先判断「有没有参考图」（2026-11-07 用户定稿）
+## 链路分流：开工第一步先判断（2026-11-11 修订，新增长视频默认链路）
 
-用户把两类任务明确分开了：「**之前做的是有参考图的**，那个你已经知道了；
-**现在文生视频的要遵循的规则**也要记录并更新到 skill」。
+**2026-11-11 用户定：长视频 / 多段成片一律走 `H3-SelfLift_单图参考`（ref2va 直出）**，
+理由是**更快、而且段间观感明显更自然**（07:06 看完叠化成片后的判定）：
+0.5MP 实测 3.5–3.8 分钟/段，旧链路 0.98MP 是 8 分钟；
+「尾帧接首帧」比「先生成首尾帧再分别生成视频」更接近一镜到底，机制与实测见下一节。
+下表最后一行是这条**默认链路**；前四行是「有原片复刻」与「旧的双图关键帧链路」，
+只在对应场景才用。完整规则见新增章节「分段接续链路」。
 
-**⚠ 2026-11-07 晚用户纠正（别再理解反）**：用户没给参考图，**不等于让 t2i
-直接把关键帧全出了**。正路是先用 Krea2 造出两张参考图，然后**完全回到已经定稿的
-双图 `frames` 链路**。用户原话：「不是要先生成人物参考图吗你到底有没有在听我说」。
-
-| 用户给了什么 | 第一步 | 之后（两条链路完全相同） | 身份靠什么锁 | 规则章节 |
+| 用户给了什么 | 第一步 | 之后 | 一致性靠什么 | 规则章节 |
 |---|---|---|---|---|
-| 人物图（+ 无人场景空镜） | — | `frames` 双图编辑 | 用户给的 `image_1` | 「两张参考图」 |
+| **原片视频 + 要求逐帧对齐** | 直接按时间段抽**每一帧** | **`frame_exact`：每帧各自重绘，直接合成成片** | 源帧本身就是真值 | 「逐帧精确复刻」 |
+| **原片视频 / 原片逐镜抽帧** | 抽每刀 first/last | **`source_frames`：两帧各自从对应原片帧重绘** | 原片同源帧（外部真值） | 「一致性来源」 |
+| 人物图（+ 无人场景空镜） | — | `frames` 双图编辑 | 用户给的 `image_1` + 空镜资产 | 「两张参考图」 |
 | **只有文字，没有任何图** | **`refs`：Krea2 造人物图 + 无人空镜** | **`frames` 双图编辑** | `refs` 造出来的人物图当 `image_1` | 「文生视频」 |
+| **长视频 / 多段成片（默认）** | 人物图 + 一张无人空镜板 | **`run_selflift.py`：SelfLift ref2va 逐段直出 + 尾帧接首帧** | 同一人物图 + 全片唯一空镜板 + `first_frame` | 「分段接续链路」 |
 
-- 从第二步起是**同一套**：Qwen2.1 双图编辑、首帧图2=空镜、尾帧图2=本段首帧、
-  `chain` 段首尾帧 byte-for-byte 相连、9:16 硬锁、禁坏种子 100000、
-  `push → resume` 出片。**不存在「纯文本专用出帧链路」**。
+**⚠ 复刻链路最容易犯的错**：把首帧 A 当输入去推尾帧。实测 2.1 与 2511 都会把
+构图焊死在 A 上（拿不到原片尾帧的拉远/换机位），2.1 还容易触发「高清复刻」过锐。
+正解是**两帧各从对应原片帧独立重绘**，同模型 + 同提示词 + 同 seed + 同预处理，
+身份/服装/背景天然同源。`source_frames` 命令就是这么做的，**不喂 A**。
+
+**上面两条双图关键帧链路（旧默认）**从第二步起仍是**同一套**：Qwen2.1 双图编辑、首帧图2=空镜、
+尾帧图2=本段首帧、`chain` 段首尾帧 byte-for-byte 相连、9:16 硬锁、
+禁坏种子 100000、`push → resume` 出片。**不存在「纯文本专用出帧链路」**。
+**这条链路现在只在需要逐像素锁死背景时用**；普通长视频不要绕回它。
+**`frame_exact` 是例外**：它不生成运动，画幅/fps/帧数/时长全部继承源片，
+必须绕开 9:16 归一化、5s 下限、17n+5 帧阶梯和 `frames / push / video` 三阶段。
 - 唯一差别只是参考图**谁提供**：用户给，或者 `refs` 造。
 - **`t2i` 直出全部关键帧是当天理解反了的弯路，已废弃**：命令保留作实验对照，
   `check` 会对 `keyframe_backend: "krea2_t2i"` 告警；正片不要用。
 - `check` 分流：分镜写了 `ref_person_prompt` + `ref_bg_prompt` 但还没有
   `reference_images` → 提示先跑 `refs`，不报「缺身份锚」。
+
+## 分段接续链路：SelfLift 单图参考直出（2026-11-11 定版，长视频默认）
+
+### 它解决什么
+
+多段各自独立生成时，黑场之后再出现的是**重新抽过**的天台：栏杆样式、楼群布局、
+机位景别、光线档位全变，人物姿态也重新起手。观众看到的是"换了个地方"，不是"过了一段时间"。
+
+三件套把接缝两侧的全图帧差 MAE 从 **51–80 压到 2.1–2.7**（0 = 同一帧），
+也就是段与段之间几乎是同一帧；天台结构全片统一。
+
+**过场方式（2026-11-11 06:42 用户改主意）**：第一版按需求插了 0.8 秒纯黑硬切，
+用户反馈「黑屏不好」，**改回项目原来的接续方式 = 0.25 秒短叠化（交叉溶解 / dissolve）**，
+也就是 `merge --join dissolve`（cfg 里 `join_mode=dissolve` 已是默认）。
+黑场只作为可选历史规格保留（`--join black`），另有无过场硬切 `--join cut`。
+首尾帧已接续到 MAE 2.x，叠化只把这 2.x 的极小差异抹平，观感是连续的一镜到底。
+
+### 为什么尾帧接首帧更自然（2026-11-11 07:06 用户判定，选链路判据）
+
+用户看完 0.25s 短叠化成片后判定：**首尾帧相连的接续方式，观感明显比旧的
+「先生成首尾帧 → 再分别生成视频」自然**。这条与「更快」并列，是长视频默认走本节的理由，
+不是可选项；选链路时别只比速度。
+
+| | 旧：双图关键帧 → Director | 新：尾帧接首帧（本节） |
+|---|---|---|
+| 段起点 | Qwen2.1 从静态空镜板**重绘**的关键帧 | **上一段视频真实渲染的最后一帧** |
+| 段间「相连」 | `chain` 同一张图 byte-for-byte 复制 + 硬切 | `first_frame` 近似复现（MAE 2.x）+ 0.25s 叠化 |
+| 段内实质 | 两张静态端点之间补运动，背景是静帧推拉、无真实视差 | 视频模型从上一段末帧**继续演**，姿态/机位/光线/景深连续 |
+| 人眼观感 | 「照片→动画→照片」，端点完全静止再突然启动，有起手感 | 连续运动接连续运动，接近一镜到底 |
+
+**关键：两种「相连」不是一回事。** 旧链路保证的是**两张图相等**，新链路保证的是
+**同一条运动曲线的延续**。前者像素相等但不保证运动连续，后者像素只近似却把运动演下来了，
+所以观感反而更好。**别把 MAE=0 当质量目标**——Director 的 byte-identical chain 本质就是
+「静止端点硬切」，不如 MAE 2.x + 叠化顺。
+
+实测：接缝两侧帧差 51–80 → 2.2–2.7；锈门、灰白栏杆、楼群全片统一；
+5 段共用一张人物图 + 一张全片唯一无人空镜板。
+
+**代价（必须一起说）**：`first_frame` 只锁第 0 帧，段内光线仍会自演亮度循环
+（逐秒 `L` 是 5 个锯齿，见「验收命令」）；空镜板是语义级、机位变化透视不严格对齐；
+段间**必须串行**（下段依赖上段尾帧），改前段提示词就得 `all --force` 整条重跑。
+
+**仍回旧链路的场合**：要逐像素锁死背景、有原片真值要复刻、竖屏 9:16 短片、
+必须精确摆出某个关键姿态。普通长视频别绕回去。
+
+### 唯一实现与文件归属
+
+| 内容 | 路径 |
+|---|---|
+| 驱动（唯一实现） | `.workbuddy/skills/h3-long-video/scripts/run_selflift.py` |
+| 工作流副本（已设 0.5MP / nvfp4 CLIP） | `assets/H3-SelfLift_单图参考.base.json` |
+| 分镜模板 | `assets/segments.selflift.example.json` |
+| 兼容薄壳（别在这改逻辑） | `tools/h3_selflift/run_selflift.py` |
+
+改完活跃版必须跑 `python scripts/sync_repo.py --apply`，再 `--check` 应为 `ALL SYNCED`。
+`--cfg <分镜json>` 开新片：分镜在哪，`segments/ refs/ final/ qa/` 就写到哪。
+
+### 工作流与参数档位
+
+`H3-SelfLift_单图参考.json` = MiniMax H3 **ref2va 直出**（视频模型自己演动作和运镜），
++ SelfLift 两段式升采样 + 音视频同出。**不过首尾帧、不过 Director、`chain` 规则一律不适用**。
+
+- 主模型 `minimax_h3_hybrid_fl2va_ref2va_b25-49-int8`；CLIP 见文末环境变化
+- Turbo 4step LoRA（1.0）；euler / simple，6 步 + SigmaRefiner 1 步，cfg 1.0，
+  `transition_step=4`、`lowres_scale=0.5`
+- `length` = **24fps + 17n+5 网格**；`duration=8` → 192 帧 = 8.00 秒
+- **分辨率默认 0.5 MP**（16:9 → 960×544）；VHS `frame_rate` 必须 24（工作流里存的 16 是旧值）
+- `task_type=auto`：给 `first_frame` 后自动走 FL2VA / Hybrid，实跑通过
+- 8GB 实测 0.5MP 约 **3.5–3.8 分钟/段**（0.98MP 是 8 分钟）
+
+### 三件套：节点怎么接
+
+| 手段 | 节点 | 做法 |
+|---|---|---|
+| **尾帧接首帧** | `MiniMaxH3AudioConditioningT8.first_frame` ← LoadImage **151** | 每段跑完用 `-sseof -0.042` 抽最后一帧，下一段拿它当 `first_frame`；段 1 不接 |
+| **全片唯一空镜板** | `ref_images.ref_image_1` ← LoadImage **152** | Krea2 t2i 从零造一张**完全无人**的场景板，5 段共用；提示词写 `<Picture 2>` |
+| **段首尾静息** | 分镜 `tail` | 段首/段尾各约 0.5 秒人物静止、镜头稳定，接缝像一次自然呼吸而不是急刹 |
+
+人物图仍是 `ref_images.ref_image_0`（LoadImage 150，提示词 `<Picture 1>`）。
+`strict_prompt_tags=true` 时标签数要和参考图数对得上，两张就写 `<Picture 1>` + `<Picture 2>`。
+
+### 分镜 cfg 字段（`--cfg` 读的就是它）
+
+| 字段 | 说明 |
+|---|---|
+| `prefix` / `title` / `final_name` | 帧与成片命名；`final_name` 可自定义 |
+| `workflow` | 指向 `assets/H3-SelfLift_单图参考.base.json` |
+| `ref_image` / `comfy_ref_name` | 人物参考图本地路径 / 拷进 `COMFY_INPUT` 后的文件名 |
+| `bg_plate` / `bg_plate_path` / `bg_plate_seed` | 空镜板文件名 / 本地路径 / 独立 seed |
+| `chain_first_frame` | `true` = 自动把上段尾帧接到下段首帧 |
+| `clip_name` | 覆盖工作流里的 CLIP 文件名（模型换过就改这里） |
+| `fps` / `seconds` / `length` | 24 / 8.0 / 192 |
+| **`join_mode` / `join_dissolve_seconds`** | **默认 `dissolve` / 0.25**（项目原来的短叠化）；可选 `black`（0.8s 纯黑）、`cut`（无过场硬切） |
+| `join_black_seconds` | 0.8，仅 `join_mode=black` 时生效 |
+| `megapixels` | **不写就是 0.5**（`DEFAULT_MEGAPIXELS`） |
+| `head` / `tail` / `segments[].body` | 全片身份与画风锚 / 衔接锚 / 逐段动作与机位 |
+
+### 命令
+
+```bash
+PY="D:/Comfy-Desktop/ComfyUI-Installs/ComfyUI/ComfyUI/.venv/Scripts/python.exe"
+RUN="D:/Comfy-Desktop/.workbuddy/skills/h3-long-video/scripts/run_selflift.py"
+
+$PY $RUN plate --cfg <新片>/segments.json          # 造全片唯一无人空镜板
+$PY $RUN graph  --cfg <新片>/segments.json          # 校验 API 图（不提交）
+$PY $RUN seg 1  --cfg <新片>/segments.json          # 只跑第 1 段
+$PY $RUN all    --cfg <新片>/segments.json          # 顺序跑 5 段，自动抽尾帧接续
+$PY $RUN all    --cfg <新片>/segments.json --force   # 全片重跑（改了提示词必须重跑整条链）
+$PY $RUN merge  --cfg <新片>/segments.json          # 0.25s 短叠化接续 + 拼接 + 静音版（默认）
+$PY $RUN merge  --cfg <新片>/segments.json --join cut    # 无过场硬切
+$PY $RUN merge  --cfg <新片>/segments.json --join black  # 切回 0.8s 纯黑硬切（历史规格）
+$PY $RUN probe  --cfg <新片>/segments.json          # 逐段 ffprobe
+```
+
+**改了任何一段的提示词，必须从段 1 起整条重跑**：尾帧是链式的，
+只重跑后段会让 `first_frame` 与新的前段尾帧对不上。
+
+### 五条铁律
+
+1. **`first_frame` 只锁第 0 帧，管不住整段。** 文本里只要留着
+   「橙红夕阳 → 暗紫 → 深蓝」这种完整弧线或强色名锚，模型就会在段内把日落重演一遍，
+   黑场后第 1 秒又跳回明亮橙红（2026-11-11 第一轮实测）。
+   正解：**光线分摊到 5 段累积完成，每段只写「承接首帧、推进一小档、
+   不得倒退回更亮的时刻」**，段内变化小到几乎察觉不到。
+2. **空镜板必须完全无人、从零生成**，不能抠图、不能透明底、不能喂回生成结果；
+   瑕疵会被逐段复刻放大。`plate` 命令已按这条写死提示词。
+3. **UI 工作流转 API 有两个坑**：`VHS_VideoCombine.widgets_values` 是 **dict**，
+   `build_prompt` 只认 list，要按 object_info 的 required 顺序摊平；
+   `MiniMaxH3AudioConditioningT8` 把 width/height/length 转成连线输入后
+   **widgets_values 里仍留占位值**，`build_prompt` 会整体错位
+   （`task_type` 变空串、`audio_mode` 变 1344）→ 必须手写该节点 inputs。
+   `to_api()` 已处理，别改回通用转换。
+4. **短叠化用 ffmpeg `xfade=transition=fade:duration=0.25`，音频用 `acrossfade`**，
+   两者必须**分开跑**（同一 filtergraph 会互相拖死、成片被截成一段）。
+   offset 按 `k×(段长−0.25)` 算（8s 段 → 7.75 / 15.50 / 23.25 / 31.00）。
+5. **默认不插黑场**：叠化版 39.00s（5×8 − 4×0.25），硬切版 40.00s；
+   `blackdetect` 应查不到任何黑段。只有 `--join black` 才用 19 帧 = 0.7917s 纯黑
+   （此时拼接必须 `-c:v copy`，二次有损编码会把纯黑变成 `(0,1,0)`）。
+
+### 实测（2026-11-11 黄昏天台 5×8s，原版 vs 接续版）
+
+| 指标 | 原版（5 段独立） | 接续版 |
+|---|---|---|
+| 接缝两侧 MAE | 51.0 / 52.7 / 57.0 / 79.8 | **2.6 / 2.7 / 2.7 / 2.2** |
+| 场景几何 | 栏杆样式、楼群逐段重抽 | 锈门 / 灰白栏杆 / 楼群全片统一 |
+| 光线 | 段间按档位跳 | 段间突变消失；**段内亮度仍锯齿，非严格单调**（见下） |
+| 分辨率 / 单段耗时 | 1344×768 / ≈8 min | 960×544 / 3.5–3.8 min |
+
+**最终交付是短叠化版**：`黄昏天台_成片_接续版_短叠化.mp4`（936 帧 / 39.00s，无黑场），
+另有无过场硬切版（960 帧 / 40.00s）与黑场历史版（1036 帧 / 43.17s）留作对照。
+换过场只改 `merge`，**不用重跑 5 段**。
+
+**光线的准确结论（2026-11-11 复核修正，别再说「单调递进」）**：
+改成 5 段累积光线锚后，「过场后第 1 秒突然跳回明亮橙红」这个**段间突变**确实没了，
+但把最终合并成片逐秒抽帧算平均亮度 `L = (R+G+B)/3` 后是明显锯齿：
+
+| 段 | 秒 | L | R−B（暖色度） |
+|---|---|---|---|
+| s1 | 0→7 | 72→33 | +13 → −16 |
+| s2 | 8→15 | 31→**80** | −16 → **+15** |
+| s3 | 16→23 | 80→35 | +15 → −17 |
+| s4 | 24→31 | 40→67 | −14 → −22 |
+| s5 | 32→38 | 66→30 | −24 → −8 |
+
+橙红夕阳在 s2 / s3 又被重演了一次。**H3 会在每段内部自行走完一次亮度循环，
+文本「不得倒退回更亮的时刻」压不住**。要真的单调只有两条路：
+① 每段光线都写同一档、不在段内做时间推进，后期全片套一条统一色彩渐变（grading）；
+② 换带时间条件控制的首尾帧链路。
+**验收必须量数值曲线，不能只靠逐秒拼图目测**——目测曾把这条锯齿误判成单调。
+证据：`output/rooftop-dusk-v2/qa/成片_逐秒全片.png`、`qa/成片_四接缝验收.png`。
+片例与证据：`output/rooftop-dusk-v2/生成说明.md`、`qa/seam_final.png`、
+`qa/_seam_dissolve.png`、`qa/_timeline_dissolve.png`、`qa/_timeline_before_light_fix.png`。手册见 **§13**。
+
+### 验收命令
+
+```bash
+# 默认叠化/硬切版：blackdetect 应查不到任何黑段（无输出）
+ffmpeg -v info -i final.mp4 -vf "blackdetect=d=0.2:pix_th=0.05" -an -f null - 2>&1 | grep black_start
+# 逐秒全片拼图（看光线有没有回跳、场景有没有换、有没有黑格）
+ffmpeg -y -i final.mp4 -vf "fps=1,scale=268:-1,tile=7x6:padding=2:color=gray" -frames:v 1 qa/_timeline.png
+# 接缝密集抽帧（看 0.25s 叠化是否平滑）
+ffmpeg -y -ss 7.65 -t 0.5 -i final.mp4 -vf "fps=12,scale=440:-1,tile=3x2" -frames:v 1 qa/_seam_dissolve.png
+# 接缝 MAE：抽每段首尾帧，算相邻段尾→首的全图 RGB 平均绝对差
+# 逐秒亮度 / 暖色度曲线：唯一可靠的光线验收，别只目测拼图
+ffmpeg -y -v error -i final.mp4 -vf "fps=1,scale=268:-1" -frames:v 39 qa/_sec/%02d.png
+# 再对每张算 L=(R+G+B)/3 与 R-B，打印曲线；出现 5 个峰谷 = 段内重演光线
+```
+接缝 MAE 应 < 5；> 20 说明 `first_frame` 没接上或段被单独重跑过。
+**接缝 MAE 只证明构图接上，不证明光线接上**；逐秒 `L` 曲线呈 5 个峰谷即段内重演光线，不算单调。
+叠化版总时长应 = 5×段长 − 4×0.25 = 39.00s（比硬切版少 1 秒，这也证明 xfade 真的生效）。
+
+### 已知边界
+
+- `first_frame` 是近似复现、不是 byte-identical（MAE 2.x 而非 0）。
+- 空镜板是**语义级**参考：机位变化时透视不会严格对齐，仍不是同一套 3D 空间。
+  要逐像素锁死背景，得走「人物图 + 唯一空镜板」双图关键帧链路（旧默认）。
+- 段间过场（叠化 / 硬切 / 黑场）只能掩盖**段与段之间**的机位跳变，
+  掩盖不了段内光线回跳；而且实测提示词也压不住，只能靠「段内不做时间推进 + 后期全片 grading」。
+- 接缝 MAE 与逐秒亮度曲线是**两个独立指标**：前者验构图，后者验光线。
+- 短叠化会让成片比"5×段长"少 `(段数−1)×0.25` 秒；要严格凑 43.2 秒得另配段长。
+
+### 环境变化（2026-11-10 23:24 起）
+
+`qwen3vl_32b_minimax_h3_int8_convrot.safetensors` 已从 `models/text_encoders/` 消失，
+现存同系列 `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`。
+**ComfyUI 重启刷新模型列表后才会报 `value_not_in_list`**（跑着跑着段 3 突然失败就是这个）。
+驱动副本与 cfg 的 `clip_name` 已换成 nvfp4；用户的原工作流
+`user/default/workflows/H3-SelfLift_单图参考.json` 没动，把 int8 放回去即可恢复。
+
+## 一致性来源：素材 / 资产 / 契约（2026-11-09 新增）
+
+**核心判断：有没有外部真值，决定一致性从哪来。** 把复刻的做法套到普通生成上会翻车，
+反过来也一样。
+
+```
+开工：手里有什么？
+│
+├─ 有原片视频（复刻）
+│    ├─ 允许 H3 补中间帧 → 抽每刀 first/last → source_frames：两帧各从对应原帧独立重绘
+│    │    一致 = 素材本来就同源（同模型 / 同提示词 / 同 seed / 同预处理）
+│    │    绝不用首帧 A 当输入去推尾帧
+│    └─ 一帧都不许变 → frame_exact：每一帧各自重绘，不经过视频模型
+│         一致 = 输出帧与源帧一一对应；构图/动作/画幅/fps/时长全部继承
+│
+└─ 没有原片（普通生成）
+     造标准资产：人物参考图 + 一张无人空镜板（全片唯一）
+       ├─ 首帧：图1=人物、图2=空镜
+       ├─ 尾帧：图2=本段首帧（沿用 11-05 定稿链路）
+       ├─ 段间：chain 尾帧=下段首帧（byte-for-byte）
+       └─ 一致 = 资产复用 + 固定契约 + 量化质检
+```
+
+### 五层一致性要分开治
+
+| 层 | 锁什么 | 手段 |
+|---|---|---|
+| 身份 | 脸、体型、发型、服装 | 人物参考图 / FaceID / 角色 LoRA；**身份只生成一次，之后复用** |
+| 场景 | 布局、道具位置、光位、左右关系 | **背景资产化**，不逐镜重生成；`space_lock` 固定方位词 + 180° 轴线 |
+| 画风 | 渲染质感、调色、颗粒 | 固定提示词锚块、全局 LUT / 颗粒、同模型同档位 |
+| 动作 | 段间方向、速度、视线 | `chain`、首尾帧插值、短叠化 |
+| 时间 | 段内不闪烁、不融脸 | 视频模型时序层 + `frame_bad()` 画质闸门 |
+
+**背景一致 ≠ 人物一致**：两条独立链路、两套手段，别指望一句提示词同时解决。
+
+### 背景资产化（硬规则）
+
+- 一张**无人、干净、一次定稿**的空镜板 = 全片唯一背景源。各镜从它派生
+  （crop / pan / zoom / 视差 / 轻微布光），**绝不逐镜重新生成背景**。
+- 提示词是语义级的（"一个石砌房间"），语义相同 ≠ 门窗位置、光位、地平线相同；
+  每镜重生成一次背景 = 每镜重抽一次空间布局。
+- **不把生成结果回喂当空镜**（瑕疵逐代放大）；空镜必须独立生成。
+- 换机位先备同空间的 2–4 个机位板，或用深度 / 法线 / 线稿条件锁几何；
+  分镜写 `space_lock`（门在左、窗在右、主光左上）与 `camera_move`，
+  防止左右关系翻转。
+- 最稳的实操：**一镜到底再剪**——先出一段背景连续的长视频，再按节奏切多刀。
+
+### 量化闸门（提示级，不阻断出片）
+
+`scripts/consistency.py` 在首/尾帧背景区（外圈 18%）量四项：
+
+| 指标 | 阈值 | 抓什么 |
+|---|---|---|
+| `bg_ssim` | < 0.72 | 背景结构被重画 |
+| `bg_changed` | > 35% | 背景大面积改动 |
+| `bg_hist_corr` | < 0.75 | 光位 / 调色漂了 |
+| `bg_layout_corr` | < 0.70 | **颜色没变但门窗家具挪位**（空间重抽卡） |
+
+`frames` / `source_frames` 出完尾帧自动跑一次，结果写进 `state` 的 `bg_qa`；
+两条链路**共用 `consistency.report()` 这一个出口**（阈值、标签、打印格式只有一份实现，
+不要各自拼字符串），光效题材（`lighting_fx`）或机位推拉（`camera_move`）只标 `[存档]`，
+其余标 `[提示]`。
+和既有 `frame_bad()` 一样：**提示级问题不挡出片**，由人工确认点和换种子闸门兜底。
+`check` 会检查一致性契约（缺 `space_lock`、给了 `bg_ref` 的资产纪律、
+检测到 `source_frames` 时提醒别跑 `frames`）。
+
+### 复刻链路怎么用
+
+```bash
+# 分镜里写 source_frames（见「参数配置」），然后：
+pipeline.py source_frames --storyboard sb.json                 # 全部段（自动断点）
+pipeline.py source_frames --storyboard sb.json --segs 4,8      # 只跑指定段
+pipeline.py source_frames --storyboard sb.json --segs 4 --force# 强制重绘
+# 结果写进 state 的 first/last，后续照常：
+pipeline.py push --storyboard sb.json && pipeline.py resume
+```
+
+`source_frames` 自带：4 次失败重试 + `wait_service()`、同段首/尾同 seed、
+配置指纹断点（prompt / 工作流 / seed 一变自动重绘，不会「改了提示词还在跳过」）、
+把历史驱动留在 `out_dir` 的成对帧自动 adopt 进 state（旧产物不作废）、
+每段跑完统一背景 QA。**不要在 capsule 项目里另写一套重绘驱动**，用
+`drive_restyle.py` 这类薄壳把分镜翻译成 pipeline 格式再转发即可。
+
+### 逐帧精确复刻（`frame_exact`，2026-11-09 新增）
+
+**什么时候用**：用户要「这一刀的动作/机位/光效一帧都不许变，只把人物或画风换掉」。
+它和 `source_frames` 的区别是中间帧：`source_frames` 只重绘首/尾两帧，中间交给 H3
+插值；`frame_exact` 把**每一帧**都从对应源帧重绘，不调用任何视频模型。
+
+```bash
+# 分镜里写 frame_exact 配置（见「参数配置」），然后：
+pipeline.py check --storyboard sb.json          # 专用校验，不套普通生成规则
+pipeline.py frame_exact --storyboard sb.json   # 直接产出成片
+# 或独立调用：
+python scripts/frame_exact.py --params params.json
+```
+
+分镜字段：
+
+```json
+"frame_exact": {
+  "source_video": "C:/.../原片.mp4",
+  "start": 1.433, "end": 5.433,
+  "output_path": "D:/.../output/release/video.mp4",
+  "seed": 20261109,
+  "identity": "一位 26 岁日本男性，深红长发，黑金长大衣",
+  "characters": [],
+  "mode": "full",
+  "temporal_smooth": 0.12,
+  "max_frames": 130,
+  "keep_audio": true
+}
+```
+
+`mode=bg_lock` 时人物框外锁源像素；`characters` 是连续段跨角色时按
+`{start, end, identity}` 切，段内文字恒定；`max_frames` 默认 80。
+
+**⚠ 身份锚必须显式写死性别**（2026-11-09 用户反馈）：逐帧是独立扩散请求，
+没有跨帧记忆；把「性别按参考图猜」写进提示词，模型会每帧重猜一次，红发男性
+一会儿偏男一会儿偏女。`identity` 会被包成 `IDENTITY_RULE` 放在提示词最前面，
+同角色段内每帧文字完全相同；跨角色用 `characters` 按帧时间切。
+每帧用的锚记在 `qa/frame_exact_qa.json` 的 `identity_by_frame`，没写会告警。
+
+**必须绕开的硬规则**（照搬普通链路会毁掉「精确」）：
+9:16 归一化 / 扩图、5s 段长下限、17n+5 帧阶梯、`open_action`/`motion` 必填、
+`reference_images` 必填、`frames → push → video` 三阶段。画幅、fps、帧数、
+时长、音轨一律继承源片；分刀生成时才用 `merge` 拼时间轴。
+
+产物：`release/video.mp4`、`qa/frame_exact_qa.json`（逐帧结构对齐 + 抖动）、
+`qa/run_notes.json`、`artifact_manifest.json`。QA 主指标是 `align_lowfreq_mean`
+（低频明暗布局相关）；`align_edge` 在 CG→真人这类域转移下实测只有 0.03–0.05，
+**只作参考不作验收线**；`flicker_ratio ≈ 1` 表示抖动与源片相当。
+
+**单一实现**：全部逻辑在 `scripts/frame_exact.py::run(cfg)`。
+capsule-cinema 的 `LocalFrameExactRestyleTool` 只是参数校验薄壳，调的是同一个函数；
+不要在两个 skill 里各写一份逐帧逻辑。`frame_exact.py` 复用 `source_frames._run_one`
+与 `DEFAULT_PROMPT`，保证画风/工作流/节点映射与复刻链路一致。
+
+限制：源字幕/UI 会被重绘抹掉（后期烧回或用 `bg_lock`）；对齐是结构级不是像素级；
+同 seed 不锁跨帧身份；实测 **18s/帧**，全片 23s/697 帧约 **3.5 小时**。
+
+**观感上限（2026-11-09 用户反馈「效果不怎么样」，如实记录）**：逐帧独立扩散
+没有时序模型，脸、材质、光效在帧间各自微变；4 步 Lightning 蒸馏配置画质上限低，
+叠「重磨皮」又抹细节；`temporal_smooth` 压抖动会引入运动模糊。49 帧实测
+`align_lowfreq=0.716 / min=0.447`、`align_gray=0.523`、`align_edge=0.031`、
+`flicker=0.864` —— **QA 达标只说明构图没跑偏，不代表好看**，别当最终成片交付。
+主体成片走 `source_frames` 两帧重绘 + H3 首尾帧插值更稳；逐帧更适合短刀的
+结构级对齐验证与画风试验。详见 capsule-cinema `references/frame-exact-restyle.md`。
+
+**别默认换成「锚帧窗口链」**（2026-11-09 一次对照实测）：每 22 帧重绘首尾锚、
+中间交给 H3 `first_last_frame`，在迪卢克段上 `align_lowfreq` 从 0.716 掉到
+**0.325**、接缝跳变 1.7×，动作塌缩成站姿横剑；锚帧重绘本身就会把蹲姿 / 举剑
+「摆正」，H3 再丢一层。省时（4m07s vs 14m27s）买不到可用画质。
+详见 capsule-cinema `references/frame-exact-restyle.md`「替代方案实测」。
+
+### 唯一源码与同步（2026-11-09 收口）
+
+活跃源码只有一份：`.workbuddy/skills/h3-long-video/`（capsule 适配器、所有 drive
+脚本、`pipeline.py` CLI 都指它）。`ComfyUI-Installs/h3-long-video-repo/skill/`
+是**同步副本**——节点仓库被 `custom_nodes` 软链引用，里面的
+`align_exposure.py` / `anchor_probe.py` / `gen*.py` 会 `import pipeline as P`，
+所以副本不能删，但**绝不直接在副本里改代码**。
+
+两边曾各有一个对方没有的修复（活跃版 `comfy_free` + 背景 QA，repo 版链式段首帧
+guard），这就是分叉的典型来源。改完活跃版必须跑：
+
+```bash
+python scripts/sync_repo.py --check   # 只读，列内容分叉（忽略 CRLF/LF）
+python scripts/sync_repo.py --apply   # 同步脚本 + SKILL.md 到 repo（repo 独有文件不动）
+# 再跑一次 --check，应为 ALL SYNCED
+```
+
+`--check` 返回非 0 = 有分叉，适合当提交前闸门。
+
+权衡不变：**背景锁得越死，机位与调度自由度越低**。叙事片用「多机位资产 +
+一镜到底再剪」的混合式，不要把所有镜头都钉在一张板上。
 
 ## 两张参考图（首尾帧的心智模型，**2026-11-05 18:16 已接入 pipeline**）
 
@@ -66,13 +462,18 @@ image_2 = 场景空镜      管场景大类 / 构图 / 光影基调，必须没�
 {
   "reference_images": ["qt_person.jpg"],
   "bg_ref": "street_bg.png",
+  "space_lock": "门在画面左侧、橱窗在右、主光来自左上，全片不镜像",
   "keyframe_lora": "viggle6",
-  "segments": [{"camera": "镜头：平视全身景…", "light": "午后侧逆光…"}]
+  "segments": [{"camera": "镜头：平视全身景…", "light": "午后侧逆光…",
+                "camera_move": "缓慢拉远", "lighting_fx": true}]
 }
 ```
 
 - `bg_ref` 存在 → 新链路：图2 **原样喂、不量化**、不固化首帧当锚、跳过亮度对齐；
   没写 → 兼容旧链路（`scene_ref` / 固化锚 / `quant_anchor`），`check` 会提醒。
+- `space_lock` 是背景一致性契约（固定方位词，防多机位左右翻转）；
+  `camera_move` / `lighting_fx` 让背景 QA 只存档不刷提示。
+  `bg_ref` 视为**全片唯一资产**：不要逐镜重生成、不要把生成结果回喂当空镜。
 - **首帧模板已删「同一机位同一景别」**，改由 `camera` / `shot` / `light` 定机位；
   **尾帧模板保留机位尺度锁**（图2 = 本段首帧），保证首尾不跳、装束一致。
 - 画质闸门换成 `frame_quality()` 三项：hf 只存档，**强边缘均值 >200 或人物区 >35% 才拦**。
@@ -243,11 +644,15 @@ QA 全绿（首尾 SSIM 0.983~0.986、static_ratio 0、零 flags）。
 ## 阶段与确认点
 
 ```
-S1 分镜脚本        → ① 用户确认分镜（时长/动作/机位/**每段提示词**）
-S2 首帧（每段）    → 质检：比例/头顶/身份/嘴
-S3 尾帧（每段）    → 质检：比例/头顶/身份一致/嘴  → ② 用户看缩略图确认
-S4 H3 视频（每段） → 质检 8 项，不合格按失败码重跑（≤3 次）
-S5 合并            → ③ 整片抽样质检 → 交付
+S0 定链路        → 逐帧对齐? frame_exact : 有原片? source_frames : frames
+S1 分镜 + 资产   → ① 用户确认分镜（时长/动作/机位/**每段提示词**）
+                    并定稿空镜板 / space_lock 方位词
+S2 首帧（每段）  → 质检：比例/头顶/身份/嘴
+S3 尾帧（每段）  → 质检：比例/头顶/身份一致/嘴
+                    + 背景一致性四项（SSIM/色调/改动量/布局，提示级）
+                    → ② 用户看缩略图确认
+S4 H3 视频（每段）→ 质检 8 项，不合格按失败码重跑（≤3 次）
+S5 合并          → ③ 整片抽样质检 → 交付
 ```
 
 **不要在 S4 全部跑完才验**。一段一段闭环：这段过了，才做下一段。
@@ -479,7 +884,7 @@ state 里存的还是旧文件。`_job_keyframes` 对此做了两件事：
 ⚠️ 两个前提：`<分镜名>.frames/` 或 `frames` 阶段得先有图（否则那几张还是 H3 生成，
 日志里会写 "缺图"）。
 
-## 存储位置：所有产物都在 ComfyUI-Shared 下（2026-11-01 起）
+## 存储位置：Director 链路在 ComfyUI-Shared 下（2026-11-01 起；分段接续链路有例外）
 
 安装目录只放代码和工作流，**任务、关键帧、分段、成片、测试图一律不进去**：
 
@@ -491,6 +896,12 @@ state 里存的还是旧文件。`_job_keyframes` 对此做了两件事：
 | 合并成片 | `ComfyUI-Shared/output/h3-long-video/<标题>.mp4`（`merge --out` 可改） | `pipeline.py` 的 `SHARED_ROOT` |
 | 参考图 / 首尾帧（LoadImage 读的） | `ComfyUI-Shared/input/` | ComfyUI 启动参数 `--input-directory` |
 | 实验截图、对比图 | `ComfyUI-Shared/output/h3-long-video/tests/` | 约定 |
+
+**例外（2026-11-11 分段接续链路）**：`run_selflift.py` 用 `--cfg`，
+产物写到**分镜 json 同目录**（`output/<片名>/segments|refs|final|qa/`），
+让一个片子自包含、方便多版本并排对比；只有 ComfyUI 节点直接吐出的 mp4
+与喂进去的参考图仍落在 `ComfyUI-Shared/output` / `input`。
+这不是把产物放回安装目录，别按上表去找新链路的成片。
 
 `jobs_dir` 是 config.json 的新键，Director 启动时读一次；改完要重启 ComfyUI。
 老版本默认 `custom_nodes/ComfyUI-H3-LongVideo/jobs/`（其实是指向 repo 的 junction），
@@ -851,6 +1262,19 @@ $PY $SK2 --anchor ds_s01_first.png ds_s02_first.png ds_s02_last.png
 ```
 
 其中 `SK2=.../scripts/align_exposure.py`。
+
+**长视频默认走另一套驱动**（见「分段接续链路」，不走上面这些 Director 命令）：
+
+```bash
+RUN="D:/Comfy-Desktop/.workbuddy/skills/h3-long-video/scripts/run_selflift.py"
+$PY $RUN plate --cfg <片>/segments.json     # 造无人空镜板
+$PY $RUN graph  --cfg <片>/segments.json     # 校验 API 图
+$PY $RUN all    --cfg <片>/segments.json     # 逐段直出 + 尾帧接首帧
+$PY $RUN merge  --cfg <片>/segments.json     # 0.25s 短叠化接续 + 拼接 + 静音版（默认）
+$PY $RUN merge  --cfg <片>/segments.json --join black    # 可选：切回 0.8s 纯黑硬切
+```
+
+分镜模板 `assets/segments.selflift.example.json`；`--force` 全片重跑。
 
 状态存在 `storyboard.json` 同目录的 `<name>.state.json`，中断可续。
 
@@ -1536,6 +1960,7 @@ coffee 两处接缝抽帧验收（前后各 3 帧横排）无重影、无跳变�
 | 首帧（2511，备用） | `example_workflows/Qwen2511-FirstFrame916.json` | 空 latent 720×1280，原生 9:16，不裁不补 |
 | 尾帧（2511，备用） | `example_workflows/Qwen2511-Reference-Edit.json` | 以首帧为 image1 串行派生 |
 | 视频 | `example_workflows/H3-Single-Clip-FirstLastRefs.json` | seconds/final 尺寸/megapixels 由分镜注入；**默认二采开、一采 4 步 + 二采 2 步**（2026-11-05 用户定；段级 `steps`/`two_pass_steps`/`two_pass` 可覆盖）；可改跑云端，见下一节 |
+| **长视频（默认，2026-11-11 起）** | `user/default/workflows/H3-SelfLift_单图参考.json`；驱动副本 `skill/assets/H3-SelfLift_单图参考.base.json` | **ref2va 直出，不过首尾帧 / Director**；0.5MP / 24fps / 192 帧 = 8s；`first_frame` + `ref_images.ref_image_1` 做分段接续。见「分段接续链路」与手册 §13 |
 
 > **别摘加速 LoRA 来救脸（2026-11-05 实测）**：identity 漂移疑似加速 LoRA 的锅时，做过对照——repo `config.json` 的 `lora_strength: 0`（Director 热读，不用重启）+ 段级 `steps:20, two_pass:false`，段 2 三种子 identity 0.258/0.215/0.120，**比加速档 4+2（最好 0.305）更差还更慢**（~3.7min vs ~2.3min）。根因是本地 H3 插值重绘脸，与 LoRA 无关；identity 闸门本地过不了，出路只有云端。完整数据在手册 §7.9。
 | 质检 | `h3-video-qa` skill 的 `qa.py` | 10 项指标，失败码驱动重试 |
@@ -1821,6 +2246,7 @@ H3 的 `first_frame` **不做等比适配**，非 9:16 的帧会被直接拉伸�
    不能是抠图/透明底，也不能把生成结果喂回去（会代际累积锐化）。
 5. **回写后 `check → frames`**：这时和「用户直接给了图」完全等价；
    首帧图2=空镜（原样、不量化），尾帧图2=本段首帧。
+   （以上为**无原片链路**；复刻走 `source_frames`，见「一致性来源」。）
 6. **段 2+ 首尾帧相连**：写 `chain:true`（文生视频不写也默认连续），
    段 N 首帧 byte-for-byte 复制段 N-1 尾帧；只有真换机位/换场景才
    `chain:false + transition:cut`。
