@@ -48,7 +48,7 @@
       "body": "[机位] 摄影机在她的斜后方，人物侧脸与肩膀形成柔和剪影，镜头极其缓慢地向后移动，逐渐展现整个天台与远处的城市夜景。\n\n[时间] 承接首帧的蓝调，本段进入深蓝夜景，城市楼群的窗灯密集亮起，远处道路出现细微流动的车灯；光线变化仍然克制。\n\n[环境] 天台地面的积水反射着城市灯光，风轻轻吹动她的发丝，她保持安静的凝望姿态，几乎不动。\n\n蓝调电影色彩，柔和光晕，35mm 胶片质感，构图优雅、孤独、诗意。"
     }
   ],
-  "_template_note": "复制本文件到新片目录后，改 title / final_name / prefix / ref_image / bg_plate_path / comfy_ref_name / bg_plate / 5 段提示词与 seed，再用 --cfg 指向它。",
+  "_template_note": "复制本文件到新片目录后，改 title / final_name / prefix / ref_image / bg_plate_path / comfy_ref_name / bg_plate / 5 段提示词与 seed，再用 --cfg 指向它。 面板逐段干预见 SKILL.md「逐段人在回路」；段级可加 `first_frame_override` 指定任意图片作该段首帧（优先于上段尾帧），改任一段后按序重跑后续段。",
   "join_mode": "dissolve",
   "join_dissolve_seconds": 0.25
 }
