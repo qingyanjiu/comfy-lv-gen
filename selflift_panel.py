@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -161,6 +162,8 @@ def register_routes(routes, web):
                 args += ["--body", str(p["body"])]
             if p.get("first_frame") is not None:
                 args += ["--first-frame", str(p["first_frame"])]
+            if p.get("last_frame") is not None:
+                args += ["--last-frame", str(p["last_frame"])]
             return web.json_response({"ok": True, "log": _run(cfg, args)})
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
@@ -249,6 +252,58 @@ def register_routes(routes, web):
                 out.write(field.file.read())
             _run(cfg, ["set", "--seg", str(seg), "--first-frame", dst_name])
             return web.json_response({"ok": True, "filename": dst_name, "seg": seg})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.post("/h3-long-video/selflift/frame")
+    async def selflift_frame(request):
+        """改尾帧的两种语义（用户 07:51 指出首帧能改、尾帧不能改后补）：
+
+        - ``next_first``（默认）：替换第 N 段尾帧帧图，并锁为第 N+1 段首帧。
+          **不重出第 N 段**，只改变喂给下游的那一帧；覆盖尾帧 png 会让后续段自动 stale。
+        - ``last_lock``：把图片接到第 N 段 238 节点的 ``last_frame`` 输入，
+          **必须重出第 N 段**才生效。实验性：task_type=auto 会切 FL2VA/Hybrid。
+        """
+        try:
+            form = await request.post()
+            cfg = _safe(form.get("cfg"))
+            seg = int(form.get("seg") or 1)
+            mode = str(form.get("mode") or "next_first")
+            if mode not in ("next_first", "last_lock"):
+                raise ValueError(f"未知模式：{mode}")
+            field = form.get("file")
+            if field is None or not hasattr(field, "file"):
+                raise ValueError("缺少 file 字段")
+            name = re.sub(r"[^\w.\-]", "_", Path(str(field.filename or "frame.png")).name)
+            dst_name = f"selflift_s{seg:02d}_{mode}_{int(time.time())}_{name}"
+            INPUT_ROOT.mkdir(parents=True, exist_ok=True)
+            dst = INPUT_ROOT / dst_name
+            with open(dst, "wb") as out:
+                out.write(field.file.read())
+
+            state = _status(cfg)
+            total = len(state.get("segments") or [])
+            if not 1 <= seg <= total:
+                raise ValueError(f"段号 {seg} 超出范围（共 {total} 段）")
+
+            if mode == "next_first":
+                refs = Path(state["cfg"]).parent / "refs"
+                refs.mkdir(parents=True, exist_ok=True)
+                target = refs / f"{state.get('prefix') or ''}_s{seg:02d}_last.png"
+                shutil.copyfile(dst, target)  # mtime 更新 → status 自动把后续段标 stale
+                if seg < total:
+                    _run(cfg, ["set", "--seg", str(seg + 1), "--first-frame", dst_name])
+                    note = (f"已替换第 {seg} 段尾帧；第 {seg + 1} 段首帧锁定为它，"
+                            f"第 {seg + 1}…{total} 段请按序重跑")
+                else:
+                    note = f"已替换第 {seg} 段尾帧（末段没有下一段）"
+            else:
+                _run(cfg, ["set", "--seg", str(seg), "--last-frame", dst_name])
+                note = (f"第 {seg} 段尾帧已锁定（{dst_name}）；"
+                        "点「生成本段 / 重出」后才会生效，task_type 会切 FL2VA/Hybrid")
+            return web.json_response({"ok": True, "filename": dst_name,
+                                      "mode": mode, "seg": seg, "note": note})
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)

@@ -20,6 +20,8 @@
 
 逐段人在回路（2026-11-11）：Director 面板用 `status` / `set` / `seg N` 驱动。
 段级 `first_frame_override` 可指定任意图片作本段首帧（优先于上段尾帧）；
+`last_frame_override` 可把任意图片接到 238 节点的 `last_frame`（**可选、默认关闭**，
+接上后 task_type=auto 会走 FL2VA/Hybrid，端点近似复现、运镜自由度下降，需重出本段才生效）。
 重出某段或改了该段提示词，本段及之后各段会被标为 stale，必须按序重跑（链路串行）。
 """
 import argparse
@@ -64,6 +66,7 @@ N_VIDEO_VAE = 227
 N_AUDIO_VAE = 184
 N_FIRST = 151   # LoadImage：上一段尾帧 → first_frame
 N_PLATE = 152   # LoadImage：全片唯一无人空镜板 → ref_images.ref_image_1
+N_LAST = 153    # LoadImage：可选的本段尾帧锁 → last_frame（默认不接）
 DEFAULT_MEGAPIXELS = 0.5  # 用户定：长视频默认 0.5MP，别再沿用旧值 0.3/0.98
 
 REF_PROMPT = (
@@ -147,6 +150,8 @@ def build_wf(cfg, seg, out_path):
         add_load_image(wf, N_PLATE, cfg["bg_plate"])
     if seg.get("first_frame"):
         add_load_image(wf, N_FIRST, seg["first_frame"])
+    if seg.get("last_frame_override"):
+        add_load_image(wf, N_LAST, seg["last_frame_override"])
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(wf, f, ensure_ascii=False)
     return out_path
@@ -216,6 +221,7 @@ def seg_status(cfg):
             "seed": sg.get("seed"),
             "body": sg.get("body", ""),
             "first_frame_override": sg.get("first_frame_override"),
+            "last_frame_override": sg.get("last_frame_override"),
             "done": done,
             "stale": False,
             "video": vid if done else None,
@@ -270,6 +276,13 @@ def cmd_set(cfg, args):
         else:
             sg["first_frame_override"] = args.first_frame.strip()
             changed.append(f"first_frame={sg['first_frame_override']}")
+    if args.last_frame is not None:
+        if args.last_frame.strip().lower() in ("", "none", "auto", "clear"):
+            sg.pop("last_frame_override", None)
+            changed.append("last_frame=解除锁定")
+        else:
+            sg["last_frame_override"] = args.last_frame.strip()
+            changed.append(f"last_frame={sg['last_frame_override']}（需重出本段）")
     if changed:
         sg["updated_at"] = time.time()
         with open(CFG_PATH, "w", encoding="utf-8") as f:
@@ -293,6 +306,9 @@ def run_seg(cfg, idx):
             print(f"    [警告] 缺上一段尾帧 {prev_name}，本段不接 first_frame", flush=True)
     print(f"\n===== 段 {idx+1}/5  {seg['id']} {seg['title']}  seed={seg['seed']} =====", flush=True)
     api = check_graph(cfg, seg)
+    if seg.get("last_frame_override"):
+        print(f"    [实验] 尾帧锁定：{seg['last_frame_override']} "
+              f"（task_type=auto 会切 FL2VA/Hybrid，运镜自由度下降）", flush=True)
     print(f"    prompt 全文 {len(seg_prompt(cfg, seg))} 字", flush=True)
     P.comfy_free()
     t0 = time.time()
@@ -398,6 +414,8 @@ def to_api(wf):
             inp["ref_images.ref_image_1"] = [str(N_PLATE), 0]
         if str(N_FIRST) in p:
             inp["first_frame"] = [str(N_FIRST), 0]
+        if str(N_LAST) in p:
+            inp["last_frame"] = [str(N_LAST), 0]
         p["238"]["inputs"] = inp
     return p
 
@@ -668,6 +686,8 @@ def main():
     ap.add_argument("--body", default=None, help="set：替换该段提示词正文")
     ap.add_argument("--first-frame", dest="first_frame", default=None,
                     help="set：指定本段首帧图文件名；auto/clear 恢复自动承接")
+    ap.add_argument("--last-frame", dest="last_frame", default=None,
+                    help="set：锁定本段尾帧图（接 238.last_frame，需重出本段）；auto 解除")
     ap.add_argument("--cfg", default=DEFAULT_CFG, help="分镜 json 路径；产物写到同目录")
     ap.add_argument("--join", choices=["black", "dissolve", "cut"], default=None,
                     help="段间接续：black=0.8s 纯黑；dissolve=0.25s 短叠化（项目原来的方式）；cut=首尾帧直连硬切")

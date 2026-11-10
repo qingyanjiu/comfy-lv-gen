@@ -275,7 +275,7 @@ ffmpeg -y -v error -i final.mp4 -vf "fps=1,scale=268:-1" -frames:v 39 qa/_sec/%0
 
 | 文件 | 作用 |
 |---|---|
-| `h3-long-video-repo/selflift_panel.py` | 新增 7 个 HTTP 路由 + 异步任务状态机；只做编排，出片仍调 `run_selflift.py` |
+| `h3-long-video-repo/selflift_panel.py` | 新增 8 个 HTTP 路由 + 异步任务状态机；只做编排，出片仍调 `run_selflift.py` |
 | `h3-long-video-repo/director.py` | 只加 3 行胶水 `register_routes(...)`；旧 18 个路由与 `execute` 完全不动 |
 | `web/director.js` | 新增第 5 个 tab「SelfLift 逐段」，**默认打开**；旧 4 个 tab 原样保留 |
 | `scripts/run_selflift.py` | 新增 `status` / `set` 命令、抽真实首帧、`first_frame_override`、`stale` 判定 |
@@ -307,7 +307,26 @@ ffmpeg -y -v error -i final.mp4 -vf "fps=1,scale=268:-1" -frames:v 39 qa/_sec/%0
 | `POST merge` | 异步拼接 |
 | `POST init` | 从 `assets/segments.selflift.example.json` 复制出新片目录 |
 | `POST upload` | 图片存进 ComfyUI input，写 `first_frame_override` |
+| `POST frame` | 改尾帧：`next_first` 替换尾帧供下段接续 / `last_lock` 锁定本段尾帧 |
 | `GET media?path=` | 片目录 / input 下的图片与视频，白名单防路径穿越 |
+
+### 尾帧怎么改（2026-11-11 07:51 用户指出首帧能改、尾帧不能改，已补齐）
+
+`MiniMaxH3AudioConditioningT8` 的 optional 输入里**本来就有 `last_frame`**，
+之前只是驱动没接。面板现在每张卡的尾帧下方有「↓ 下载」+ 三个按钮，两种语义要分清：
+
+| 按钮 | 落到哪里 | 本段视频会变吗 | 代价 |
+|---|---|---|---|
+| **替换尾帧→下段首帧**（`next_first`） | 覆盖 `refs/<prefix>_sNN_last.png` + 写下一段 `first_frame_override` | **不变**，只换喂给下游的那一帧 | 覆盖尾帧会让后续段自动 `stale`，需按序重跑；末段禁用 |
+| **锁定本段尾帧**（`last_lock`） | 写本段 `last_frame_override`，驱动接 238 节点的 `last_frame` | **要重出本段才生效** | `task_type=auto` 会切 FL2VA/Hybrid，端点近似复现、运镜自由度下降 |
+| 解除尾帧锁 | `set --last-frame auto` | — | 清掉 `last_frame_override` |
+
+- `last_frame_override` **默认关闭、实验性**：连线与 API 图已验证（回归测试
+  `test_last_frame_reaches_api_graph`），但**生成行为还没实跑过**。开了以后段内运动受两端约束，
+  可能退回你不喜欢的「端点形变」观感；先拿一段试，别整片开。
+- 两种改法都不改本段已经渲染出的最后一帧；要本段画面真的不同，只能换 seed / 改提示词重出。
+- **手动编辑过的帧（换头、指令编辑）喂下游前必须做 CIE Lab 色彩对齐**，
+  否则色偏会被逐段复刻放大。
 
 ### 铁律（这次新增）
 

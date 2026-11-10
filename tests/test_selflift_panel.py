@@ -47,8 +47,8 @@ class TestSelfLiftPanel(unittest.TestCase):
         routes = FakeRoutes()
         SP.register_routes(routes, FakeWeb())
         urls = {path for _, path in routes.paths}
-        self.assertEqual(len(urls), 7, f"路由数不对：{routes.paths}")
-        for suffix in ("status", "set", "run", "merge", "init", "upload", "media"):
+        self.assertEqual(len(urls), 8, f"路由数不对：{routes.paths}")
+        for suffix in ("status", "set", "run", "merge", "init", "upload", "frame", "media"):
             self.assertIn(f"/h3-long-video/selflift/{suffix}", urls)
 
     def test_path_guard_rejects_traversal(self):
@@ -73,6 +73,8 @@ class TestSelfLiftPanel(unittest.TestCase):
         self.assertIn("this.h3DirectorUI?.selflift?.stop?.()", text)
         self.assertIn("/h3-long-video/selflift/run", text)
         self.assertIn("/h3-long-video/selflift/upload", text)
+        self.assertIn("/h3-long-video/selflift/frame", text)
+        self.assertIn("替换尾帧→下段首帧", text)
 
     def test_widget_count_unchanged(self):
         """这次改造没加 widget：工作流里 Director 节点必须仍是 22 项。"""
@@ -87,6 +89,32 @@ class TestSelfLiftPanel(unittest.TestCase):
         self.assertIn('"set"', text)
         self.assertIn("def seg_status(cfg)", text)
         self.assertIn("first_frame_override", text)
+        self.assertIn("last_frame_override", text)
+        self.assertIn("N_LAST = 153", text)
+
+    def test_last_frame_reaches_api_graph(self):
+        """段级 last_frame_override 必须真的接到 238 节点的 last_frame 输入。"""
+        import json as _json
+        import tempfile
+
+        sys.path.insert(0, str(Path(SP.DRIVER).parent))
+        import run_selflift as R
+        R.set_root(str(SP.TEMPLATE))
+        cfg = R.load_cfg()
+        cfg["segments"][0]["last_frame_override"] = "my_tail.png"
+        with tempfile.TemporaryDirectory() as tmp:
+            wf_path = Path(tmp) / "wf.json"
+            R.build_wf(cfg, cfg["segments"][0], str(wf_path))
+            prompt = R.to_api(_json.loads(wf_path.read_text(encoding="utf-8")))
+        self.assertEqual(prompt["238"]["inputs"]["last_frame"], ["153", 0])
+        self.assertIn("153", prompt)
+        # 默认不接：去掉 override 后不能残留 last_frame
+        del cfg["segments"][0]["last_frame_override"]
+        with tempfile.TemporaryDirectory() as tmp:
+            wf_path = Path(tmp) / "wf.json"
+            R.build_wf(cfg, cfg["segments"][0], str(wf_path))
+            prompt = R.to_api(_json.loads(wf_path.read_text(encoding="utf-8")))
+        self.assertNotIn("last_frame", prompt["238"]["inputs"])
 
 
 if __name__ == "__main__":
