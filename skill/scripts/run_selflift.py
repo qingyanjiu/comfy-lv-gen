@@ -324,7 +324,7 @@ def run_seg(cfg, idx):
             print(f"    [警告] 缺上一段尾帧 {prev_name}，本段不接 first_frame", flush=True)
     elif idx > 0 and lmode == "transition":
         print(f"    转场模式：本段独立生成（不承接上段尾帧）", flush=True)
-    print(f"\n===== 段 {idx+1}/5  {seg['id']} {seg['title']}  seed={seg['seed']} =====", flush=True)
+    print(f"\n===== 段 {idx+1}/{len(cfg['segments'])}  {seg['id']} {seg['title']}  seed={seg['seed']} =====", flush=True)
     api = check_graph(cfg, seg)
     if seg.get("last_frame_override"):
         print(f"    [实验] 尾帧锁定：{seg['last_frame_override']} "
