@@ -251,6 +251,45 @@ def register_routes(routes, web):
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
 
+    @routes.post("/h3-long-video/selflift/refimg")
+    async def selflift_refimg(request):
+        """上传人物参考图 / 场景空镜板，直接写回 cfg（省得手改 json）。"""
+        try:
+            form = await request.post()
+            cfg = _safe(form.get("cfg"))
+            kind = str(form.get("kind") or "ref").strip().lower()
+            if kind not in ("ref", "plate"):
+                raise ValueError(f"kind 只能是 ref 或 plate：{kind}")
+            field = form.get("file")
+            if field is None or not hasattr(field, "file"):
+                raise ValueError("缺少 file 字段")
+            with open(cfg, encoding="utf-8") as f:
+                data = json.load(f)
+            prefix = str(data.get("prefix") or "selflift")
+            refs = cfg.parent / "refs"
+            refs.mkdir(parents=True, exist_ok=True)
+            safe = re.sub(r"[^A-Za-z0-9._-]", "_", Path(str(field.filename or "image.png")).name)
+            if not safe.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                safe += ".png"
+            dst = refs / f"{prefix}_{kind}_{int(time.time())}_{safe}"
+            with open(dst, "wb") as out:
+                out.write(field.file.read())
+            if kind == "ref":
+                data["ref_image"] = str(dst)
+                data["comfy_ref_name"] = dst.name
+            else:
+                data["bg_plate_path"] = str(dst)
+                data["bg_plate"] = dst.name
+            with open(cfg, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return web.json_response({
+                "ok": True, "kind": kind, "path": str(dst),
+                "field": "ref_image" if kind == "ref" else "bg_plate_path",
+            })
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
     @routes.post("/h3-long-video/selflift/upload")
     async def selflift_upload(request):
         """上传任意图片作某段首帧：存进 ComfyUI input，再写 first_frame_override。"""

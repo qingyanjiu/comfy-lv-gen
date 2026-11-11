@@ -1347,10 +1347,39 @@ function buildSelfLiftPane(host) {
   const taskBox = makeElement("pre", "h3-sl-task");
   const finalsBox = makeElement("div", "h3-sl-finals");
   const list = makeElement("div", "h3-sl-list");
+
+  // 参考图 / 空镜板就地替换：写回 cfg，跑片时由 ensure_ref_in_input 自动拷进 ComfyUI input
+  const refRow = makeElement("div", "h3-sl-bar");
+  const refFile = document.createElement("input");
+  refFile.type = "file"; refFile.accept = "image/*"; refFile.className = "h3-sl-label";
+  const refUpBtn = makeElement("button", "h3-sl-btn", "上传人物参考");
+  const plateFile = document.createElement("input");
+  plateFile.type = "file"; plateFile.accept = "image/*"; plateFile.className = "h3-sl-label";
+  const plateUpBtn = makeElement("button", "h3-sl-btn", "上传空镜板");
+  refRow.append(makeElement("span", "h3-sl-label", "参考图："),
+    refFile, refUpBtn, plateFile, plateUpBtn);
+  const uploadRef = async (kind, input, label) => {
+    if (!input.files?.length) { say(`先选一张${label}`, "error"); return; }
+    try {
+      const form = new FormData();
+      form.append("cfg", cfgPath());
+      form.append("kind", kind);
+      form.append("file", input.files[0]);
+      await postFormData("/h3-long-video/selflift/refimg", form);
+      say(`${label}已更新（写回 cfg，跑片时自动拷进 ComfyUI input）`, "ok");
+      input.value = "";
+      refresh();
+    } catch (error) {
+      say(`上传${label}失败：${error.message}`, "error");
+    }
+  };
+  refUpBtn.addEventListener("click", () => uploadRef("ref", refFile, "人物参考图"));
+  plateUpBtn.addEventListener("click", () => uploadRef("plate", plateFile, "空镜板"));
+
   const hint = makeElement("div", "h3-sl-hint",
     "出片点这里：左边「一键跑全片」（按序补跑缺段并自动拼接），或每段卡片里的「运行」。"
     + "画布上方的 Run 走旧 Director 链路，和这个面板无关。");
-  host.append(bar, hint, status, taskBox, finalsBox, list);
+  host.append(bar, refRow, hint, status, taskBox, finalsBox, list);
 
   let timer = null;
   let signature = "";

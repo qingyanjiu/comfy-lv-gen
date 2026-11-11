@@ -373,16 +373,20 @@ ffmpeg -y -v error -i final.mp4 -vf "fps=1,scale=268:-1" -frames:v 39 qa/_sec/%0
 
 1. 打开 `H3-SelfLift_逐段导演.json`（已默认停在 SelfLift 逐段 tab）→ 填分镜 json 绝对路径（或「新建片」从 skill 模板开目录）→ 点「打开 / 刷新」
 2. 每段一张卡：**真实首帧 / 尾帧**缩略图、seed、提示词 textarea、状态徽章
-3. **「一键跑全片」（顶部，推荐）**：自动找出「未完成 / 已失效」的段按序补跑，跑完**自动拼接**；
+3. **参考图 / 空镜板可就地替换**（面板第二行）：选图 →「上传人物参考」或「上传空镜板」。
+   图存进 `<片目录>/refs/`，自动写回 cfg 的 `ref_image`+`comfy_ref_name`（或 `bg_plate_path`+`bg_plate`），
+   跑片时由 `ensure_ref_in_input` 拷进 ComfyUI input——**不用手改 json、不用拖到 input 目录**。
+   文件名会清成 ASCII（中文变 `_`）并加 `prefix_kind_时间戳_` 前缀，避免重名/中文路径问题。
+4. **「一键跑全片」（顶部，推荐）**：自动找出「未完成 / 已失效」的段按序补跑，跑完**自动拼接**；
    跑片期间按钮变「取消全片」（只停队列，不中断当前段）。不知道该跑哪几段时就用它，
    它替代了「记住改过哪段、按序一段段点」这件事。
-4. 「生成本段」/「按此 seed 重出」/「换随机 seed 重出」→ 只跑这一段，不连跑 5 段
-5. 「设为本段首帧图」上传任意图片 → 写段级 `first_frame_override`，
+5. 「生成本段」/「按此 seed 重出」/「换随机 seed 重出」→ 只跑这一段，不连跑 5 段
+6. 「设为本段首帧图」上传任意图片 → 写段级 `first_frame_override`，
    **优先于上段尾帧**（`run_seg` 先判 override 才判 chain）
-6. 「恢复自动承接」清掉 override，回到尾帧接首帧
-7. 「保存提示词」直接写回 `segments[].body`（`head` / `tail` 全片共用锚不动）
-8. 全段就绪后「拼接成片」：过场下拉默认「按每段转场」（按每段 `link` 决定），也可强制全片统一 `dissolve` / `cut` / `black`
-9. 每段（非首段）多一行「承接 + 转场类型 + ＋在此段后插入」；见下节「接缝与插入」
+7. 「恢复自动承接」清掉 override，回到尾帧接首帧
+8. 「保存提示词」直接写回 `segments[].body`（`head` / `tail` 全片共用锚不动）
+9. 全段就绪后「拼接成片」：过场下拉默认「按每段转场」（按每段 `link` 决定），也可强制全片统一 `dissolve` / `cut` / `black`
+10. 每段（非首段）多一行「承接 + 转场类型 + ＋在此段后插入」；见下节「接缝与插入」
 
 ### 后端路由（`/h3-long-video/selflift/*`）
 
@@ -393,6 +397,7 @@ ffmpeg -y -v error -i final.mp4 -vf "fps=1,scale=268:-1" -frames:v 39 qa/_sec/%0
 | `POST run` | 异步跑单段（3~4 分钟，线程 + 轮询，不卡 HTTP）；带 seed 先写回再出片 |
 | `POST merge` | 异步拼接；`join=auto`（默认）按每段 link，或强制 `dissolve`/`cut`/`black` |
 | `POST init` | 从 `assets/segments.selflift.example.json` 复制出新片目录 |
+| `POST refimg` | 上传人物参考 / 空镜板（`kind=ref` 或 `kind=plate`），存 `refs/` 并写回 cfg |
 | `POST upload` | 图片存进 ComfyUI input，写 `first_frame_override` |
 | `POST frame` | 改尾帧：`next_first` 替换尾帧供下段接续 / `last_lock` 锁定本段尾帧 |
 | `POST insert` | 在 `after` 段(1起)后插入新段（默认链式承接），重编号 + 重命名产物文件 |
