@@ -1329,7 +1329,7 @@ function buildSelfLiftPane(host) {
   newTitle.style.width = "110px";
   const newBtn = makeElement("button", "h3-sl-btn", "新建片");
   const joinSel = makeElement("select", "h3-sl-input");
-  [["dissolve", "0.25s 叠化"], ["cut", "硬切"], ["black", "0.8s 黑场"]]
+  [["auto", "按每段转场"], ["dissolve", "全片叠化"], ["cut", "全片硬切"], ["black", "全片黑场"]]
     .forEach(([value, text]) => {
       const option = document.createElement("option");
       option.value = value;
@@ -1510,7 +1510,54 @@ function buildSelfLiftPane(host) {
       cfg: cfgPath(), seg: seg.index, last_frame: "auto",
     }));
 
-    card.append(head, imgs, row, prompt, saveBtn, fileRow, tailRow);
+    // 承接方式 + 转场类型 + 在此段后插入（首段没有上一段，不显示承接）
+    const linkRow = makeElement("div", "h3-sl-row");
+    let hasLink = false;
+    if (seg.index > 1) {
+      hasLink = true;
+      const link = seg.link || { mode: "chain", transition: "dissolve" };
+      const modeSel = makeElement("select", "h3-sl-input");
+      [["chain", "链式承接"], ["transition", "转场"]].forEach(([v, t]) => {
+        const o = document.createElement("option");
+        o.value = v; o.textContent = t;
+        if (link.mode === v) o.selected = true;
+        modeSel.appendChild(o);
+      });
+      const transSel = makeElement("select", "h3-sl-input");
+      [["dissolve", "叠化 0.25s"], ["black", "黑屏 0.8s"], ["cut", "硬切"]].forEach(([v, t]) => {
+        const o = document.createElement("option");
+        o.value = v; o.textContent = t;
+        if ((link.transition || "dissolve") === v) o.selected = true;
+        transSel.appendChild(o);
+      });
+      transSel.disabled = link.mode !== "transition";
+      modeSel.title = "链式=本段首帧承接上段尾帧（上游变了本段会需重出）；"
+        + "转场=本段独立生成，只靠转场接缝（上游变了不用重出）";
+      transSel.title = "仅「转场」模式下生效：叠化 / 黑屏 / 硬切";
+      const applyLink = () => post("/h3-long-video/selflift/set", {
+        cfg: cfgPath(), seg: seg.index,
+        link_mode: modeSel.value, link_transition: transSel.value,
+      });
+      modeSel.addEventListener("change", () => {
+        transSel.disabled = modeSel.value !== "transition";
+        applyLink();
+      });
+      transSel.addEventListener("change", applyLink);
+      linkRow.append(makeElement("span", "h3-sl-label", "承接"), modeSel, transSel);
+      const insertBtn = makeElement("button", "h3-sl-btn", "＋ 在此段后插入");
+      insertBtn.title = "在下一段之前插入一个新段（默认链式承接），后续段自动重编号";
+      if (seg.index >= total) {
+        insertBtn.disabled = true;
+        insertBtn.title = "末段后不能插入";
+      }
+      insertBtn.addEventListener("click", () => post("/h3-long-video/selflift/insert", {
+        cfg: cfgPath(), after: seg.index,
+      }));
+      linkRow.append(insertBtn);
+    }
+    card.append(head);
+    if (hasLink) card.append(linkRow);
+    card.append(imgs, row, prompt, saveBtn, fileRow, tailRow);
     return card;
   }
 
@@ -1524,8 +1571,12 @@ function buildSelfLiftPane(host) {
       taskBox.style.display = task.error ? "block" : "none";
       if (task.error) taskBox.textContent = `${task.error}\n${(task.log || "").slice(-1200)}`;
       const ready = data.segments.filter((s) => s.done && !s.stale).length;
+      const links = data.segments.filter((s) => s.index > 1)
+        .map((s) => (s.link && s.link.mode) || "chain");
+      const transN = links.filter((m) => m === "transition").length;
+      const chainN = links.length - transN;
       say(`${data.title || "未命名"} · ${ready}/${data.segments.length} 段就绪 · `
-        + `${data.chain_first_frame ? "尾帧接首帧（串行）" : "独立段"} · 过场 ${data.join_mode}`,
+        + `接续 链式 ${chainN} / 转场 ${transN}`,
       task.error ? "error" : "info");
     }
     finalsBox.replaceChildren(...(data.finals || []).map((item) => {
@@ -1538,7 +1589,8 @@ function buildSelfLiftPane(host) {
     const sig = JSON.stringify([
       data.segments.map((s) => [s.index, s.id, s.done, s.stale, s.seed,
         s.first_frame_override, s.last_frame_override,
-        s.first_url, s.last_url, s.video_url]),
+        s.first_url, s.last_url, s.video_url,
+        (s.link && s.link.mode) || "chain", (s.link && s.link.transition) || "dissolve"]),
       data.finals,
     ]);
     if (sig === signature) return;
