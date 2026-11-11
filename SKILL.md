@@ -319,6 +319,23 @@ ffmpeg -y -v error -i final.mp4 -vf "fps=1,scale=268:-1" -frames:v 39 qa/_sec/%0
 `test_graph.py` 的顺序断言都不用改（回归测试里有 `test_widget_count_unchanged` 兜底）。
 以后若真要加控件，仍必须追加到**末尾**并同步那 4 处。
 
+### ⚠ 这个工作流是「控制台」，不是出片工作流（2026-11-11 用户踩坑）
+
+`H3-SelfLift_逐段导演.json` 里只有 **4 个节点**：3×`LoadImage` + 1×`H3LongVideoDirector`
+（后来加了 1 个 MarkdownNote 说明）。它**没有采样 / 解码 / 视频输出节点**，所以：
+
+- **点画布上方的「运行 / Run」不会出片**。那走的是节点的旧 `execute`（旧链路：关键帧 → 二拍），
+  和逐段面板完全无关；之前那 3 张参考图还指向不存在的 `placeholder.png`，点了直接报缺图。
+- 真正出片靠面板按钮 → `/h3-long-video/selflift/run` → `run_selflift.py seg N --cfg ...`，
+  采样链路来自 `segments.json` 里的 `workflow`（`assets/H3-SelfLift_单图参考.base.json`）。
+
+2026-11-11 修的两处：① 3 个 `LoadImage` 改成 `example.png`（input 里真实存在，不再报缺图）；
+② 面板顶部加常驻提示条「出片请用每段卡片里的『运行』；画布 Run 走旧链路」+ 画布 MarkdownNote。
+
+**判断"到底跑没跑起来"**：状态栏出现「N/M 段就绪」= 面板读到了工程；
+点某段「运行」后状态变 running 并有日志滚动，约 **2.5~3 分钟**该段变「已生成」。
+若状态栏一直是「未加载 / 读取失败」，是 cfg 路径不对或前端缓存旧 JS（Ctrl+F5 强刷）。
+
 ### 面板能做什么
 
 1. 打开 `H3-SelfLift_逐段导演.json`（已默认停在 SelfLift 逐段 tab）→ 填分镜 json 绝对路径（或「新建片」从 skill 模板开目录）→ 点「打开 / 刷新」
@@ -484,7 +501,7 @@ ffmpeg -y -v error -i final.mp4 -vf "fps=1,scale=268:-1" -frames:v 39 qa/_sec/%0
 
 ### 已知坑：Director 面板加载即整段崩溃（director.js insertBefore 顺序，2026-11-11 修）
 
-- **症状**：加载 `H3-SelfLift 逐段导演.json`（或任何带 `H3LongVideoDirector` 节点的工作流）后，
+- **症状**：加载 `H3-SelfLift_逐段导演.json`（或任何带 `H3LongVideoDirector` 节点的工作流）后，
   自定义面板——含第 5 个「SelfLift 逐段」tab——**整个挂不上**，节点只剩标准参数控件；
   浏览器 Console 能看到 `Failed to execute 'insertBefore' ... is not a child of this node` 的 DOMException。
 - **根因**：`web/director.js` 的 `installPanel` 里
