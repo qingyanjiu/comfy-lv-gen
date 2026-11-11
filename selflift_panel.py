@@ -11,6 +11,7 @@ register_routes(PromptServer.instance.routes, web)，无需改 __init__.py。
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import random
@@ -72,7 +73,11 @@ def _media_url(path):
 
 
 def _run(cfg, args, timeout=120):
-    """同步调用唯一驱动；面板的 set / status 这类秒级操作走这里。"""
+    """同步调用唯一驱动；面板的 set / status 这类秒级操作走这里。
+
+    ⚠ 这是**阻塞**调用（子进程 import numpy/pipeline，通常 0.3~2 秒）。
+    handler 里一律走 `_run_async`（asyncio.to_thread），不要直接 await 这个。
+    """
     cmd = [sys.executable, str(DRIVER)] + list(args) + ["--cfg", str(cfg)]
     proc = subprocess.run(cmd, capture_output=True, text=True,
                           encoding="utf-8", errors="replace", timeout=timeout)
@@ -121,6 +126,20 @@ def _status(cfg):
     return data
 
 
+async def _run_async(cfg, args, timeout=120):
+    """把阻塞的 driver 调用挪出 event loop。
+
+    以前 `_run` 直接在 aiohttp handler 里跑 subprocess.run：网页每 3 秒轮询一次
+    status，就等于每 3 秒把 ComfyUI 的整个 HTTP 服务冻住 0.3~2 秒（前端 websocket
+    心跳、进度条、队列查询一起卡）。现在统一丢线程池，ComfyUI 只管模型。
+    """
+    return await asyncio.to_thread(_run, cfg, args, timeout)
+
+
+async def _status_async(cfg):
+    return await asyncio.to_thread(_status, cfg)
+
+
 def _start(cfg, argv, kind):
     """单段生成 / 拼接要 3~4 分钟，必须异步线程 + 状态轮询，不能卡住 HTTP。"""
     key = str(cfg)
@@ -161,7 +180,7 @@ def register_routes(routes, web):
     async def selflift_status(request):
         try:
             cfg = _safe(request.query.get("cfg"))
-            return web.json_response(_status(cfg))
+            return web.json_response(await _status_async(cfg))
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
@@ -185,7 +204,7 @@ def register_routes(routes, web):
                 args += ["--link-mode", str(p["link_mode"])]
             if p.get("link_transition") is not None:
                 args += ["--link-transition", str(p["link_transition"])]
-            return web.json_response({"ok": True, "log": _run(cfg, args)})
+            return web.json_response({"ok": True, "log": await _run_async(cfg, args)})
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
@@ -198,7 +217,7 @@ def register_routes(routes, web):
             cfg = _safe(p.get("cfg"))
             seg = int(p.get("seg") or 1)
             if p.get("seed") is not None:
-                _run(cfg, ["set", "--seg", str(seg), "--seed", str(int(p["seed"]))])
+                await _run_async(cfg, ["set", "--seg", str(seg), "--seed", str(int(p["seed"]))])
             ok, err = _start(cfg, ["seg", str(seg)], f"段 {seg}")
             if not ok:
                 return web.json_response({"ok": False, "error": err}, status=409)
@@ -230,7 +249,7 @@ def register_routes(routes, web):
             p = await request.json()
             cfg = _safe(p.get("cfg"))
             after = int(p.get("after") or 1)
-            log = _run(cfg, ["insert", "--after", str(after)], timeout=60)
+            log = await _run_async(cfg, ["insert", "--after", str(after)], timeout=60)
             return web.json_response({"ok": True, "after": after, "log": log})
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
@@ -461,7 +480,7 @@ def register_routes(routes, web):
             dst = INPUT_ROOT / dst_name
             with open(dst, "wb") as out:
                 out.write(field.file.read())
-            _run(cfg, ["set", "--seg", str(seg), "--first-frame", dst_name])
+            await _run_async(cfg, ["set", "--seg", str(seg), "--first-frame", dst_name])
             return web.json_response({"ok": True, "filename": dst_name, "seg": seg})
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
@@ -493,7 +512,7 @@ def register_routes(routes, web):
             with open(dst, "wb") as out:
                 out.write(field.file.read())
 
-            state = _status(cfg)
+            state = await _status_async(cfg)
             total = len(state.get("segments") or [])
             if not 1 <= seg <= total:
                 raise ValueError(f"段号 {seg} 超出范围（共 {total} 段）")
@@ -511,13 +530,13 @@ def register_routes(routes, web):
                                 f"不会被锁定/强制重出，接缝按它的转场类型处理。"
                                 f"要改本段画面请重出本段")
                     else:
-                        _run(cfg, ["set", "--seg", str(seg + 1), "--first-frame", dst_name])
+                        await _run_async(cfg, ["set", "--seg", str(seg + 1), "--first-frame", dst_name])
                         note = (f"已替换第 {seg} 段尾帧；第 {seg + 1} 段首帧锁定为它，"
                                 f"第 {seg + 1}…{total} 段请按序重跑")
                 else:
                     note = f"已替换第 {seg} 段尾帧（末段没有下一段）"
             else:
-                _run(cfg, ["set", "--seg", str(seg), "--last-frame", dst_name])
+                await _run_async(cfg, ["set", "--seg", str(seg), "--last-frame", dst_name])
                 note = (f"第 {seg} 段尾帧已锁定（{dst_name}）；"
                         "点「生成本段 / 重出」后才会生效，task_type 会切 FL2VA/Hybrid")
             return web.json_response({"ok": True, "filename": dst_name,
