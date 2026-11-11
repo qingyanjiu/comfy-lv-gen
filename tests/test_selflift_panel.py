@@ -47,10 +47,11 @@ class TestSelfLiftPanel(unittest.TestCase):
         routes = FakeRoutes()
         SP.register_routes(routes, FakeWeb())
         urls = {path for _, path in routes.paths}
-        self.assertEqual(len(urls), 10, f"路由数不对：{routes.paths}")
+        self.assertEqual(len(urls), 13, f"路由数不对：{routes.paths}")
         for suffix in ("status", "set", "run", "merge", "init", "upload", "frame",
-                       "media", "insert", "refimg"):
+                       "media", "insert", "refimg", "import", "preview"):
             self.assertIn(f"/h3-long-video/selflift/{suffix}", urls)
+        self.assertIn("/h3-long-video/app", urls)
 
     def test_path_guard_rejects_traversal(self):
         for bad in ("C:/Windows/system32/config/SAM", "../../../etc/passwd", ""):

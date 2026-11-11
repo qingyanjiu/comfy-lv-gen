@@ -327,6 +327,40 @@ ffmpeg -y -v error -i final.mp4 -vf "fps=1,scale=268:-1" -frames:v 39 qa/_sec/%0
 驱动副本与 cfg 的 `clip_name` 已换成 nvfp4；用户的原工作流
 `user/default/workflows/H3-SelfLift_单图参考.json` 没动，把 int8 放回去即可恢复。
 
+## 网页出片台：`/h3-long-video/app`（2026-11-11 新增，**首选入口**）
+
+用户 17:48：「干脆开发一个网页…这工作流没任何意义了，还不好改，我要输入 json 格式自动切分成分段然后就可以跑」。
+
+**打开方式**：重启桌面版后，浏览器访问
+
+```
+http://127.0.0.1:8188/h3-long-video/app
+```
+
+同源托管在 ComfyUI 里（页面 `web/selflift_app.html`，路由在 `selflift_panel.py`），
+**不用另起服务、不用管 CORS**，也和 ComfyUI 前端互不影响。
+
+**四步出片**：导入分镜 JSON（或直接粘长文本）→ 自动切段 → 传参考图/空镜板 → 「一键跑全片」
+（跑完自动拼接，可下载成片）。每段卡片能改 seed / 提示词 / 首尾帧 / 承接方式，能力与面板一致。
+
+**导入支持三种输入**（归一化在 `selflift_schema.py`，纯函数、可单测）：
+
+| 输入 | 处理 |
+|---|---|
+| `{"segments":[{"body":"…"}]}` | 直接用 |
+| 旧 Director storyboard（`prompt_segment`，或 `shot`+`camera`+`open_action` 等） | 按字段映射拼成段正文 |
+| 一整段长文本 / `{"prompt":"…"}` 单字段 | **自动切分**：先按空行、`---`、`第N段` 切；否则按句号聚合到每段约 `target_chars`（默认 130 字） |
+
+导入时可在弹窗里设 **片名 / 每段秒数 / 每段字数**，点「预览切分」先看会切成几段再建片。
+建片目录仍是 `output/<片名>_<MMDD_HHMMSS>/`，产物结构与 CLI 完全一致。
+
+**新增路由**：`GET /h3-long-video/app`（页面）、`POST /selflift/import`（切段建片）、
+`POST /selflift/preview`（只切分不落盘）。其余复用已有 `/selflift/*`。
+
+**和 ComfyUI 工作流的关系**：网页直接调 `/selflift/*`（run / merge / set / upload / refimg），
+底层仍是 `run_selflift.py`，所以出片结果与工作流面板等价——**以后可以完全不碰工作流**。
+`H3-SelfLift_逐段导演.json` 只是旧入口，保留不删。
+
 ## 逐段人在回路：Director 面板第 5 个 tab（2026-11-11 用户定）
 
 用户 07:09：「以后长视频就用这个方式来做，那 direct 工作流就得做修改了，

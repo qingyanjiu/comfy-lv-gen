@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -35,6 +36,22 @@ INPUT_ROOT = Path("D:/Comfy-Desktop/ComfyUI-Shared/input")
 
 TASKS = {}
 LOCK = threading.Lock()
+_SCHEMA = None
+
+
+def _schema_module():
+    """按文件路径加载 selflift_schema.py，避免依赖 custom_nodes 的 sys.path。"""
+    global _SCHEMA
+    if _SCHEMA is not None:
+        return _SCHEMA
+    import importlib.util
+
+    path = Path(__file__).with_name("selflift_schema.py")
+    spec = importlib.util.spec_from_file_location("h3_selflift_schema", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _SCHEMA = module
+    return module
 
 
 def _safe(raw, must_exist=True):
@@ -215,6 +232,121 @@ def register_routes(routes, web):
             after = int(p.get("after") or 1)
             log = _run(cfg, ["insert", "--after", str(after)], timeout=60)
             return web.json_response({"ok": True, "after": after, "log": log})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.get("/h3-long-video/app")
+    async def selflift_app(request):
+        """独立出片网页（同源，免 CORS）：浏览器打开 /h3-long-video/app 即可。"""
+        page = Path(__file__).with_name("web") / "selflift_app.html"
+        if not page.is_file():
+            return web.Response(text=f"缺少页面文件：{page}", status=404)
+        return web.Response(text=page.read_text(encoding="utf-8"),
+                            content_type="text/html", charset="utf-8")
+
+    @routes.post("/h3-long-video/selflift/preview")
+    async def selflift_preview(request):
+        """只做切分预览，不建目录（网页导入弹窗用）。"""
+        try:
+            body = await request.json()
+            payload = body.get("payload")
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload.strip())
+                except json.JSONDecodeError:
+                    pass
+            data = _schema_module().normalize(
+                payload,
+                title=(str(body.get("title") or "").strip() or None),
+                seconds=body.get("seconds"),
+                target_chars=int(body.get("target_chars") or 130),
+                max_segments=int(body.get("max_segments") or 16),
+            )
+            return web.json_response({
+                "ok": True, "title": data["title"], "seconds": data["seconds"],
+                "segments": [{"id": s["id"], "title": s["title"], "chars": len(s["body"])}
+                             for s in data["segments"]],
+            })
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.post("/h3-long-video/selflift/import")
+    async def selflift_import(request):
+        """导入任意格式的分镜 JSON：自动切段 → 建片目录 → 写 segments.json。"""
+        try:
+            body = await request.json()
+            payload = body.get("payload")
+            if isinstance(payload, str):
+                text = payload.strip()
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    payload = text          # 纯文本也接受
+            if payload is None:
+                raise ValueError("缺少 payload")
+
+            schema = _schema_module()
+            data = schema.normalize(
+                payload,
+                title=(str(body.get("title") or "").strip() or None),
+                seconds=body.get("seconds"),
+                target_chars=int(body.get("target_chars") or 130),
+                max_segments=int(body.get("max_segments") or 16),
+            )
+            if not data["segments"]:
+                raise ValueError("切分后没有任何段")
+
+            stamp = datetime.now().strftime("%m%d_%H%M%S")
+            slug = re.sub(r"[^\w\u4e00-\u9fff-]+", "_", data["title"])[:32] or "film"
+            out_dir = OUTPUT_ROOT / f"{slug}_{stamp}"
+            for sub in ("refs", "segments", "qa", "final"):
+                (out_dir / sub).mkdir(parents=True, exist_ok=True)
+            prefix = f"sl_{stamp}"
+
+            cfg = json.loads(TEMPLATE.read_text(encoding="utf-8"))
+            cfg.pop("_template_note", None)
+            cfg.update({
+                "title": data["title"],
+                "prefix": prefix,
+                "final_name": f"{data['title']}_成片.mp4",
+                "seconds": data["seconds"],
+                "fps": data["fps"],
+                "megapixels": data["megapixels"],
+                "length": int(17 * round(data["seconds"] * data["fps"] / 17) + 5),
+                "head": data["head"],
+                "tail": data["tail"],
+                "ref_image": str(out_dir / "refs" / "girl_ref.png"),
+                "bg_plate_path": str(out_dir / "refs" / "bg_plate.png"),
+                "comfy_ref_name": f"{prefix}_girl_ref.png",
+                "bg_plate": f"{prefix}_bg_plate.png",
+                "join_mode": "dissolve",
+                "join_dissolve_seconds": 0.25,
+                "chain_first_frame": True,
+            })
+            segments = []
+            for index, seg in enumerate(data["segments"], 1):
+                seed = int(body.get("seed_base") or 0)
+                item = {
+                    "id": seg["id"],
+                    "title": seg["title"],
+                    "seed": (seed + index * 37) if seed else random.randint(300000, 900000),
+                    "body": seg["body"],
+                }
+                if index > 1:
+                    item["link"] = {"mode": "chain", "transition": "dissolve"}
+                segments.append(item)
+            cfg["segments"] = segments
+
+            cfg_path = out_dir / "segments.json"
+            cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
+                                encoding="utf-8")
+            return web.json_response({
+                "ok": True, "cfg": str(cfg_path), "title": cfg["title"],
+                "segments": len(segments), "seconds": cfg["seconds"],
+                "note": "已建片；传参考图后点「一键跑全片」",
+            })
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
