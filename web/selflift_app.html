@@ -69,6 +69,17 @@
   #lightbox{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;
     align-items:center;justify-content:center;z-index:60;cursor:zoom-out}
   #lightbox img,#lightbox video{max-width:94vw;max-height:94vh}
+  .doc-wrap{max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:6px}
+  .doc{width:100%;border-collapse:collapse;font-size:12px}
+  .doc th,.doc td{border-bottom:1px solid var(--line);padding:5px 8px;
+    text-align:left;vertical-align:top}
+  .doc th{position:sticky;top:0;background:var(--panel);color:#9fc2ee;font-weight:600;z-index:1}
+  .doc td:first-child{white-space:nowrap;color:#cfe0f5;
+    font-family:ui-monospace,Consolas,monospace;font-size:11px}
+  .doc td:nth-child(2){width:52px;color:var(--dim);font-size:11px;white-space:nowrap}
+  .doc .note{margin-top:8px;padding:7px 10px;background:#1b2029;border-left:3px solid var(--warn);
+    color:#d6c69a;font-size:12px;white-space:pre-wrap;border-radius:4px}
+  .doc .note b{display:block;margin-bottom:3px;color:#f0cf8a}
 </style>
 </head>
 <body>
@@ -80,6 +91,8 @@
 
 <div class="bar">
   <button id="importBtn" class="primary">导入分镜 JSON</button>
+  <button id="tplBtn" title="下载一份带字段说明的 JSON 模板，照着改完再导入">下载模板</button>
+  <button id="docBtn" title="看每个字段是什么意思">字段说明</button>
   <label class="file">参考图<input type="file" id="refFile" accept="image/*"></label>
   <button id="refUp">上传</button>
   <label class="file">空镜板<input type="file" id="plateFile" accept="image/*"></label>
@@ -106,6 +119,9 @@
     <h2>导入分镜 JSON</h2>
     <p>支持三种：SelfLift 的 <code>segments[].body</code>、旧 Director 分镜（<code>prompt_segment</code> / <code>shot</code>+<code>open_action</code> …）、
        或者一整段长文本（按空行/句号自动切段）。</p>
+    <p>不知道怎么写？点工具条上的 <b>下载模板</b>，里面每个字段都带中文说明，改完直接选文件导入。
+       <button id="mTpl" style="padding:2px 8px;font-size:12px">下载模板</button>
+       <button id="mDoc" style="padding:2px 8px;font-size:12px">字段说明</button></p>
     <div class="row">
       <label>片名 <input type="text" id="mTitle" placeholder="留空用 JSON 里的 title"></label>
       <label>每段秒数 <input type="number" id="mSeconds" value="8" step="0.5" min="1"></label>
@@ -122,6 +138,20 @@
       <button id="mPreview">预览切分</button>
       <button id="mCancel">取消</button>
       <button id="mOk" class="primary">建片</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal hidden" id="docModal">
+  <div class="dialog">
+    <h2>分镜 JSON 字段说明</h2>
+    <p>带 <b>*</b> 的必填，其余可留空走默认。所有 <code>_</code> 开头的字段只是注释，不读、可删。</p>
+    <div class="doc-wrap"><table class="doc" id="docTable"></table></div>
+    <div id="docNotes" class="doc"></div>
+    <div class="row">
+      <span class="grow"></span>
+      <button id="docTpl">下载模板</button>
+      <button id="docClose" class="primary">知道了</button>
     </div>
   </div>
 </div>
@@ -473,6 +503,59 @@ function P0(input) {
 }
 $("refUp").addEventListener("click", () => uploadRef("ref", $("refFile"), "人物参考图"));
 $("plateUp").addEventListener("click", () => uploadRef("plate", $("plateFile"), "空镜板"));
+
+/* ---------- 模板下载 / 字段说明 ---------- */
+const TPL_URL = "/h3-long-video/selflift/template";
+const esc = (s) => String(s).replace(/[&<>]/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const NOTE_TITLE = {
+  picture: "参考图编号（最容易踩的坑）",
+  length: "逐段时长",
+  transition_switch: "转场改回链式",
+  auto_cut: "自动切段",
+};
+const REQUIRED_FIELDS = new Set(["title", "segments", "segments[].body"]);
+
+function downloadTemplate() {
+  const a = document.createElement("a");
+  a.href = TPL_URL;
+  a.download = "segments-template.json";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  say("模板已开始下载：segments-template.json（照着改完，用「导入分镜 JSON」选它）", "ok");
+}
+
+let docCache = null;
+async function openDoc() {
+  $("docModal").classList.remove("hidden");
+  if (docCache) return;
+  const table = $("docTable");
+  table.innerHTML = '<tr><td colspan="3" style="color:#93a0b4">加载中…</td></tr>';
+  try {
+    const res = await fetch(TPL_URL, { cache: "no-store" });
+    const data = await res.json();
+    const fields = data._字段说明 || {};
+    const notes = data._规则说明 || {};
+    docCache = true;
+    const rows = Object.entries(fields).map(([key, desc]) => {
+      const req = REQUIRED_FIELDS.has(key) ? "<b style='color:#e0a44a'>*</b>" : "";
+      return `<tr><td>${esc(key)}</td><td>${req}</td>`
+        + `<td style="white-space:pre-wrap">${esc(desc)}</td></tr>`;
+    }).join("");
+    table.innerHTML = "<tr><th>字段</th><th>必填</th><th>含义</th></tr>" + rows;
+    $("docNotes").innerHTML = Object.entries(notes).map(([key, text]) =>
+      `<div class="note"><b>${esc(NOTE_TITLE[key] || key)}</b>${esc(text)}</div>`).join("");
+  } catch (e) {
+    table.innerHTML = `<tr><td colspan="3" style="color:#ffb9b9">读取失败：${esc(e.message)}</td></tr>`;
+  }
+}
+$("tplBtn").addEventListener("click", downloadTemplate);
+$("mTpl").addEventListener("click", downloadTemplate);
+$("docTpl").addEventListener("click", downloadTemplate);
+$("docBtn").addEventListener("click", openDoc);
+$("mDoc").addEventListener("click", openDoc);
+$("docClose").addEventListener("click", () => $("docModal").classList.add("hidden"));
 
 /* ---------- 导入 JSON ---------- */
 $("importBtn").addEventListener("click", () => {

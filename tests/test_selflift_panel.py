@@ -1,7 +1,8 @@
 """SelfLift 逐段人在回路的静态回归测试（不需要 ComfyUI 服务在运行）。
 
 覆盖：
-- 后端 9 个路由能注册、路径白名单能挡穿越
+- 后端 14 个路由能注册、路径白名单能挡穿越
+- 下载的模板是合法 JSON、字段说明齐全、能被 import 流程直接消化
 - director.py 有注册胶水、director.js 有第 5 个 tab 且默认打开
 - **控件顺序没变**：这次改造没加 widget，22 项 widgets_values 不受影响
 - 唯一驱动 run_selflift.py 提供 status / set 命令
@@ -47,11 +48,26 @@ class TestSelfLiftPanel(unittest.TestCase):
         routes = FakeRoutes()
         SP.register_routes(routes, FakeWeb())
         urls = {path for _, path in routes.paths}
-        self.assertEqual(len(urls), 13, f"路由数不对：{routes.paths}")
+        self.assertEqual(len(urls), 14, f"路由数不对：{routes.paths}")
         for suffix in ("status", "set", "run", "merge", "init", "upload", "frame",
-                       "media", "insert", "refimg", "import", "preview"):
+                       "media", "insert", "refimg", "import", "preview", "template"):
             self.assertIn(f"/h3-long-video/selflift/{suffix}", urls)
         self.assertIn("/h3-long-video/app", urls)
+
+    def test_download_template_is_importable(self):
+        """下载的模板必须是能直接导入的合法 JSON，且字段说明齐全。"""
+        import selflift_schema as SCHEMA
+        tpl = SCHEMA.build_template()
+        json.dumps(tpl, ensure_ascii=False)          # 必须可序列化
+        self.assertTrue(tpl["_字段说明"], "模板缺少 _字段说明")
+        for key in ("seconds", "megapixels", "head", "tail", "segments[].body",
+                    "segments[].link.mode", "segments[].link.transition"):
+            self.assertIn(key, tpl["_字段说明"], f"字段说明缺 {key}")
+        data = SCHEMA.normalize(tpl)                 # 必须能被导入流程消化
+        self.assertEqual(len(data["segments"]), len(tpl["segments"]))
+        self.assertTrue(data["segments"][1].get("link"), "模板里的 link 没被保留")
+        self.assertTrue(data["segments"][1].get("head"), "段级 head 没被保留")
+        self.assertTrue(data["segments"][0].get("seed"), "段级 seed 没被保留")
 
     def test_path_guard_rejects_traversal(self):
         for bad in ("C:/Windows/system32/config/SAM", "../../../etc/passwd", ""):
