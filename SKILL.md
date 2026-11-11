@@ -304,19 +304,21 @@ ffmpeg -y -v error -i final.mp4 -vf "fps=1,scale=268:-1" -frames:v 39 qa/_sec/%0
    **优先于上段尾帧**（`run_seg` 先判 override 才判 chain）
 5. 「恢复自动承接」清掉 override，回到尾帧接首帧
 6. 「保存提示词」直接写回 `segments[].body`（`head` / `tail` 全片共用锚不动）
-7. 全段就绪后「拼接成片」，`dissolve`（默认）/ `cut` / `black` 可选
+7. 全段就绪后「拼接成片」：过场下拉默认「按每段转场」（按每段 `link` 决定），也可强制全片统一 `dissolve` / `cut` / `black`
+8. 每段（非首段）多一行「承接 + 转场类型 + ＋在此段后插入」；见下节「接缝与插入」
 
 ### 后端路由（`/h3-long-video/selflift/*`）
 
 | 路由 | 作用 |
 |---|---|
 | `GET status?cfg=` | 逐段状态：首/尾帧与视频 URL、seed、body、done/stale、成片列表、当前任务日志 |
-| `POST set` | 改 seed / body / first_frame（`auto` 清覆盖），打 `updated_at` |
+| `POST set` | 改 seed / body / first_frame（`auto` 清覆盖）/ `link_mode`·`link_transition`；打 `updated_at` |
 | `POST run` | 异步跑单段（3~4 分钟，线程 + 轮询，不卡 HTTP）；带 seed 先写回再出片 |
-| `POST merge` | 异步拼接 |
+| `POST merge` | 异步拼接；`join=auto`（默认）按每段 link，或强制 `dissolve`/`cut`/`black` |
 | `POST init` | 从 `assets/segments.selflift.example.json` 复制出新片目录 |
 | `POST upload` | 图片存进 ComfyUI input，写 `first_frame_override` |
 | `POST frame` | 改尾帧：`next_first` 替换尾帧供下段接续 / `last_lock` 锁定本段尾帧 |
+| `POST insert` | 在 `after` 段(1起)后插入新段（默认链式承接），重编号 + 重命名产物文件 |
 | `GET media?path=` | 片目录 / input 下的图片与视频，白名单防路径穿越 |
 
 ### 尾帧怎么改（2026-11-11 07:51 用户指出首帧能改、尾帧不能改，已补齐）
@@ -337,11 +339,36 @@ ffmpeg -y -v error -i final.mp4 -vf "fps=1,scale=268:-1" -frames:v 39 qa/_sec/%0
 - **手动编辑过的帧（换头、指令编辑）喂下游前必须做 CIE Lab 色彩对齐**，
   否则色偏会被逐段复刻放大。
 
+### 接缝：链式承接 vs 转场（per-link）＋ 中间插入分段（2026-11-11 新增）
+
+每段（除首段）有一个 `link` 字段，决定它**怎么接上一段**，默认 `{"mode":"chain","transition":"dissolve"}`
+（缺省按链式处理，旧工程不用改）：
+
+| link.mode | 首帧来源 | 上游尾帧变了会怎样 | 适合 |
+|---|---|---|---|
+| `chain`（链式承接） | 像素承接上段尾帧（`first_frame_override` 优先） | 本段标 `stale`，需重出才能接上新帧 | 无缝连贯、同一镜头的延续 |
+| `transition`（转场） | **独立生成**，不承接上段尾帧 | **本段不 stale、不强制重出**，接缝只靠转场 | 切走/切角度/换镜头的段落 |
+
+- `link.transition` 仅 `mode=transition` 时生效：`dissolve`（0.25s 叠化）/ `black`（0.8s 黑屏）/ `cut`（硬切）。
+- **改前一段尾帧时**（`frame next_first`）：若下一段是 `transition`，只更新尾帧图、**不写
+  `first_frame_override`、不打 `updated_at`**，所以下游不重出；若下一段是 `chain`，才锁定并向后传染 stale。
+- 拼接时 `join=auto` 会逐段读取 `link` 拼出**混合转场**（同一片里叠化/黑屏/硬切可以混用）；
+  `join=dissolve|cut|black` 则强制全片统一。
+- 想「改尾帧但后段不动、只在两段间加转场」的操作：把后段 `link.mode` 设为 `transition`（面板那行下拉），
+  再改前段尾帧 / 重出前段 → 后段保持原样，拼接时按转场接上。
+
+**在中间插入一段**：面板每段卡片有「＋ 在此段后插入」（`POST insert`）。新段默认链式承接
+（首帧=前段尾帧、后段首帧自动改为=新段尾帧），body 复制前段作起点、seed 随机。
+插入会**重编号**（`s01…s0N`）并把已有的视频/首尾帧文件按新位置改名，旧链路不受影响。
+插入后：先跑新段，再按序跑它后面的段（链式会用到新段尾帧）。
+
 ### 铁律（这次新增）
 
-- **串行依赖**：段 N 的 `first_frame` 来自段 N−1 尾帧。改了第 N 段的提示词 / seed / 尾帧，
+- **串行依赖**：段 N 的 `first_frame` 来自段 N−1 尾帧——**仅当该段 `link.mode=chain`**。
+  `transition` 段独立生成，不受上游尾帧影响。改了链式段 N 的提示词 / seed / 尾帧，
   第 N…末段自动标 `stale`，必须**按序重跑**；只重出中间一段不算接上。
-- `stale` 两种触发：段级 `updated_at` 比视频新，或上段尾帧比本段视频新；命中一次就向后传染。
+- `stale` 两种触发：段级 `updated_at` 比视频新，或（链式段）上段尾帧比本段视频新；命中一次就向后传染。
+  转场段因上游尾帧变新而 stale 的判定已被排除。
 - **生成实现仍唯一**：面板不复制出片逻辑，全部 subprocess 调 `run_selflift.py seg N --cfg ...`。
 - **改 `director.py` / `web/director.js` 要重启桌面版**才生效；
   绝不用 Stop-Process 杀后端、绝不另起临时 ComfyUI。
