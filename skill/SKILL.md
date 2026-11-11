@@ -358,6 +358,22 @@ ffmpeg -y -v error -i final.mp4 -vf "fps=1,scale=268:-1" -frames:v 39 qa/_sec/%0
 - 空镜板是语义级参考，机位变化时透视不严格对齐。
 - 上传的图不做 Lab 色彩对齐；若来自过编辑模型，喂之前自己先对齐。
 
+### 已知坑：Director 面板加载即整段崩溃（director.js insertBefore 顺序，2026-11-11 修）
+
+- **症状**：加载 `H3-SelfLift 逐段导演.json`（或任何带 `H3LongVideoDirector` 节点的工作流）后，
+  自定义面板——含第 5 个「SelfLift 逐段」tab——**整个挂不上**，节点只剩标准参数控件；
+  浏览器 Console 能看到 `Failed to execute 'insertBefore' ... is not a child of this node` 的 DOMException。
+- **根因**：`web/director.js` 的 `installPanel` 里
+  `keyframeTab.pane.insertBefore(backendNote, editor)` 在 `editor` **还没成为 `pane` 子节点**时
+  就把它当参照节点，抛异常使整个 `installPanel` 中断，后续的 `addDOMWidget(面板)` 永不执行。
+- **触发条件**：只要 `H3LongVideoDirector` 节点被创建（`nodeCreated` 钩子触发）就必崩——
+  **所有用到该节点的工作流都会中招**，不是偶发，也不是只影响 SelfLift tab。
+- **修复**：改成先 `insertBefore(editor, keyframes)` 把 editor 挂进 pane，再在 editor 前插 backendNote
+  （语义不变）。修复 commit `7535972`（已 push `main`）。
+- **生效方式**：前端 JS 热更新，**用户只需在 ComfyUI 浏览器里刷新页面**即可，不用重启后端。
+- **排查手段**：若面板又挂不上，用本机无头 Chrome + CDP（`--no-proxy-server --proxy-bypass-list="<-loopback>"`
+  才能连 127.0.0.1:8188）驱动 ComfyUI 截图；若 `document` 里搜不到 `[class*="h3-director"]` 即面板未挂载。
+
 ## 一致性来源：素材 / 资产 / 契约（2026-11-09 新增）
 
 **核心判断：有没有外部真值，决定一致性从哪来。** 把复刻的做法套到普通生成上会翻车，
