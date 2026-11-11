@@ -199,8 +199,38 @@ $PY $RUN all    --cfg <新片>/segments.json --force   # 全片重跑（改了�
 $PY $RUN merge  --cfg <新片>/segments.json          # 0.25s 短叠化接续 + 拼接 + 静音版（默认）
 $PY $RUN merge  --cfg <新片>/segments.json --join cut    # 无过场硬切
 $PY $RUN merge  --cfg <新片>/segments.json --join black  # 切回 0.8s 纯黑硬切（历史规格）
+$PY $RUN import --src <旧分镜.json>                    # 旧 Director storyboard → segments.json（同目录）
 $PY $RUN probe  --cfg <新片>/segments.json          # 逐段 ffprobe
 ```
+
+### 导入已有分镜配置（`import`，2026-11-11 新增）
+
+手上已有的分镜 json（旧 Director 的 rich storyboard、或任何带 `segments[]` 的配置）
+**不能直接填进面板**——面板只认 SelfLift 的 `segments.json`。用 `import` 转：
+
+```bash
+$PY $RUN import --src D:/Comfy-Desktop/output/couple-walk/sb_cw10.json \
+    [--out <片目录>] [--ref 人物图] [--plate 空镜板] [--seconds 10] [--seed-base 460000] [--force]
+```
+
+映射规则：
+
+| 源字段 | 转成 |
+|---|---|
+| `title` / `prefix` | 同名顶层字段；`final_name` 自动补 |
+| `segments[].prompt_segment`（其次 `prompt_video` / `body` / `prompt`） | 段 `body`；都没有就用 `shot`+`camera`+`light`+`open_action`+`motion`+`end_action` 拼 |
+| `segments[].name` / `title` | 段标题 |
+| `segments[].chain` | 第 2 段起 `link.mode`：true/缺省 → `chain`，false → `transition` |
+| `segments[].seconds` | 全片统一取第一段（SelfLift 是统一时长；不一致会警告） |
+| `reference_images[0]` / `bg_ref` | 在片目录、`refs/`、ComfyUI input 里找同名文件 → `ref_image` / `bg_plate_path` |
+| 无 head | 自动拼一句「P1=人物参考、P2=场景空镜」+ 服装锁定；可用 `--head` 覆盖 |
+
+**注意**：图找不到只会**警告**、不会中断（cfg 里 `ref_image` 留空）。把图放进 `<片目录>/refs/`
+再跑一次 `import --force`（或直接改 cfg 的 `ref_image` / `comfy_ref_name`）即可。
+转出的 `segments.json` 就是面板里要填的那个路径。
+
+已实测：`output/couple-walk/sb_cw10.json`（旧 3 段 × 10s 双人分镜）→ 3 段、body 338~384 字、
+接缝 chain/chain，`status` 可直接读取。
 
 **改了任何一段的提示词，必须从段 1 起整条重跑**：尾帧是链式的，
 只重跑后段会让 `first_frame` 与新的前段尾帧对不上。

@@ -40,6 +40,9 @@ sys.path.insert(0, SK)
 import pipeline as P  # noqa: E402
 
 DEFAULT_CFG = "D:/Comfy-Desktop/output/rooftop-dusk/segments.json"
+DEFAULT_WORKFLOW = (
+    "D:/Comfy-Desktop/.workbuddy/skills/h3-long-video/assets/H3-SelfLift_单图参考.base.json"
+)
 
 
 def set_root(cfg_path):
@@ -762,10 +765,146 @@ def cmd_insert(cfg, after):
           flush=True)
 
 
+def _pick_body(seg):
+    """从各种分镜格式里取段落提示词：prompt_segment / prompt_video / body / prompt，
+    都没有就用镜头/动作字段拼一段。"""
+    for key in ("prompt_segment", "prompt_video", "body", "prompt"):
+        value = seg.get(key)
+        if value and str(value).strip():
+            return str(value).strip()
+    parts = []
+    for key in ("shot", "camera", "light", "open_action", "motion", "end_action"):
+        value = seg.get(key)
+        if value and str(value).strip():
+            parts.append(str(value).strip())
+    return "\n\n".join(parts)
+
+
+def _auto_head(src):
+    """没有现成 head 时拼一个通用身份/场景锚，用户可在面板里改。"""
+    head = ("<Picture 1> 是人物参考，完整还原其中人物的脸型、五官、发型、服装与身材比例，"
+            "全程不换人、不换装。\n\n"
+            "<Picture 2> 是全片唯一的场景空镜参考，环境结构、陈设与光源方向以它为准，保持不变。")
+    wardrobe = str(src.get("wardrobe_items") or "").strip()
+    if wardrobe:
+        head += f"\n\n服装锁定：{wardrobe}"
+    return head
+
+
+def _find_asset(name, *dirs):
+    if not name:
+        return None
+    if os.path.isfile(name):
+        return os.path.abspath(name)
+    base = os.path.basename(str(name))
+    for folder in dirs:
+        for candidate in (os.path.join(folder, str(name)), os.path.join(folder, base)):
+            if os.path.isfile(candidate):
+                return os.path.abspath(candidate)
+    return None
+
+
+def cmd_import(a):
+    """把旧 Director storyboard（或任意带 segments 的分镜）转成 SelfLift 的 segments.json。"""
+    import random
+
+    if not a.src:
+        P.die("import 需要 --src（源分镜 json）")
+    src = os.path.abspath(a.src)
+    if not os.path.isfile(src):
+        P.die(f"找不到源文件：{src}")
+    with open(src, encoding="utf-8") as f:
+        data = json.load(f)
+    segs_in = data.get("segments") or []
+    if not segs_in:
+        P.die("源文件里没有 segments[]")
+    if "body" in segs_in[0] and data.get("workflow"):
+        print("这已经是 SelfLift 的 segments.json 格式，直接把它填进面板路径即可。", flush=True)
+        return
+
+    out_dir = os.path.abspath(a.out or os.path.dirname(src))
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(out_dir, "segments.json")
+    if os.path.exists(out):
+        if not a.force:
+            P.die(f"{out} 已存在；加 --force 覆盖（会先留一份 .bak）")
+        shutil.copyfile(out, out + ".bak")
+
+    prefix = str(data.get("prefix") or os.path.splitext(os.path.basename(src))[0] or "selflift")
+    title = str(data.get("title") or prefix)
+    fps = int(data.get("fps") or 24)
+    secs = [float(s["seconds"]) for s in segs_in if s.get("seconds")]
+    seconds = float(a.seconds or (secs[0] if secs else data.get("seconds_per_segment") or 5.0))
+    if len(set(secs)) > 1:
+        print(f"[警告] 源分镜每段时长不同 {sorted(set(secs))}；SelfLift 全片统一，已取 {seconds}s",
+              flush=True)
+
+    refs_dirs = [out_dir, os.path.join(out_dir, "refs"), P.COMFY_INPUT]
+    ref_name = a.ref or (data.get("reference_images") or [None])[0]
+    ref_path = _find_asset(ref_name, *refs_dirs) if ref_name else None
+    plate_name = a.plate or data.get("bg_ref")
+    plate_path = _find_asset(plate_name, *refs_dirs) if plate_name else None
+    if not ref_path:
+        print(f"[警告] 没找到人物参考图（{ref_name!r}）。把图放进 {out_dir}/refs/ 或 ComfyUI input 后，"
+              f"改 cfg 的 ref_image / comfy_ref_name 两项即可。", flush=True)
+    if not plate_path:
+        print(f"[警告] 没找到空镜板（{plate_name!r}），cfg 里 bg_plate 会留空（=不接第二张参考图）。",
+              flush=True)
+
+    segments = []
+    for i, src_seg in enumerate(segs_in, 1):
+        body = _pick_body(src_seg)
+        if not body:
+            print(f"[警告] 第 {i} 段取不到提示词，body 留空，请在面板里补。", flush=True)
+        item = {
+            "id": f"s{i:02d}",
+            "title": str(src_seg.get("name") or src_seg.get("title") or f"第 {i} 段"),
+            "seed": (int(a.seed_base) + i * 37) if a.seed_base else random.randint(300000, 900000),
+            "body": body,
+        }
+        if i > 1:
+            chained = src_seg.get("chain")
+            mode = "chain" if (chained is None or bool(chained)) else "transition"
+            item["link"] = {"mode": mode, "transition": "dissolve"}
+        segments.append(item)
+
+    cfg = {
+        "title": title,
+        "prefix": prefix,
+        "final_name": f"{title}_成片.mp4",
+        "workflow": a.workflow or DEFAULT_WORKFLOW,
+        "ref_image": ref_path or "",
+        "comfy_ref_name": (f"{prefix}_{os.path.basename(ref_path)}" if ref_path else ""),
+        "bg_plate": (f"{prefix}_{os.path.basename(plate_path)}" if plate_path else ""),
+        "bg_plate_path": plate_path or "",
+        "megapixels": float(data.get("megapixels") or DEFAULT_MEGAPIXELS),
+        "seconds": seconds,
+        "length": int(17 * round(seconds * fps / 17) + 5),
+        "fps": fps,
+        "join_mode": "dissolve",
+        "join_dissolve_seconds": 0.25,
+        "chain_first_frame": True,
+        "head": a.head or _auto_head(data),
+        "tail": a.tail or ("写实电影摄影，画面中只有剧情里的人物，不出现文字、水印、字幕。\n\n"
+                           "[衔接] 段首约 0.5 秒保持动作与镜头稳定，段尾约 0.5 秒动作收住。"),
+        "segments": segments,
+    }
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+    print(f"已转换 {len(segments)} 段 → {out}", flush=True)
+    print(f"  时长 {seconds}s × {len(segments)} 段 @{fps}fps；人物参考 "
+          f"{'有' if ref_path else '缺'}；空镜板 {'有' if plate_path else '缺'}", flush=True)
+    if len(segments) > 1:
+        modes = [s.get("link", {}).get("mode", "chain") for s in segments[1:]]
+        print(f"  接缝：{' / '.join(modes)}（沿用源分镜的 chain 字段；可在面板逐段改）", flush=True)
+    print(f"  下一步：面板里填这个路径 → 打开/刷新 → 一键跑全片", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["ref", "plate", "seg", "all", "merge", "probe",
-                                    "graph", "status", "set", "insert"])
+                                    "graph", "status", "set", "insert", "import"])
     ap.add_argument("idx", nargs="?", type=int, default=0)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--seg", type=int, default=0, help="set 命令的目标段号（1 起）")
@@ -786,7 +925,20 @@ def main():
                     choices=["dissolve", "black", "cut"],
                     help="set：transition 模式下的接缝转场类型")
     ap.add_argument("--after", type=int, default=0, help="insert：在第 after 段(1起)后插入新段")
+    ap.add_argument("--src", default=None, help="import：源分镜 json（旧 Director storyboard 等）")
+    ap.add_argument("--out", default=None, help="import：输出片目录（默认源文件同目录）")
+    ap.add_argument("--ref", default=None, help="import：人物参考图（路径或文件名）")
+    ap.add_argument("--plate", default=None, help="import：场景空镜板（路径或文件名）")
+    ap.add_argument("--head", default=None, help="import：覆盖全局 head（身份/场景锚）")
+    ap.add_argument("--tail", default=None, help="import：覆盖全局 tail（画风/衔接锚）")
+    ap.add_argument("--seed-base", dest="seed_base", type=int, default=None,
+                    help="import：起始 seed（第 i 段用 base+i*37）")
+    ap.add_argument("--seconds", type=float, default=None, help="import：全片每段时长（秒）")
+    ap.add_argument("--workflow", default=None, help="import：base workflow 路径")
     a = ap.parse_args()
+    if a.cmd == "import":
+        cmd_import(a)
+        return
     set_root(a.cfg)
     os.makedirs(QA_DIR, exist_ok=True)
     cfg = load_cfg()
