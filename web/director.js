@@ -1836,8 +1836,8 @@ function installPanel(node) {
   if (selfliftTab) selfliftTab.empty.style.display = "none";
 
   const keyframeTab = tabs.find((tab) => tab.key === "keyframes");
-  if (keyframeTab) keyframeTab.pane.insertBefore(backendNote, editor);
   if (keyframeTab) keyframeTab.pane.insertBefore(editor, keyframes);
+  if (keyframeTab) keyframeTab.pane.insertBefore(backendNote, editor);
 
   const meta = makeElement("div", "h3-director-meta");
   const resizeBar = makeElement("div", "h3-director-resize");
