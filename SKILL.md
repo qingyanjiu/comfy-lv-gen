@@ -354,8 +354,27 @@ http://127.0.0.1:8188/h3-long-video/app
 导入时可在弹窗里设 **片名 / 每段秒数 / 每段字数**，点「预览切分」先看会切成几段再建片。
 建片目录仍是 `output/<片名>_<MMDD_HHMMSS>/`，产物结构与 CLI 完全一致。
 
+**下载模板 + 字段说明（2026-11-11 新增，给手写分镜用）**
+
+工具条「下载模板」= `GET /h3-long-video/selflift/template`，
+下载 `segments-template.json`（`selflift_schema.build_template()` 生成，约 7.5KB）：
+
+- 是一份**合法 JSON**，可以直接改完再导回去（模板本身就能跑出 3 段片）
+- 顶层 `_说明` / `_字段说明` / `_规则说明` 三个下划线字段是**纯注释**，不读、可删
+  （`_字段说明` 是一个 {字段路径: 中文解释} 字典，18 条；`_规则说明` 记 4 个坑：
+  Picture 编号、逐段时长、转场改回链式、自动切段）
+- 正文含 `title / seconds / fps / megapixels / head / tail / ref_image / bg_plate_path / segments[]`，
+  每段 `_说明` 单独解释该段为什么这么写（第1段无 link、链式段要重写 head、转场段示例）
+- 工具条「字段说明」弹窗直接渲染同一份 `_字段说明`（页面 fetch 模板取注释），
+  **文档与模板永不分叉**
+
+`import` 会**尊重模板里的控制字段**（不是只取 body）：`segments[].seed` / `link{mode,transition}` /
+段级 `head` / `first_frame_override` / `last_frame_override` / 顶层 `ref_image` 与 `bg_plate_path`
+（路径存在才用，否则回落到建片目录的 `refs/`）。所以「下载模板→改→导入」能完整控制出片。
+
 **新增路由**：`GET /h3-long-video/app`（页面）、`POST /selflift/import`（切段建片）、
-`POST /selflift/preview`（只切分不落盘）。其余复用已有 `/selflift/*`。
+`POST /selflift/preview`（只切分不落盘）、`GET /selflift/template`（下载模板，附件名
+`segments-template.json`）。其余复用已有 `/selflift/*`。
 
 **和 ComfyUI 工作流的关系**：网页直接调 `/selflift/*`（run / merge / set / upload / refimg），
 底层仍是 `run_selflift.py`，所以出片结果与工作流面板等价——**以后可以完全不碰工作流**。
