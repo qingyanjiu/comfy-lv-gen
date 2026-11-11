@@ -161,7 +161,8 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { cfg: null, data: null, queue: null, busy: false, merged: false, timer: null };
+const state = { cfg: null, data: null, queue: null, busy: false, merged: false,
+                timer: null, cardSig: null };
 
 function say(text, kind = "info") {
   const el = $("status");
@@ -249,8 +250,67 @@ function render(data) {
     a.href = f.url; a.target = "_blank"; a.textContent = "▶ " + f.name;
     return a;
   }));
-  $("list").replaceChildren(...data.segments.map((s) => card(s, data.segments.length)));
+  // 卡片只在内容真变了才重建：每 3 秒无条件重建会让 textarea 的滚动位置归零、
+  // 正在输入但没保存的提示词被后端值覆盖。
+  const sig = cardSignature(data);
+  if (sig !== state.cardSig) {
+    const keep = snapshotEditors();
+    state.cardSig = sig;
+    $("list").replaceChildren(...data.segments.map((s) => card(s, data.segments.length)));
+    restoreEditors(keep);
+  }
   pump(data);
+}
+
+/** 只包含「卡片长什么样」的数据；task.log 之类高频变化不进签名。 */
+function cardSignature(data) {
+  return JSON.stringify([
+    data.title,
+    data.segments.map((s) => [
+      s.index, s.id, s.seed, s.done, s.stale, s.running,
+      s.first_url, s.last_url, s.video_url, s.body,
+      s.link?.mode, s.link?.transition,
+      s.first_frame_override, s.last_frame_override,
+    ]),
+    (data.finals || []).map((f) => f.name),
+  ]);
+}
+
+/** 重建前抓一次：脏输入、滚动位置、焦点与光标（textarea / seed 都算）。 */
+function snapshotEditors() {
+  const keep = { values: {}, scroll: {}, focus: null, sel: null };
+  document.querySelectorAll("#list [data-keep]").forEach((el) => {
+    const key = `${el.dataset.seg}:${el.dataset.keep}`;
+    if (el.dataset.dirty === "1") keep.values[key] = el.value;
+    if (el.scrollTop > 0) keep.scroll[key] = el.scrollTop;
+    if (document.activeElement === el) {
+      keep.focus = key;
+      if (el.selectionStart !== undefined) keep.sel = [el.selectionStart, el.selectionEnd];
+    }
+  });
+  return keep;
+}
+
+function restoreEditors(keep) {
+  document.querySelectorAll("#list [data-keep]").forEach((el) => {
+    const key = `${el.dataset.seg}:${el.dataset.keep}`;
+    if (keep.values[key] !== undefined) {
+      el.value = keep.values[key];
+      el.dataset.dirty = "1";
+    }
+    if (keep.scroll[key]) el.scrollTop = keep.scroll[key];
+  });
+  if (keep.focus) {
+    const [segId, kind] = keep.focus.split(":");
+    const el = document.querySelector(
+      `#list [data-seg="${segId}"][data-keep="${kind}"]`);
+    if (el) {
+      el.focus();
+      if (keep.sel && el.setSelectionRange) {
+        try { el.setSelectionRange(keep.sel[0], keep.sel[1]); } catch (_) {}
+      }
+    }
+  }
 }
 
 function badgeFor(seg) {
@@ -306,19 +366,27 @@ function card(seg, total) {
   seedLabel.textContent = "seed"; seedLabel.style.color = "#93a0b4";
   const seed = document.createElement("input");
   seed.type = "number"; seed.value = seg.seed;
+  seed.dataset.seg = seg.id; seed.dataset.keep = "seed";
+  seed.addEventListener("input", () => { seed.dataset.dirty = "1"; });
   const runBtn = document.createElement("button");
   runBtn.textContent = "运行本段";
   runBtn.addEventListener("click", async () => {
-    try { await apiJson("/h3-long-video/selflift/run",
-      { cfg: state.cfg, seg: seg.index, seed: Number(seed.value) }); await reload(); }
-    catch (e) { say("运行失败：" + e.message, "error"); }
+    try {
+      await apiJson("/h3-long-video/selflift/run",
+        { cfg: state.cfg, seg: seg.index, seed: Number(seed.value) });
+      seed.dataset.dirty = "";
+      await reload();
+    } catch (e) { say("运行失败：" + e.message, "error"); }
   });
   const saveBtn = document.createElement("button");
   saveBtn.textContent = "保存 seed";
   saveBtn.addEventListener("click", async () => {
-    try { await apiJson("/h3-long-video/selflift/set",
-      { cfg: state.cfg, seg: seg.index, seed: Number(seed.value) }); await reload(); }
-    catch (e) { say("保存失败：" + e.message, "error"); }
+    try {
+      await apiJson("/h3-long-video/selflift/set",
+        { cfg: state.cfg, seg: seg.index, seed: Number(seed.value) });
+      seed.dataset.dirty = "";
+      await reload();
+    } catch (e) { say("保存失败：" + e.message, "error"); }
   });
   row.append(seedLabel, seed, runBtn, saveBtn);
   if (seg.video_url) {
@@ -330,6 +398,7 @@ function card(seg, total) {
 
   const body = document.createElement("textarea");
   body.value = seg.body || "";
+  body.dataset.seg = seg.id; body.dataset.keep = "body";
   body.addEventListener("input", () => { body.dataset.dirty = "1"; });
 
   const editRow = document.createElement("div");
@@ -598,6 +667,7 @@ $("mOk").addEventListener("click", async () => {
       target_chars: Number($("mChars").value) || 130,
     });
     state.cfg = data.cfg;
+    state.cardSig = null;          // 换片必须整片重建（避免签名恰好相同而显示旧卡）
     localStorage.setItem(KEY, data.cfg);
     $("cfgLabel").textContent = data.cfg;
     $("modal").classList.add("hidden");
