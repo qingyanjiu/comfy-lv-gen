@@ -72,6 +72,28 @@ def _media_url(path):
     return "/h3-long-video/selflift/media?path=" + quote(str(path), safe="")
 
 
+# 子进程一律用 UTF-8 输出。
+# Windows 下 Python 的 stdout 默认走 locale 编码（cp936/GBK），而我们按 utf-8 解码，
+# 中文就全成乱码——症状很迷惑：页面按钮（静态 HTML）正常，但段标题/提示词（来自
+# status 的 JSON）全是方块。ComfyUI venv 里跑和在 cmd 里双击启动环境不同，靠这个
+# 显式指定才稳定。
+CHILD_ENV = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+
+
+def _decode(raw):
+    """子进程输出解码：优先 utf-8，失败回退 gbk（兼容旧日志/旧环境）。"""
+    if not raw:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    for enc in ("utf-8", "gbk"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", "replace")
+
+
 def _run(cfg, args, timeout=120):
     """同步调用唯一驱动；面板的 set / status 这类秒级操作走这里。
 
@@ -79,14 +101,13 @@ def _run(cfg, args, timeout=120):
     handler 里一律走 `_run_async`（asyncio.to_thread），不要直接 await 这个。
     """
     cmd = [sys.executable, str(DRIVER)] + list(args) + ["--cfg", str(cfg)]
-    proc = subprocess.run(cmd, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=timeout)
+    proc = subprocess.run(cmd, capture_output=True, timeout=timeout, env=CHILD_ENV)
+    out, err = _decode(proc.stdout), _decode(proc.stderr)
     if proc.returncode != 0:
         raise RuntimeError(
-            f"driver 失败（退出码 {proc.returncode}）："
-            f"{(proc.stderr or proc.stdout or '')[-600:]}"
+            f"driver 失败（退出码 {proc.returncode}）：{(err or out)[-600:]}"
         )
-    return (proc.stdout or "").strip()
+    return out.strip()
 
 
 def _status(cfg):
@@ -157,9 +178,9 @@ def _start(cfg, argv, kind):
         try:
             proc = subprocess.run(
                 [sys.executable, str(DRIVER)] + list(argv) + ["--cfg", key],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                capture_output=True, env=CHILD_ENV,
             )
-            task["log"] = ((proc.stdout or "") + (proc.stderr or ""))[-6000:]
+            task["log"] = (_decode(proc.stdout) + _decode(proc.stderr))[-6000:]
             task["returncode"] = proc.returncode
             if proc.returncode != 0:
                 task["error"] = f"退出码 {proc.returncode}"
