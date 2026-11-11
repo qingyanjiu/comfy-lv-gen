@@ -34,7 +34,7 @@ BANNER = """
   SelfLift 出片台（独立服务）
   网页    http://{host}:{port}/
   API     http://{host}:{port}/h3-long-video/selflift/* 
-  ComfyUI http://{comfy}   ← 只当算力后端，可以在别的机器
+  ComfyUI {comfy}   ← 只当算力后端，可以在别的机器
 ──────────────────────────────────────────────────────────
 """.strip()
 
@@ -72,7 +72,14 @@ def main() -> int:
     ap.add_argument("--comfy", default=os.environ.get("H3_COMFY_API",
                                                       "http://127.0.0.1:8188"),
                     help="ComfyUI 地址（run_selflift 子进程通过 H3_COMFY_API 读取）")
+    ap.add_argument("--open", action="store_true",
+                    help="启动约 1.5 秒后自动打开浏览器（bat 双击用）")
     a = ap.parse_args()
+
+    # 允许只写 host:port（漏协议会让 requests/pipeline 直接失败）
+    if "://" not in a.comfy:
+        a.comfy = "http://" + a.comfy.strip().rstrip("/")
+    a.comfy = a.comfy.rstrip("/")
 
     os.environ["H3_COMFY_API"] = a.comfy      # 子进程继承，run_selflift/pipeline 读它
 
@@ -83,6 +90,20 @@ def main() -> int:
         print(f"[警告] 输出根目录不存在：{SP.OUTPUT_ROOT}", flush=True)
 
     print(BANNER.format(host=a.host, port=a.port, comfy=a.comfy), flush=True)
+    if a.open and not os.environ.get("H3_NO_OPEN"):
+        import threading
+        import webbrowser
+
+        host = "127.0.0.1" if a.host in ("0.0.0.0", "::") else a.host
+
+        def _open():
+            try:
+                webbrowser.open(f"http://{host}:{a.port}/")
+            except Exception as exc:  # noqa: BLE001  打不开浏览器不该影响服务
+                print(f"[提示] 自动开浏览器失败（{exc}），请手动打开 "
+                      f"http://{host}:{a.port}/", flush=True)
+
+        threading.Timer(1.5, _open).start()
     web.run_app(build_app(), host=a.host, port=a.port,
                 print=None, access_log=None)
     return 0

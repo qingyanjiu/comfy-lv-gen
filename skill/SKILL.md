@@ -396,10 +396,22 @@ http://127.0.0.1:8188/h3-long-video/app
 PY=<ComfyUI>/.venv/Scripts/python.exe
 $PY tools/serve_app.py                 # 127.0.0.1:8900
 $PY tools/serve_app.py --host 0.0.0.0 --port 8900   # 给别的机器/手机用
-$PY tools/serve_app.py --comfy http://192.168.1.5:8188   # ComfyUI 在别处
+$PY tools/serve_app.py --comfy 192.168.1.5:8188     # 漏协议会自动补 http://
+$PY tools/serve_app.py --open          # 起 1.5s 后自动开浏览器
 ```
-Windows 可直接双击 `tools/serve_app.bat`（自动找 venv 并开浏览器）。
+Windows 双击 `tools/serve_app.bat`（自动找 venv、自动开浏览器）。
 `/` 自动跳 `/h3-long-video/app`；`/health` 返回 driver 是否存在、输出根、当前 ComfyUI 地址。
+
+**bat 必须纯 ASCII + CRLF（踩过的坑）**：cmd 默认 GBK 代码页，UTF-8 写的中文注释会被当成命令执行，
+报 `'UI' 不是内部或外部命令` / `'嶅埌' ...` / `'氾細set' ...` 一堆乱码错误然后退出。
+所以 `serve_app.bat` 里**一个中文字符都不能有**（注释也用英文），文件行尾必须 `\r\n`；
+`pause` 要写成 `pause >nul`（不带提示，避免系统提示语在 UTF-8 代码页下乱码）。
+服务器/自动化场景可设 `H3_NO_OPEN=1` 屏蔽自动开浏览器。
+
+**改路径/换 python 的三种兜底**（bat 会依次探测）：
+1. `..\..\ComfyUI\ComfyUI\.venv\Scripts\python.exe`（仓库克隆位置）
+2. `..\..\..\.venv\Scripts\python.exe`（从 `custom_nodes/ComfyUI-H3-LongVideo` 软链位置进来）
+3. 环境变量 `H3_PY`（手动指定，优先级最高）
 
 **实现零重复**：`serve_app.py` 只是 `routes = RouteTableDef(); selflift_panel.register_routes(routes, web)`，
 再挂到自己的 `Application`。**两个入口共用同一套 handler，改功能只改 `selflift_panel.py`**。
