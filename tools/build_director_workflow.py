@@ -361,7 +361,7 @@ def main():
     )
     single_clip = build_single_clip_workflow(config)
     single_clip_output = (
-        ROOT / "example_workflows" / "H3-Single-Clip-FirstLastRefs.json"
+        ROOT / "example_workflows" / "deprecated" / "H3-Single-Clip-FirstLastRefs.json"
     )
     single_clip_output.write_text(
         json.dumps(single_clip, indent=2, ensure_ascii=False),

@@ -48,6 +48,15 @@ agent   ：跑工序 · 读质检 · 按失败码修参数重跑
 尾帧图2=本段首帧、`chain` 段首尾帧 byte-for-byte 相连、9:16 硬锁、
 禁坏种子 100000、`push → resume` 出片。**不存在「纯文本专用出帧链路」**。
 **这条链路现在只在需要逐像素锁死背景时用**；普通长视频不要绕回它。
+
+**旧链路工作流 / 文档已归档弃用（2026-11-11 清理）**：Qwen2.1 / Qwen2.5 双图关键帧系列、
+`H3-Single-Clip-FirstLastRefs.json`、以及对应的旧文档，已全部移到
+`h3-long-video-repo/example_workflows/deprecated/` 与 `docs/deprecated/` 并标记弃用；
+`.bak` 本地备份按 `.gitignore`（`*.bak` / `*.bak-*` / `*.capsule-bak`）规则已删除。
+用户 UI 里的旧工作流（含「`minimax h3二采工作流（改自黑鹤大佬）.json`」）也一并移到
+`user/default/workflows/deprecated/`。
+**新的默认入口工作流**：`user/default/workflows/H3-SelfLift_逐段导演.json`
+（Director 节点已显式设 `h3_tab=selflift`，一打开就停在「SelfLift 逐段」tab，不会再像旧文件那样停在 keyframes）。
 **`frame_exact` 是例外**：它不生成运动，画幅/fps/帧数/时长全部继承源片，
 必须绕开 9:16 归一化、5s 下限、17n+5 帧阶梯和 `frames / push / video` 三阶段。
 - 唯一差别只是参考图**谁提供**：用户给，或者 `refs` 造。
@@ -288,7 +297,7 @@ ffmpeg -y -v error -i final.mp4 -vf "fps=1,scale=268:-1" -frames:v 39 qa/_sec/%0
 
 ### 面板能做什么
 
-1. 填分镜 json 绝对路径（或「新建片」从 skill 模板开目录）→ 点「打开 / 刷新」
+1. 打开 `H3-SelfLift_逐段导演.json`（已默认停在 SelfLift 逐段 tab）→ 填分镜 json 绝对路径（或「新建片」从 skill 模板开目录）→ 点「打开 / 刷新」
 2. 每段一张卡：**真实首帧 / 尾帧**缩略图、seed、提示词 textarea、状态徽章
 3. 「生成本段」/「按此 seed 重出」/「换随机 seed 重出」→ 只跑这一段，不连跑 5 段
 4. 「设为本段首帧图」上传任意图片 → 写段级 `first_frame_override`，
