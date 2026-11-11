@@ -159,7 +159,31 @@ agent   ：跑工序 · 读质检 · 按失败码修参数重跑
 | **`join_mode` / `join_dissolve_seconds`** | **默认 `dissolve` / 0.25**（项目原来的短叠化）；可选 `black`（0.8s 纯黑）、`cut`（无过场硬切） |
 | `join_black_seconds` | 0.8，仅 `join_mode=black` 时生效 |
 | `megapixels` | **不写就是 0.5**（`DEFAULT_MEGAPIXELS`） |
-| `head` / `tail` / `segments[].body` | 全片身份与画风锚 / 衔接锚 / 逐段动作与机位 |
+| `head` / `tail` / `segments[].body` | 全片身份与画风锚 / 衔接锚 / 逐段动作与机位；`segments[].head` 可覆盖全局 `head`（Picture 序号随接线漂移时用，见下节） |
+
+### 参考图编号：Picture 1/2/3 各是什么（随接线漂移，2026-11-11 核对节点源码）
+
+`<Picture N>` 不是「固定第 N 个 LoadImage」，而是按**本段实际连接的媒体**从 1 开始数。
+顺序由节点源码决定（`conditioning.py`：先 push `first_frame` / `last_frame`，再 push `ref_image_1..9`）：
+
+| 本段接线 | P1 | P2 | P3 | P4 |
+|---|---|---|---|---|
+| 人物参考 + 空镜板（第 1 段 / 转场段） | 人物参考（节点 150） | 空镜板（节点 152） | — | — |
+| 再链式接上段尾帧 | **首帧**（151，上段尾帧） | 人物参考（150） | 空镜板（152） | — |
+| 再接 `last_frame` 锁定本段尾帧 | 首帧（151） | **尾帧**（153） | 人物参考（150） | 空镜板（152） |
+
+三条规则：
+
+1. **引用不能超范围**：head/body 里写了本段没连的序号 → `strict_prompt_tags` 直接拒单。
+   例：第 1 段只有 2 张图，head 里出现 `<Picture 3>` 会报 `is not connected; available picture count is 2`。
+2. **同一片里编号会变**：第 1 段（无首帧）与后续链式段不同 → **用 `segments[].head` 逐段覆盖**
+   （`seg_prompt()` 优先读段级 `head`，不写才回落 `cfg["head"]`），别指望一个全局 head 全对。
+3. **不超范围但写错位不会崩**：链式段把 P1 当人物参考（实际它是首帧）时 strict 不报错，
+   只是身份锚被换成了首帧——效果变弱、且很难查，属于"静默降级"。
+
+示例：`assets/segments.selflift.example-3ref.json`（3 段；第 1 段用 P1/P2，链式段用 P1/P2/P3，
+已用 `graph` 逐段核过标签不超范围）。核对手段：`run_selflift.py graph` 会打印 238 的
+`refs / first_frame / length`，可对照提示词里的最大 Picture 序号。
 
 ### 命令
 

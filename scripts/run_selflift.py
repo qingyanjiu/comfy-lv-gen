@@ -116,7 +116,16 @@ def normalize(wf):
 
 
 def seg_prompt(cfg, seg):
-    return "\n\n".join([cfg["head"], seg["body"], cfg["tail"]])
+    """段级 head 优先。
+
+    `<Picture N>` 是**按接线顺序**编号的（节点侧先数 first_frame / last_frame，
+    再数 ref_image_1..9）。所以同一片里，第 1 段（无首帧）P1=人物参考、P2=空镜板；
+    链式段（接了首帧）P1=首帧、P2=人物参考、P3=空镜板。序号会整体后移。
+    需要精确引用时用 `seg["head"]` 覆盖全局 head（不写则沿用 cfg["head"]）。
+    """
+    head = seg.get("head") or cfg.get("head") or ""
+    tail = cfg.get("tail") or ""
+    return "\n\n".join([part for part in (head, seg["body"], tail) if part])
 
 
 def add_load_image(wf, node_id, filename):
@@ -179,7 +188,7 @@ def check_graph(cfg, seg, verbose=True):
         res = prompt[str(N_RES)]["inputs"]
         print(f"    resolution: {res.get('aspect_ratio')} / {res.get('megapixels')} MP "
               f"(0.5MP@16:9 = 960x544)", flush=True)
-        print(f"    prompt chars={len(str(cfg['head'])+cfg['segments'][0]['body'])}", flush=True)
+        print(f"    prompt chars={len(seg_prompt(cfg, seg))}", flush=True)
     return prompt
 
 
