@@ -164,6 +164,10 @@ def register_routes(routes, web):
                 args += ["--first-frame", str(p["first_frame"])]
             if p.get("last_frame") is not None:
                 args += ["--last-frame", str(p["last_frame"])]
+            if p.get("link_mode") is not None:
+                args += ["--link-mode", str(p["link_mode"])]
+            if p.get("link_transition") is not None:
+                args += ["--link-transition", str(p["link_transition"])]
             return web.json_response({"ok": True, "log": _run(cfg, args)})
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
@@ -191,13 +195,26 @@ def register_routes(routes, web):
         try:
             p = await request.json()
             cfg = _safe(p.get("cfg"))
-            join = str(p.get("join") or "dissolve")
-            if join not in ("black", "dissolve", "cut"):
+            join = str(p.get("join") or "auto")
+            if join not in ("black", "dissolve", "cut", "auto"):
                 raise ValueError(f"未知过场方式：{join}")
             ok, err = _start(cfg, ["merge", "--join", join], f"拼接 {join}")
             if not ok:
                 return web.json_response({"ok": False, "error": err}, status=409)
             return web.json_response({"ok": True, "started": True, "join": join})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.post("/h3-long-video/selflift/insert")
+    async def selflift_insert(request):
+        """在第 after 段(1起)之后插入一个新段（默认链式承接），重编号并重命名产物。"""
+        try:
+            p = await request.json()
+            cfg = _safe(p.get("cfg"))
+            after = int(p.get("after") or 1)
+            log = _run(cfg, ["insert", "--after", str(after)], timeout=60)
+            return web.json_response({"ok": True, "after": after, "log": log})
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
@@ -291,11 +308,18 @@ def register_routes(routes, web):
                 refs = Path(state["cfg"]).parent / "refs"
                 refs.mkdir(parents=True, exist_ok=True)
                 target = refs / f"{state.get('prefix') or ''}_s{seg:02d}_last.png"
-                shutil.copyfile(dst, target)  # mtime 更新 → status 自动把后续段标 stale
+                shutil.copyfile(dst, target)  # 更新尾帧图（预览/资产）
                 if seg < total:
-                    _run(cfg, ["set", "--seg", str(seg + 1), "--first-frame", dst_name])
-                    note = (f"已替换第 {seg} 段尾帧；第 {seg + 1} 段首帧锁定为它，"
-                            f"第 {seg + 1}…{total} 段请按序重跑")
+                    nxt = next((s for s in state["segments"] if s["index"] == seg + 1), {})
+                    nlmode = (nxt.get("link") or {}).get("mode", "chain")
+                    if nlmode == "transition":
+                        note = (f"已替换第 {seg} 段尾帧图；第 {seg + 1} 段是「转场接续」（独立），"
+                                f"不会被锁定/强制重出，接缝按它的转场类型处理。"
+                                f"要改本段画面请重出本段")
+                    else:
+                        _run(cfg, ["set", "--seg", str(seg + 1), "--first-frame", dst_name])
+                        note = (f"已替换第 {seg} 段尾帧；第 {seg + 1} 段首帧锁定为它，"
+                                f"第 {seg + 1}…{total} 段请按序重跑")
                 else:
                     note = f"已替换第 {seg} 段尾帧（末段没有下一段）"
             else:

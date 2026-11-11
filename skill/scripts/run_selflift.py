@@ -227,6 +227,7 @@ def seg_status(cfg):
             "video": vid if done else None,
             "first_frame": first if os.path.exists(first) else None,
             "last_frame": last if os.path.exists(last) else None,
+            "link": sg.get("link"),
             "mtime": os.path.getmtime(vid) if done else 0,
         })
     stale_from = None
@@ -235,7 +236,10 @@ def seg_status(cfg):
             continue
         edited = cfg["segments"][i].get("updated_at", 0) > item["mtime"] + 1
         prev = segs[i-1]["last_frame"] if i > 0 else None
-        superseded = bool(prev and os.path.getmtime(prev) > item["mtime"] + 1)
+        # 转场模式(transition)的段首帧独立生成，上游尾帧变化不会让它失效
+        lmode = (cfg["segments"][i].get("link") or {}).get("mode", "chain")
+        superseded = bool(prev and lmode != "transition"
+                         and os.path.getmtime(prev) > item["mtime"] + 1)
         if edited or superseded:
             stale_from = i
             break
@@ -283,6 +287,18 @@ def cmd_set(cfg, args):
         else:
             sg["last_frame_override"] = args.last_frame.strip()
             changed.append(f"last_frame={sg['last_frame_override']}（需重出本段）")
+    if args.link_mode is not None:
+        if args.link_mode not in ("chain", "transition"):
+            P.die(f"未知 link_mode：{args.link_mode}（应为 chain / transition）")
+        sg.setdefault("link", {})
+        sg["link"]["mode"] = args.link_mode
+        changed.append(f"link.mode={args.link_mode}")
+    if args.link_transition is not None:
+        if args.link_transition not in ("dissolve", "black", "cut"):
+            P.die(f"未知 link.transition：{args.link_transition}（应为 dissolve / black / cut）")
+        sg.setdefault("link", {})
+        sg["link"]["transition"] = args.link_transition
+        changed.append(f"link.transition={args.link_transition}")
     if changed:
         sg["updated_at"] = time.time()
         with open(CFG_PATH, "w", encoding="utf-8") as f:
@@ -294,16 +310,20 @@ def run_seg(cfg, idx):
     os.makedirs(SEG_DIR, exist_ok=True)
     os.makedirs(REF_DIR, exist_ok=True)
     seg = dict(cfg["segments"][idx])
+    link = cfg["segments"][idx].get("link") or {}
+    lmode = link.get("mode", "chain")
     if seg.get("first_frame_override"):
         seg["first_frame"] = seg["first_frame_override"]
         print(f"    首帧覆盖（面板指定）：{seg['first_frame']}", flush=True)
-    elif cfg.get("chain_first_frame") and idx > 0:
+    elif idx > 0 and lmode != "transition":
         prev_name = f"{cfg['prefix']}_s{idx:02d}_last.png"
         if os.path.exists(os.path.join(P.COMFY_INPUT, prev_name)):
             seg["first_frame"] = prev_name
-            print(f"    首帧承接：{prev_name}", flush=True)
+            print(f"    首帧承接上段尾帧：{prev_name}", flush=True)
         else:
             print(f"    [警告] 缺上一段尾帧 {prev_name}，本段不接 first_frame", flush=True)
+    elif idx > 0 and lmode == "transition":
+        print(f"    转场模式：本段独立生成（不承接上段尾帧）", flush=True)
     print(f"\n===== 段 {idx+1}/5  {seg['id']} {seg['title']}  seed={seg['seed']} =====", flush=True)
     api = check_graph(cfg, seg)
     if seg.get("last_frame_override"):
@@ -334,11 +354,14 @@ def run_seg(cfg, idx):
     probe(dst)
     shots(dst, seg["id"])
     extract_first_frame(dst, os.path.join(REF_DIR, f"{cfg['prefix']}_s{idx+1:02d}_first.png"))
-    if cfg.get("chain_first_frame"):
-        last_name = f"{cfg['prefix']}_s{idx+1:02d}_last.png"
-        last_local = extract_last_frame(dst, os.path.join(REF_DIR, last_name))
-        shutil.copy(last_local, os.path.join(P.COMFY_INPUT, last_name))
-        print(f"    尾帧已备给下一段：{last_name}", flush=True)
+    # 把尾帧备给下一段：仅当下一段是「链式承接」时才需要（转场模式下游独立，无需共享）
+    if idx + 1 < len(cfg["segments"]):
+        nlink = cfg["segments"][idx + 1].get("link") or {}
+        if nlink.get("mode", "chain") != "transition":
+            last_name = f"{cfg['prefix']}_s{idx+1:02d}_last.png"
+            last_local = extract_last_frame(dst, os.path.join(REF_DIR, last_name))
+            shutil.copy(last_local, os.path.join(P.COMFY_INPUT, last_name))
+            print(f"    尾帧已备给下一段（链式）：{last_name}", flush=True)
     return dst
 
 
@@ -520,11 +543,39 @@ def ensure_ref_in_input(cfg):
             shutil.copy(src, dst2)
 
 
-def cmd_merge_no_black(cfg, mode):
-    """不插黑场的接续：短叠化（0.25s 交叉溶解）或首尾帧直连硬切。
+def _gap_transition(cfg, seg, override=None):
+    """段 seg 之前的接缝转场类型（它如何与上一段相连）。
 
-    2026-11-11 用户反馈「黑屏不好」，改回项目原来的接续方式。
-    xfade 与 acrossfade 必须分开跑（同一 filtergraph 会互相拖死、成片被截）。
+    override 非 None（面板强制全局过场）时统一用 override；否则按本段 link：
+    - 无 link / link.mode=chain  → dissolve（首帧已承接，叠化只柔化接缝，项目原方式）
+    - link.mode=transition        → link.transition（dissolve / black / cut）
+    """
+    if override and override != "auto":
+        return override
+    link = seg.get("link")
+    if not link:
+        return "dissolve"
+    if link.get("mode") == "transition":
+        return link.get("transition") or "dissolve"
+    return "dissolve"  # chain 模式
+
+
+def _normalize_clip(path, w, h, fps, out_path):
+    cmd = ["ffmpeg", "-y", "-v", "error", "-i", path]
+    if not has_audio(path):
+        cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+    cmd += ["-vf", f"scale={w}:{h}:flags=lanczos,fps={fps},setsar=1,format=yuv420p",
+            "-c:v", "libx264", "-crf", "14", "-preset", "slow", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-shortest", out_path]
+    subprocess.run(cmd, check=True)
+    return out_path
+
+
+def cmd_merge(cfg, join=None):
+    """逐段拼成片，支持 per-link 接缝转场（链式承接 / 叠化 / 黑屏 / 硬切 可逐段混用）。
+
+    join 非 None 时强制全片统一为该类型；否则按每个分段的 link 决定本段之前的接缝。
+    xfade(acrossfade) 与 concat 必须分开构建，否则同一 filtergraph 会互相拖死。
     """
     os.makedirs(FINAL_DIR, exist_ok=True)
     segs = [os.path.join(SEG_DIR, f"{cfg['prefix']}_{s['id']}.mp4") for s in cfg["segments"]]
@@ -533,152 +584,179 @@ def cmd_merge_no_black(cfg, mode):
             P.die(f"缺段文件：{s}")
     probes = [ffprobe(s) for s in segs]
     w, h, fps = probes[0]["w"], probes[0]["h"], probes[0]["fps"]
-    d = float(cfg.get("join_dissolve_seconds", 0.25)) if mode == "dissolve" else 0.0
-    work = os.path.join(FINAL_DIR, "_work_join")
-    os.makedirs(work, exist_ok=True)
-    norm = []
-    for i, s in enumerate(segs):
-        n = os.path.join(work, f"j{i}.mp4")
-        cmd = ["ffmpeg", "-y", "-v", "error", "-i", s]
-        if not has_audio(s):
-            cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
-        cmd += ["-vf", f"scale={w}:{h}:flags=lanczos,fps={fps},setsar=1,format=yuv420p",
-                "-c:v", "libx264", "-crf", "14", "-preset", "slow", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-shortest", n]
-        subprocess.run(cmd, check=True)
-        norm.append(n)
-
-    base = os.path.join(FINAL_DIR, cfg.get("final_name") or f"{cfg['title']}_成片.mp4")
-    tag = "_短叠化" if mode == "dissolve" else "_硬切"
-    out = os.path.splitext(base)[0] + tag + ".mp4"
-    inputs = []
-    for p in norm:
-        inputs += ["-i", p]
-
-    if mode == "cut":
-        lst = os.path.join(work, "list.txt")
-        with open(lst, "w", encoding="utf-8") as f:
-            for p in norm:
-                f.write("file '" + p.replace("\\", "/") + "'\n")
-        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
-                        "-i", lst, "-c:v", "copy", "-c:a", "copy",
-                        "-movflags", "+faststart", out], check=True)
-    else:
-        lines = [f"[{i}:v]settb=AVTB,fps={fps},format=yuv420p,setsar=1[v{i}]"
-                 for i in range(len(norm))]
-        cur = float(probes[0]["dur"])
-        prev = "v0"
-        for i in range(1, len(norm)):
-            off = cur - d
-            nx = f"x{i}"
-            lines.append(f"[{prev}][v{i}]xfade=transition=fade:"
-                         f"duration={d:.3f}:offset={off:.3f}[{nx}]")
-            prev = nx
-            cur = off + float(probes[i]["dur"])
-        silent = os.path.join(work, "xfade_silent.mp4")
-        subprocess.run(["ffmpeg", "-y", "-v", "error", *inputs,
-                        "-filter_complex", ";".join(lines), "-map", f"[{prev}]",
-                        "-an", "-c:v", "libx264", "-crf", "14", "-pix_fmt", "yuv420p",
-                        "-movflags", "+faststart", silent], check=True)
-
-        alines = [f"[{i}:a]aresample=48000,"
-                  f"aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]"
-                  for i in range(len(norm))]
-        aprev = "a0"
-        for i in range(1, len(norm)):
-            na = f"ax{i}"
-            alines.append(f"[{aprev}][a{i}]acrossfade=d={d:.3f}:c1=tri:c2=tri[{na}]")
-            aprev = na
-        wav = os.path.join(work, "xfade_audio.wav")
-        subprocess.run(["ffmpeg", "-y", "-v", "error", *inputs,
-                        "-filter_complex", ";".join(alines), "-map", f"[{aprev}]",
-                        "-c:a", "pcm_s16le", wav], check=True)
-        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", silent, "-i", wav,
-                        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest",
-                        "-movflags", "+faststart", out], check=True)
-
-    out_silent = os.path.splitext(out)[0] + "_静音.mp4"
-    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", out, "-an", "-c:v", "copy",
-                    "-movflags", "+faststart", out_silent], check=True)
-    total = sum(float(p["dur"]) for p in probes) - (len(probes) - 1) * d
-    print(f"接续方式：{mode}  叠化 {d:.2f}s  总时长约 {total:.2f}s（无黑场）", flush=True)
-    print(f"成片：{out}", flush=True)
-    print(f"静音版：{out_silent}", flush=True)
-    probe(out)
-    shots(out, "_final_" + ("dissolve" if mode == "dissolve" else "cut"))
-    return out
-
-
-def cmd_merge(cfg, join=None):
-    mode = join or cfg.get("join_mode", "black")
-    if mode != "black":
-        return cmd_merge_no_black(cfg, mode)
-    os.makedirs(FINAL_DIR, exist_ok=True)
-    segs = [os.path.join(SEG_DIR, f"{cfg['prefix']}_{s['id']}.mp4") for s in cfg["segments"]]
-    for s in segs:
-        if not os.path.exists(s):
-            P.die(f"缺段文件：{s}")
-    first = ffprobe(segs[0])
-    w, h, fps = first["w"], first["h"], first["fps"]
-    gap = float(cfg["join_black_seconds"])
+    d = float(cfg.get("join_dissolve_seconds", 0.25))
+    gap = float(cfg.get("join_black_seconds", 0.8))
     gap_frames = max(1, round(gap * fps))
     gap = gap_frames / fps  # 量化到整帧，避免 concat 时间基错位
-    print(f"过场黑屏 {gap_frames} 帧 = {gap:.3f}s（{fps}fps）", flush=True)
 
-    work = os.path.join(FINAL_DIR, "_work")
+    # 每个接缝(段i之前, i>=1)的转场类型
+    T = [None] + [_gap_transition(cfg, cfg["segments"][i], join) for i in range(1, len(segs))]
+
+    work = os.path.join(FINAL_DIR, "_work_join")
     os.makedirs(work, exist_ok=True)
-    norm = []
-    for i, s in enumerate(segs):
-        n = os.path.join(work, f"n{i}.mp4")
-        has_a = has_audio(s)
-        cmd = ["ffmpeg", "-y", "-v", "error", "-i", s]
-        if not has_a:
-            cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
-        cmd += ["-vf", f"scale={w}:{h}:flags=lanczos,fps={fps},setsar=1"]
-        cmd += ["-c:v", "libx264", "-crf", "14", "-preset", "slow", "-pix_fmt", "yuv420p"]
-        if has_a:
-            cmd += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-shortest"]
-        else:
-            cmd += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-shortest"]
-        cmd += [n]
-        subprocess.run(cmd, check=True)
-        norm.append(n)
     black = os.path.join(work, "black.mp4")
-    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
-                    "-i", f"color=c=black:s={w}x{h}:r={fps}:d={gap:.6f}",
-                    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
-                    "-c:v", "libx264", "-crf", "14", "-pix_fmt", "yuv420p",
-                    "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-                    "-shortest", "-t", f"{gap:.6f}", black], check=True)
+    if any(t == "black" for t in T if t):
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+                        "-i", f"color=c=black:s={w}x{h}:r={fps}:d={gap:.6f}",
+                        "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+                        "-c:v", "libx264", "-crf", "14", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                        "-shortest", "-t", f"{gap:.6f}", black], check=True)
 
-    lst = os.path.join(work, "list.txt")
-    order = []
-    for i, n in enumerate(norm):
-        order.append(n)
-        if i < len(norm) - 1:
-            order.append(black)
-    with open(lst, "w", encoding="utf-8") as f:
-        for p in order:
-            f.write("file '" + p.replace("\\", "/") + "'\n")
-    out = os.path.join(FINAL_DIR, cfg.get("final_name") or f"{cfg['title']}_成片.mp4")
-    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
-                    "-i", lst, "-c:v", "copy", "-c:a", "copy",
-                    "-movflags", "+faststart", out], check=True)
-    # 纯静音版（需求要求成片不叠加音效）
+    # 构建展平片段列表：黑屏作为独立片段插在对应接缝处
+    flat = []  # ("seg", path, orig_idx) 或 ("black", path, None)
+    for i, s in enumerate(segs):
+        flat.append(("seg", s, i))
+        if i < len(segs) - 1 and T[i + 1] == "black":
+            flat.append(("black", black, None))
+
+    norm = []
+    for k, (kind, path, oi) in enumerate(flat):
+        n = os.path.join(work, f"j{k}.mp4")
+        _normalize_clip(path, w, h, fps, n)
+        norm.append((kind, n, oi))
+
+    base = os.path.join(FINAL_DIR, cfg.get("final_name") or f"{cfg['title']}_成片")
+    out = base if base.lower().endswith(".mp4") else base + ".mp4"
     out_silent = os.path.splitext(out)[0] + "_静音.mp4"
+
+    # 相邻 flat 片段之间的转场：仅当两者都是 seg 且后者接缝为 dissolve 才 xfade，否则 concat
+    def is_xfade(k):
+        if norm[k][0] != "seg" or norm[k + 1][0] != "seg":
+            return False
+        return T[norm[k + 1][2]] == "dissolve"
+
+    inputs = []
+    for kind, n, oi in norm:
+        inputs += ["-i", n]
+
+    # 视频 filtergraph
+    vlines = [f"[{i}:v]settb=AVTB,fps={fps},format=yuv420p,setsar=1[v{i}]"
+              for i in range(len(norm))]
+    cur = float(probes[norm[0][2]]["dur"]) if norm[0][0] == "seg" else gap
+    prev = "v0"
+    for i in range(1, len(norm)):
+        dur_i = float(probes[norm[i][2]]["dur"]) if norm[i][0] == "seg" else gap
+        if is_xfade(i - 1):
+            off = cur - d
+            nx = f"x{i}"
+            vlines.append(f"[{prev}][v{i}]xfade=transition=fade:duration={d:.3f}:offset={off:.3f}[{nx}]")
+            prev = nx
+            cur = off + dur_i
+        else:
+            nx = f"c{i}"
+            vlines.append(f"[{prev}][v{i}]concat=n=2:v=1:a=0[{nx}]")
+            prev = nx
+            cur = cur + dur_i
+
+    # 音频 filtergraph（与视频对应：xfade→acrossfade，否则 concat）
+    alines = [f"[{i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]"
+              for i in range(len(norm))]
+    aprev = "a0"
+    for i in range(1, len(norm)):
+        if is_xfade(i - 1):
+            na = f"ax{i}"
+            alines.append(f"[{aprev}][a{i}]acrossfade=d={d:.3f}:c1=tri:c2=tri[{na}]")
+        else:
+            na = f"ac{i}"
+            alines.append(f"[{aprev}][a{i}]concat=n=2:v=0:a=1[{na}]")
+        aprev = na
+
+    silent = os.path.join(work, "xfade_silent.mp4")
+    subprocess.run(["ffmpeg", "-y", "-v", "error", *inputs,
+                    "-filter_complex", ";".join(vlines), "-map", f"[{prev}]",
+                    "-an", "-c:v", "libx264", "-crf", "14", "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart", silent], check=True)
+    wav = os.path.join(work, "xfade_audio.wav")
+    subprocess.run(["ffmpeg", "-y", "-v", "error", *inputs,
+                    "-filter_complex", ";".join(alines), "-map", f"[{aprev}]",
+                    "-c:a", "pcm_s16le", wav], check=True)
+    mux = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", silent, "-i", wav,
+                          "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest",
+                          "-movflags", "+faststart", out], capture_output=True, text=True)
+    if mux.returncode != 0:
+        P.die(f"最终 mux 失败（{mux.returncode}）：{(mux.stderr or '')[-900:]}")
     subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", out, "-an", "-c:v", "copy",
                     "-movflags", "+faststart", out_silent], check=True)
+    types = [t for t in T if t]
+    print(f"成片（逐段转场）：{' / '.join(types)}  总时长约 {cur:.2f}s", flush=True)
     print(f"成片：{out}", flush=True)
     print(f"静音版：{out_silent}", flush=True)
     probe(out)
-    print(f"总时长应为 {len(segs)*8 + (len(segs)-1)*gap:.2f}s", flush=True)
-    shots(out, "_final")
+    shots(out, "_final_mixed")
     return out
+
+
+# cmd_merge 统一实现见上方（per-link 转场已原生支持 dissolve/black/cut 混用）。
+
+
+def cmd_insert(cfg, after):
+    """在 after 段(1-based)后插入一段新段，重编号并重命名产物文件。
+
+    新段默认「链式承接」(link.mode=chain)：首帧=前段尾帧，后段首帧自动改为=新段尾帧；
+    body 复制前段作起点，seed 随机。插入后由面板 refresh 重建卡片。
+    """
+    segs = cfg["segments"]
+    if not (1 <= after < len(segs)):
+        P.die(f"插入位置非法：after={after}（共 {len(segs)} 段，需在 1..{len(segs) - 1} 之间）")
+    prefix = cfg["prefix"]
+    old_id = {id(s): s["id"] for s in segs}
+    old_pos = {id(s): i for i, s in enumerate(segs)}
+    new_seg = {
+        "id": "_new",
+        "title": "插入分段",
+        "seed": int(time.time() * 1000) % 10 ** 8,
+        "body": segs[after - 1].get("body", ""),
+        "link": {"mode": "chain", "transition": "dissolve"},
+        "updated_at": 0,
+    }
+    segs.insert(after, new_seg)  # 插在 1-based after 段之后（0-based 位置 after）
+    rename, pos_map = {}, {}
+    for i, s in enumerate(segs):
+        oid = old_id.get(id(s))
+        s["index"] = i
+        s["id"] = f"s{i + 1:02d}"
+        if oid is not None and oid != s["id"]:
+            rename[oid] = s["id"]
+        op = old_pos.get(id(s))
+        if op is not None and op != i:
+            pos_map[op] = i
+    # 视频文件改名（先临时名避免同目录碰撞）
+    for oid, nid in rename.items():
+        src = os.path.join(SEG_DIR, f"{prefix}_{oid}.mp4")
+        if os.path.exists(src):
+            os.rename(src, os.path.join(SEG_DIR, f"__tmp_{nid}.mp4"))
+    for oid, nid in rename.items():
+        tmp = os.path.join(SEG_DIR, f"__tmp_{nid}.mp4")
+        if os.path.exists(tmp):
+            os.rename(tmp, os.path.join(SEG_DIR, f"{prefix}_{nid}.mp4"))
+    # 首尾帧 refs + ComfyUI input 里的尾帧副本，按位置改名
+    for op, np_ in pos_map.items():
+        for suf in ("first", "last"):
+            src = os.path.join(REF_DIR, f"{prefix}_s{op + 1:02d}_{suf}.png")
+            if os.path.exists(src):
+                os.rename(src, os.path.join(REF_DIR, f"__tmp_s{np_ + 1:02d}_{suf}.png"))
+        inp = os.path.join(P.COMFY_INPUT, f"{prefix}_s{op + 1:02d}_last.png")
+        if os.path.exists(inp):
+            os.rename(inp, os.path.join(P.COMFY_INPUT, f"__tmp_s{np_ + 1:02d}_last.png"))
+    for op, np_ in pos_map.items():
+        for suf in ("first", "last"):
+            tmp = os.path.join(REF_DIR, f"__tmp_s{np_ + 1:02d}_{suf}.png")
+            if os.path.exists(tmp):
+                os.rename(tmp, os.path.join(REF_DIR, f"{prefix}_s{np_ + 1:02d}_{suf}.png"))
+        tmp = os.path.join(P.COMFY_INPUT, f"__tmp_s{np_ + 1:02d}_last.png")
+        if os.path.exists(tmp):
+            os.rename(tmp, os.path.join(P.COMFY_INPUT, f"{prefix}_s{np_ + 1:02d}_last.png"))
+    with open(CFG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    print(f"已在第 {after} 段后插入新段（默认链式承接），现共 {len(segs)} 段，已重编号并重命名产物。",
+          flush=True)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["ref", "plate", "seg", "all", "merge", "probe", "graph", "status", "set"])
+    ap.add_argument("cmd", choices=["ref", "plate", "seg", "all", "merge", "probe",
+                                    "graph", "status", "set", "insert"])
     ap.add_argument("idx", nargs="?", type=int, default=0)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--seg", type=int, default=0, help="set 命令的目标段号（1 起）")
@@ -689,8 +767,16 @@ def main():
     ap.add_argument("--last-frame", dest="last_frame", default=None,
                     help="set：锁定本段尾帧图（接 238.last_frame，需重出本段）；auto 解除")
     ap.add_argument("--cfg", default=DEFAULT_CFG, help="分镜 json 路径；产物写到同目录")
-    ap.add_argument("--join", choices=["black", "dissolve", "cut"], default=None,
-                    help="段间接续：black=0.8s 纯黑；dissolve=0.25s 短叠化（项目原来的方式）；cut=首尾帧直连硬切")
+    ap.add_argument("--join", choices=["black", "dissolve", "cut", "auto"], default=None,
+                    help="段间接续：auto=按每段 link 决定；black=0.8s 纯黑；"
+                         "dissolve=0.25s 短叠化（项目原来的方式）；cut=首尾帧直连硬切")
+    ap.add_argument("--link-mode", dest="link_mode", default=None,
+                    choices=["chain", "transition"],
+                    help="set：本段承接上一段的方式 chain=像素承接 / transition=独立+转场")
+    ap.add_argument("--link-transition", dest="link_transition", default=None,
+                    choices=["dissolve", "black", "cut"],
+                    help="set：transition 模式下的接缝转场类型")
+    ap.add_argument("--after", type=int, default=0, help="insert：在第 after 段(1起)后插入新段")
     a = ap.parse_args()
     set_root(a.cfg)
     os.makedirs(QA_DIR, exist_ok=True)
@@ -722,6 +808,8 @@ def main():
             run_seg(cfg, i)
     elif a.cmd == "status":
         print(json.dumps(seg_status(cfg), ensure_ascii=False), flush=True)
+    elif a.cmd == "insert":
+        cmd_insert(cfg, a.after)
     elif a.cmd == "set":
         cmd_set(cfg, a)
     elif a.cmd == "probe":
