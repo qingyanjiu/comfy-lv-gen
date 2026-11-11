@@ -19,6 +19,9 @@ SEG_TEXT_KEYS = (
 SEG_TITLE_KEYS = ("title", "name", "shot_name", "label")
 COMPOSE_KEYS = ("shot", "camera", "light", "open_action", "motion", "end_action", "frame")
 SEGMENT_LIST_KEYS = ("segments", "scenes", "shots", "clips", "items", "parts")
+# 段级字段原样透传（seed / 接缝 / 段级 head / 首尾帧锁定）
+SEG_PASSTHROUGH_KEYS = ("seed", "link", "head",
+                        "first_frame_override", "last_frame_override")
 
 DEFAULT_HEAD = (
     "<Picture 1> 是人物参考，完整还原其中人物的脸型、五官、发型、服装与身材比例，"
@@ -142,12 +145,24 @@ def normalize(raw, *, title=None, seconds=None, fps=24, megapixels=0.5,
     segments = []
     for index, body in enumerate(bodies, 1):
         source = items[index - 1] if index - 1 < len(items) else {}
-        segments.append({
+        item = {
             "id": f"s{index:02d}",
             "title": _pick_title(source, index) if source else
                      (re.sub(r"\s+", " ", body)[:14] or f"第 {index} 段"),
             "body": body,
-        })
+        }
+        # 段级 seed / link / head / 首尾帧锁定：模板里写了就照着用
+        if isinstance(source, dict):
+            for key in SEG_PASSTHROUGH_KEYS:
+                value = source.get(key)
+                if value in (None, "", {}, []):
+                    continue
+                if key == "link" and not isinstance(value, dict):
+                    continue
+                if key == "link" and index == 1:
+                    continue        # 首段没有接缝，忽略
+                item[key] = value
+        segments.append(item)
 
     return {
         "title": str(title or meta.get("title") or "未命名长片"),
@@ -156,5 +171,114 @@ def normalize(raw, *, title=None, seconds=None, fps=24, megapixels=0.5,
         "seconds": seconds,
         "fps": fps,
         "megapixels": megapixels,
+        "ref_image": str(meta.get("ref_image") or ""),
+        "bg_plate_path": str(meta.get("bg_plate_path") or ""),
         "segments": segments,
+    }
+
+
+# ---------------------------------------------------------------- 模板（供网页下载）
+
+FIELD_DOC = {
+    "title": "片名。也是成片文件名与建片目录名的前缀。",
+    "seconds": "每段时长（秒），「全片统一」。会被量化成 17n+5 帧：5s→124 帧、8s→209 帧、10s→260 帧。改这里等于改所有段。",
+    "fps": "帧率，默认 24。非必要不要改，模型按 24fps 训练。",
+    "megapixels": "每段画幅，按总像素算。0.5 ≈ 960×544（16:9），0.3 ≈ 736×416，0.8 ≈ 1216×688。8GB 显存建议 ≤0.5。",
+    "head": "全片公共前置提示词，拼在每段 body 之前。用来锁定人物身份、空镜板环境、画风。「注意 <Picture N> 编号随接线变化」，链式段要用段级 head 覆盖。",
+    "tail": "全片公共后置提示词，拼在每段 body 之后。放画风/颗粒/禁止文字水印/段首尾静止锚。",
+    "ref_image": "人物参考图的「绝对路径」（D:/xxx/refs/girl.png）。留空则用网页上「上传参考图」传的那张。",
+    "bg_plate_path": "空镜板（无人场景图）的「绝对路径」。留空则用网页「上传空镜板」。",
+    "segments": "分段列表，顺序即播放顺序。每段至少要有 body。",
+
+    "segments[].title": "段标题，只用于网页卡片与日志显示，不参与生成。",
+    "segments[].body": "该段提示词（必填）。只写这一段发生的事：人物动作 + 机位 + 光线 + 场景，不要写「上一段如何、下一段如何」。head/tail 会自动包在外面。",
+    "segments[].seed": "该段随机种子（整数）。同一个 body 换 seed 就换一条演绎；不满意就换 seed 重出，别改 body。「别用 100000」（0.1% 恶性种子，必出瑕疵）。留空则自动随机。",
+    "segments[].head": "可选。覆盖全局 head，只对这一段生效。「当本段接了首帧时必写」（<Picture 1> 会变成首帧，人物参考后移到 P2）。留空回落到全局 head。",
+    "segments[].link": "可选。本段与「上一段」怎么接。第 1 段忽略此字段。不写 = 默认链式承接。",
+    "segments[].link.mode": "chain = 链式承接：本段第 0 帧 = 上段尾帧，动作连续、像素级接上（实测接缝 MAE 2~3）。transition = 转场：本段独立生成，不接上段尾帧，只靠拼接时叠化/黑屏过渡；改上游不会让你重出。",
+    "segments[].link.transition": "仅 mode=transition 时生效。dissolve = 0.25s 交叉溶解（默认，最自然）；black = 0.8s 纯黑硬切（换场/换时间）；cut = 直接硬切（同场景切机位）。",
+    "segments[].first_frame_override": "可选。用一张指定图当本段首帧，「优先于上段尾帧」。填图片文件名（如 sl_xxx_s01_last.png，会在 ComfyUI input 与片目录 refs/ 里找），一般由网页「设为本段首帧」按钮自动写入，手改少用。",
+    "segments[].last_frame_override": "可选。用一张指定图当本段尾帧（实验性，默认不用）。一般由网页「锁定本段尾帧」按钮写入。",
+}
+
+FIELD_NOTE = {
+    "picture": (
+        "<Picture N> 按「本段实际接了几张图」从 1 数起，顺序是：先 first_frame → 再 last_frame → "
+        "再 ref_image_1..9（人物参考、空镜板）。所以编号会漂：\n"
+        "· 第 1 段 / 转场段（没接首帧）：P1=人物参考，P2=空镜板\n"
+        "· 链式段（接了上段尾帧）：P1=首帧，P2=人物参考，P3=空镜板\n"
+        "· 再锁了 last_frame：P1=首帧，P2=尾帧，P3=人物，P4=空镜板\n"
+        "引用超出本段图数会直接报错拒单；不超但写错位不报错，只是身份锚被顶替（静默降级）。"
+    ),
+    "length": "段时长只由顶层 seconds 决定（全片统一），不支持逐段不同时长。",
+    "transition_switch": "把某段从 transition 改回 chain 时，上段尾帧可能没备进 ComfyUI input（转场段不共享尾帧），"
+                        "本段会提示「缺上一段尾帧」并退化成不接首帧。补法：先重出上段，或在网页点该段「重出」让链路自己备好。",
+    "auto_cut": "如果只给一整段长文本（或 segments 里只有 1 段很长的 body），会自动按空行 → 分隔线 → 句号 切成多段，"
+                "每段约 130 字。想精确控制就在 segments 里自己分好。",
+}
+
+
+def build_template() -> dict:
+    """返回一份可直接下载、照着改的模板（合法 JSON，注释放在 _ 开头的兄弟字段里）。"""
+    seg1 = {
+        "_说明": "第 1 段：不写 link（首段没有上一段）。本段只接人物参考+空镜板，所以 P1=人物、P2=空镜板。",
+        "title": "推门走出天台",
+        "seed": 460211,
+        "body": (
+            "她缓缓推开一扇斑驳生锈的铁门，从门后走出来，铁门在身后缓慢回落。\n\n"
+            "[机位] 摄影机在斜后方腰部高度轻微仰拍，人物位于画面偏左，"
+            "极平稳地缓慢向前推进。\n\n"
+            "[光线] 橙红夕阳沉在远处楼群之间，暖金色轮廓光勾出发丝与肩膀边缘。\n\n"
+            "[场景] 粗糙灰色水泥天台，地面有浅浅积水，右前方灰白金属栏杆，栏杆外楼群层叠延伸到地平线。"
+        ),
+    }
+    seg2 = {
+        "_说明": "第 2 段：link=chain（默认）→ 第 0 帧接上段尾帧。因为接了首帧，Picture 编号整体后移，head 必须重写。",
+        "title": "走向栏杆",
+        "seed": 460223,
+        "link": {"mode": "chain", "transition": "dissolve"},
+        "head": (
+            "<Picture 1> 是本段首帧、也就是上一段的最后一帧，必须无缝延续，人物位置与朝向不得跳变。\n\n"
+            "<Picture 2> 是人物参考，脸型、五官、发型、服装、身材以它为准，全程不换人。\n\n"
+            "<Picture 3> 是全片唯一的场景空镜，环境结构与光源方向以它为准。"
+        ),
+        "body": (
+            "她从铁门边起步，缓步走向画面右侧的金属栏杆，右手抬起搭在栏杆上。\n\n"
+            "[机位] 摄影机跟随她向右平移，保持中景，腰部高度。\n\n"
+            "[光线] 与上段同一档橙红夕阳，只有云层亮度极轻微变化，绝不入夜、不转蓝调。"
+        ),
+    }
+    seg3 = {
+        "_说明": "第 3 段：link=transition + black → 独立生成（不接上段尾帧），拼接时用 0.8s 黑场切过来。适合换场/换时间。",
+        "title": "入夜后的侧脸",
+        "seed": 460237,
+        "link": {"mode": "transition", "transition": "black"},
+        "body": (
+            "同一座天台的夜景，她侧身站在栏杆前，风吹动长发，侧脸被远处的城市灯光照亮。\n\n"
+            "[机位] 固定机位近景侧脸特写，浅景深，背景灯点虚化成光斑。\n\n"
+            "[光线] 蓝调夜景，冷色环境光 + 暖色城市灯点，人物侧脸有一道暖边光。"
+        ),
+    }
+    return {
+        "_说明": "⚠ 这是一份可以直接改的模板：改完存成 .json，回到网页点「导入分镜 JSON」→ 选这个文件 → 建片。"
+                 "所有以 _ 开头的字段（_说明 / _字段说明 / _规则说明）都只是注释，不会被读取，可以整行删掉，也不影响导入。",
+        "_字段说明": FIELD_DOC,
+        "_规则说明": FIELD_NOTE,
+
+        "title": "黄昏天台",
+        "seconds": 5,
+        "fps": 24,
+        "megapixels": 0.5,
+        "head": (
+            "<Picture 1> 是人物参考，完整还原其中人物的脸型、五官、发型、服装与身材比例，全程不换人、不换装。\n\n"
+            "<Picture 2> 是全片唯一的场景空镜参考，环境结构、陈设与光源方向以它为准，保持不变。"
+        ),
+        "tail": (
+            "写实电影摄影，35mm 镜头，柔和浅景深，真实光学散景，细腻胶片颗粒。"
+            "画面中只有剧情里的人物，不出现文字、水印、字幕。\n\n"
+            "[衔接] 段首约 0.5 秒动作与镜头保持稳定，段尾约 0.5 秒动作收住。"
+        ),
+        "ref_image": "",
+        "bg_plate_path": "",
+        "segments": [seg1, seg2, seg3],
     }

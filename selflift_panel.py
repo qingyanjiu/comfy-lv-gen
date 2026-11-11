@@ -245,6 +245,16 @@ def register_routes(routes, web):
         return web.Response(text=page.read_text(encoding="utf-8"),
                             content_type="text/html", charset="utf-8")
 
+    @routes.get("/h3-long-video/selflift/template")
+    async def selflift_template(request):
+        """下载可直接照着改的分镜模板（合法 JSON，字段含义写在 _字段说明 里）。"""
+        data = _schema_module().build_template()
+        text = json.dumps(data, ensure_ascii=False, indent=2)
+        return web.Response(
+            text=text, content_type="application/json", charset="utf-8",
+            headers={"Content-Disposition":
+                     'attachment; filename="segments-template.json"'})
+
     @routes.post("/h3-long-video/selflift/preview")
     async def selflift_preview(request):
         """只做切分预览，不建目录（网页导入弹窗用）。"""
@@ -307,6 +317,8 @@ def register_routes(routes, web):
 
             cfg = json.loads(TEMPLATE.read_text(encoding="utf-8"))
             cfg.pop("_template_note", None)
+            ref_path = str(data.get("ref_image") or "").strip()
+            plate_path = str(data.get("bg_plate_path") or "").strip()
             cfg.update({
                 "title": data["title"],
                 "prefix": prefix,
@@ -317,8 +329,10 @@ def register_routes(routes, web):
                 "length": int(17 * round(data["seconds"] * data["fps"] / 17) + 5),
                 "head": data["head"],
                 "tail": data["tail"],
-                "ref_image": str(out_dir / "refs" / "girl_ref.png"),
-                "bg_plate_path": str(out_dir / "refs" / "bg_plate.png"),
+                "ref_image": (ref_path if ref_path and Path(ref_path).is_file()
+                              else str(out_dir / "refs" / "girl_ref.png")),
+                "bg_plate_path": (plate_path if plate_path and Path(plate_path).is_file()
+                                  else str(out_dir / "refs" / "bg_plate.png")),
                 "comfy_ref_name": f"{prefix}_girl_ref.png",
                 "bg_plate": f"{prefix}_bg_plate.png",
                 "join_mode": "dissolve",
@@ -326,16 +340,25 @@ def register_routes(routes, web):
                 "chain_first_frame": True,
             })
             segments = []
+            seed_base = int(body.get("seed_base") or 0)
             for index, seg in enumerate(data["segments"], 1):
-                seed = int(body.get("seed_base") or 0)
                 item = {
                     "id": seg["id"],
                     "title": seg["title"],
-                    "seed": (seed + index * 37) if seed else random.randint(300000, 900000),
+                    "seed": int(seg.get("seed") or 0) or (
+                        (seed_base + index * 37) if seed_base
+                        else random.randint(300000, 900000)),
                     "body": seg["body"],
                 }
+                if seg.get("head"):
+                    item["head"] = seg["head"]
+                for key in ("first_frame_override", "last_frame_override"):
+                    if seg.get(key):
+                        item[key] = seg[key]
                 if index > 1:
-                    item["link"] = {"mode": "chain", "transition": "dissolve"}
+                    link = seg.get("link")
+                    item["link"] = (link if isinstance(link, dict)
+                                    else {"mode": "chain", "transition": "dissolve"})
                 segments.append(item)
             cfg["segments"] = segments
 
