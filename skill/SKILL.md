@@ -356,6 +356,13 @@ ffmpeg -y -v error -i final.mp4 -vf "fps=1,scale=268:-1" -frames:v 39 qa/_sec/%0
   `join=dissolve|cut|black` 则强制全片统一。
 - 想「改尾帧但后段不动、只在两段间加转场」的操作：把后段 `link.mode` 设为 `transition`（面板那行下拉），
   再改前段尾帧 / 重出前段 → 后段保持原样，拼接时按转场接上。
+- **切换模式要注意**：把某段从 `transition` 改回 `chain` 时，上段尾帧可能**没备进** `P.COMFY_INPUT`
+  （转场模式不共享尾帧）。此时本段会打印「缺上一段尾帧」并退化为不接首帧。补法：先抽上段尾帧放到
+  `COMFY_INPUT/<prefix>_sNN_last.png`（`refs/` 里留一份），或用面板重出上段让链路自动备好。
+- 术语对应（旧手册口径）：`link.mode=chain` ≈ 旧文档的 `chain:true`（连续动作、同一机位、首帧=上段尾帧）；
+  `link.mode=transition` ≈ 旧文档的 `chain:false + transition:cut`（切镜、独立首帧）。但**新旧是两套实现**：
+  SelfLift 用 `segments[].link`，旧 Director 用 `chain` 布尔，别混用。
+- 验收：链式接缝 **MAE 通常 2~3（≈1% 像素差）即无缝**；明显 >8 说明没真接上（多因缺尾帧退化成不接首帧）。
 
 **在中间插入一段**：面板每段卡片有「＋ 在此段后插入」（`POST insert`）。新段默认链式承接
 （首帧=前段尾帧、后段首帧自动改为=新段尾帧），body 复制前段作起点、seed 随机。
