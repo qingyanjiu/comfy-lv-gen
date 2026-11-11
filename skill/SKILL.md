@@ -380,6 +380,44 @@ http://127.0.0.1:8188/h3-long-video/app
 底层仍是 `run_selflift.py`，所以出片结果与工作流面板等价——**以后可以完全不碰工作流**。
 `H3-SelfLift_逐段导演.json` 只是旧入口，保留不删。
 
+### 独立服务：`tools/serve_app.py`（推荐入口，2026-11-11 用户定）
+
+用户 18:32：「你这就把 ComfyUI 服务当服务器了呗」——**不该**。挂在 ComfyUI 的 aiohttp 上有三个硬伤：
+
+| 问题 | 具体表现 |
+|---|---|
+| 生死绑定 | 桌面版重启/崩溃 → 网页 404，跑一半的任务状态一起丢 |
+| **阻塞 event loop** | handler 里 `_run` 是同步 `subprocess.run`（0.3~2s），网页每 3s 轮询 status = 每 3s 把 ComfyUI 的 HTTP 冻一次（前端 websocket/进度条/队列查询跟着卡）|
+| 加路由要重启 | `/selflift/*` 是 Python 路由，改一次重启一次桌面版 |
+
+**用法**（独立进程，ComfyUI 只当算力）：
+
+```bash
+PY=<ComfyUI>/.venv/Scripts/python.exe
+$PY tools/serve_app.py                 # 127.0.0.1:8900
+$PY tools/serve_app.py --host 0.0.0.0 --port 8900   # 给别的机器/手机用
+$PY tools/serve_app.py --comfy http://192.168.1.5:8188   # ComfyUI 在别处
+```
+Windows 可直接双击 `tools/serve_app.bat`（自动找 venv 并开浏览器）。
+`/` 自动跳 `/h3-long-video/app`；`/health` 返回 driver 是否存在、输出根、当前 ComfyUI 地址。
+
+**实现零重复**：`serve_app.py` 只是 `routes = RouteTableDef(); selflift_panel.register_routes(routes, web)`，
+再挂到自己的 `Application`。**两个入口共用同一套 handler，改功能只改 `selflift_panel.py`**。
+`tools/serve_app.py` 通过 `H3_COMFY_API` 环境变量告诉子进程 ComfyUI 在哪（子进程继承）。
+
+**同时修掉的阻塞（必须记住）**：`selflift_panel.py` 里
+- `_run()` / `_status()` 保持同步（它们本来就该是纯函数）
+- handler 内一律 `await _run_async(...)` / `await _status_async(...)`
+- 由 `asyncio.to_thread` 丢线程池 —— **以后新增 handler 千万别直接调 `_run`**，否则又把别人的 event loop 冻住
+
+实测（8900，走秀工程）：
+- 单次 status 284ms；**并发 4 个墙钟 298ms、并行度 3.98x**（改前会是 ~4 倍串行）
+- status 压力下 `/health` 延迟：中位 **12ms**、最大 27ms（改前会飙到几百 ms）
+
+> 独立服务是**新进程**，改完代码重启它就生效，**不需要重启 ComfyUI 桌面版**。
+> 反过来，ComfyUI 内嵌版（`/h3-long-video/app`）仍存在，只是同样要重启桌面版才吃到新路由；
+> 两个入口可以并存，数据（output/、cfg）完全共享。
+
 ## 逐段人在回路：Director 面板第 5 个 tab（2026-11-11 用户定）
 
 用户 07:09：「以后长视频就用这个方式来做，那 direct 工作流就得做修改了，
