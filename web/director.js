@@ -1315,6 +1315,8 @@ function buildSelfLiftPane(host) {
     .h3-sl-textarea { width:100%; box-sizing:border-box; background:#161a21; color:#e8ecf2; border:1px solid #343b47; border-radius:4px; padding:6px; font-size:11px; line-height:1.5; resize:vertical; }
     .h3-sl-finals { display:flex; flex-wrap:wrap; gap:8px; }
     .h3-sl-link { color:#8fb8e8; font-size:11px; }
+    .h3-sl-hint { font-size:11px; line-height:1.5; color:#f0c47a; background:#2a2318;
+      border:1px solid #6b5228; border-radius:4px; padding:5px 8px; }
   `;
   host.appendChild(style);
 
@@ -1343,7 +1345,10 @@ function buildSelfLiftPane(host) {
   const taskBox = makeElement("pre", "h3-sl-task");
   const finalsBox = makeElement("div", "h3-sl-finals");
   const list = makeElement("div", "h3-sl-list");
-  host.append(bar, status, taskBox, finalsBox, list);
+  const hint = makeElement("div", "h3-sl-hint",
+    "出片请用每段卡片里的「运行」按钮；画布上方的 Run 走的是旧 Director 链路，"
+    + "和这个面板无关（会报错、也不会出段）。");
+  host.append(bar, hint, status, taskBox, finalsBox, list);
 
   let timer = null;
   let signature = "";
