@@ -392,6 +392,72 @@ ffmpeg -y -v error -i final.mp4 -vf "fps=1,scale=268:-1" -frames:v 39 qa/_sec/%0
 - 空镜板是语义级参考，机位变化时透视不严格对齐。
 - 上传的图不做 Lab 色彩对齐；若来自过编辑模型，喂之前自己先对齐。
 
+### Director 节点参数速查：22 个控件哪些有用（2026-11-11 核对代码）
+
+**结论：22 个 widget（+ seed 的 control_after_generate 共 23 格）全部只服务「点节点画布运行」的旧链路**
+（`execute` → `run_h3_long_video.py`）。SelfLift 出片链路（面板第 5 tab → `run_selflift.py`）
+**一个都不读**：它只读 `segments.json` + `cfg["workflow"]` 指向的 base workflow。
+跑 SelfLift 时这些控件是纯摆设，改了不影响出片。
+
+节点在 SelfLift 里的唯一作用：给面板当宿主（`addDOMWidget`）；`node.properties.h3_tab`
+只记上次打开哪个 tab。连 `reference_1…9`、`first_frame` 这些 IMAGE 连线槽也不参与
+（SelfLift 用 base workflow 里的 LoadImage 150/151/152/153）。
+
+#### SelfLift 真正有效的参数入口
+
+| 想调什么 | 改哪里 |
+|---|---|
+| 分辨率 / 画幅 | `segments.json` 的 `megapixels`（默认 0.5MP@16:9 = 960×544）；比例来自 base workflow 115 节点的 `aspect_ratio` |
+| 时长 | `segments.json` 的 `seconds` / `length`（须落 17n+5：5s→124、15s→362） |
+| 帧率 | `segments.json` 的 `fps` |
+| **步数 / 采样器 / scheduler** | **只能改 base workflow（`H3-SelfLift_*.json`）里 235 采样节点的 widget**；`segments.json` 没这字段、面板无入口 |
+| 每段提示词 / seed | `segments.json` 的 `segments[].body` / `seed`，或面板卡片 |
+| 接缝方式 | `segments[].link`（面板「承接」下拉） |
+| 拼接转场 | `join=auto` 逐段读 link，或面板「拼接」下拉 |
+| 参考图 / 空镜板 | `segments.json` 的 `ref_image` / `bg_plate_path` / `comfy_ref_name` / `bg_plate` |
+| 产物命名 | `segments.json` 的 `title` / `prefix` / `final_name` |
+
+#### 分镜与参考
+
+| 控件 | SelfLift | 旧链路作用 | 备注 |
+|---|---|---|---|
+| `storyboard` | ✗ 不读 | 旧链路分镜 JSON（段落/秒数/是否二采/提示词），`_normalize_storyboard` 解析 | SelfLift 用 `segments.json`，往这框里写什么都不影响 |
+| `reference_notes` | ✗ 不读 | **实为「每段提示词的公共前缀」**，拼成 `prefix\n\nprompt` | ⚠ 名字叫"参考说明"，不是说明文字 |
+| `reference_1…9` / `first_frame` | ✗ 不读 | 旧链路参考图 / 首帧连线槽 | SelfLift 走 LoadImage，不接这些槽 |
+
+#### 分辨率与画质（全为旧链路）
+
+| 控件 | 旧链路作用 | 备注 |
+|---|---|---|
+| `steps` / `two_pass_steps` | 一采 / 二采步数 | SelfLift 的步数写死在 base workflow 235 节点 |
+| `sampler` / `scheduler` | 采样器 / 调度器 | 同上，面板无入口 |
+| `megapixels` | 旧一采分辨率（默认 0.2） | SelfLift 用 `segments.json` 的（默认 0.5） |
+| `final_width` / `final_height` | 成片尺寸 | ⚠ **基本是死的**：`resolution` 选中预设档就被覆盖，仅「自定义」档才生效；且旧链路只允许竖屏 |
+| `resolution` | 分辨率预设，同时作用于关键帧与成片 | 覆盖 `final_width/height` |
+| `two_pass_mode` | 每段一采/二采策略：跟随 JSON / 全一采 / 全二采 | 旧链路专用 |
+
+#### 任务控制（全为旧链路）
+
+| 控件 | 旧链路作用 | 备注 |
+|---|---|---|
+| `seed` / `randomize_seed` | 旧链路 base_seed | SelfLift 用每段自己的 seed |
+| `force` | 强制重跑已存在产物 | SelfLift 无缓存概念，跑就重出 |
+| `stage` | 关键帧→确认→视频 / 一次跑完 / 继续生成视频 | 旧链路阶段控制 |
+| `resume_job_id` | 选「继续生成视频」时填任务 ID | 旧链路专用 |
+| `job_name` | 旧任务目录名 | SelfLift 目录名 = `title` + 时间戳 |
+| `keyframe_backend` | 关键帧谁出：H3 / Qwen-Edit 2511 / Qwen-2.1 / 只用手动图 | 黑鹤那套，已弃用 |
+| `video_backend` | 本地 ComfyUI / RunningHub 云端 | 旧链路专用 |
+| `confirm_reference_expand` | 出关键帧前先扩图、停下确认 | 旧链路专用 |
+| `static_compact_hold_seconds` | 人物定格剪完保留多久（0.12s≈3 帧） | 旧链路专用 |
+| `advanced_overrides` | JSON 兜底覆盖旧 config | ⚠ 与上面多个字段重叠；纯数字会被判为「老工作流错位」丢弃 |
+
+**不要删这些控件**：① 旧 `execute` 仍在读，删了旧链路（点运行 / 关键帧二采）会崩；
+② 老工作流的 `widgets_values` 按顺序存，删/插中间项会让整排值错位（仓库有迁移补丁在兜）；
+③ 节点类本身不能删——面板要靠它挂 `addDOMWidget`。
+
+**易踩坑**：点节点画布「运行」仍走旧链路，会在 `output/` 另建旧任务目录，与 SelfLift 的
+`<title>_MMDD_HHMMSS/` 不互通。跑 SelfLift 只用面板第 5 tab 的按钮。
+
 ### 已知坑：Director 面板加载即整段崩溃（director.js insertBefore 顺序，2026-11-11 修）
 
 - **症状**：加载 `H3-SelfLift 逐段导演.json`（或任何带 `H3LongVideoDirector` 节点的工作流）后，
