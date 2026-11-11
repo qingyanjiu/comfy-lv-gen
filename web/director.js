@@ -1339,19 +1339,24 @@ function buildSelfLiftPane(host) {
       joinSel.appendChild(option);
     });
   const mergeBtn = makeElement("button", "h3-sl-btn", "拼接成片");
-  bar.append(cfgInput, openBtn, newTitle, newBtn, joinSel, mergeBtn);
+  const runAllBtn = makeElement("button", "h3-sl-btn primary", "一键跑全片");
+  runAllBtn.title = "按顺序跑完所有未完成 / 已失效的段，跑完自动拼接成片；跑片过程中再点一次=取消";
+  bar.append(cfgInput, openBtn, newTitle, newBtn, runAllBtn, joinSel, mergeBtn);
 
   const status = makeElement("div", "h3-sl-status", "未加载");
   const taskBox = makeElement("pre", "h3-sl-task");
   const finalsBox = makeElement("div", "h3-sl-finals");
   const list = makeElement("div", "h3-sl-list");
   const hint = makeElement("div", "h3-sl-hint",
-    "出片请用每段卡片里的「运行」按钮；画布上方的 Run 走的是旧 Director 链路，"
-    + "和这个面板无关（会报错、也不会出段）。");
+    "出片点这里：左边「一键跑全片」（按序补跑缺段并自动拼接），或每段卡片里的「运行」。"
+    + "画布上方的 Run 走旧 Director 链路，和这个面板无关。");
   host.append(bar, hint, status, taskBox, finalsBox, list);
 
   let timer = null;
   let signature = "";
+  let autoQueue = null;   // 一键跑全片：待跑段号队列（null=未启用）
+  let autoBusy = false;   // 防止 3s 轮询重复提交同一段
+  let autoMerged = false;
   const cfgPath = () => cfgInput.value.trim();
   const say = (text, kind = "info") => {
     status.textContent = text;
@@ -1360,7 +1365,7 @@ function buildSelfLiftPane(host) {
 
   async function refresh() {
     const cfg = cfgPath();
-    if (!cfg) return;
+    if (!cfg) return null;
     try {
       const res = await api.fetchApi(
         `/h3-long-video/selflift/status?cfg=${encodeURIComponent(cfg)}`,
@@ -1369,8 +1374,46 @@ function buildSelfLiftPane(host) {
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || "状态读取失败");
       render(data);
+      return data;
     } catch (error) {
       say(`读取失败：${error.message}`, "error");
+      return null;
+    }
+  }
+
+  /** 一键跑全片：一次只提交一段，靠 3s 状态轮询推进队列，全部跑完自动拼接。 */
+  async function pumpQueue(data) {
+    if (!autoQueue || autoBusy) return;
+    const task = data.task || {};
+    if (task.running) return;
+    if (!autoQueue.length) {
+      if (autoMerged) return;
+      autoMerged = true;
+      autoQueue = null;
+      runAllBtn.textContent = "一键跑全片";
+      say("全部段已完成，正在拼接成片…", "running");
+      try {
+        await postJson("/h3-long-video/selflift/merge",
+          { cfg: cfgPath(), join: joinSel.value });
+      } catch (error) {
+        say(`拼接失败：${error.message}`, "error");
+      }
+      return;
+    }
+    const seg = autoQueue[0];
+    autoBusy = true;
+    say(`一键跑全片：正在跑第 ${seg} 段（剩 ${autoQueue.length - 1} 段）`, "running");
+    try {
+      await postJson("/h3-long-video/selflift/run", { cfg: cfgPath(), seg });
+      autoQueue.shift();
+      // 等后端把 TASKS.running 落地，避免下一轮轮询误判"没在跑"而重复提交
+      await new Promise((r) => setTimeout(r, 1200));
+    } catch (error) {
+      autoQueue = null;
+      runAllBtn.textContent = "一键跑全片";
+      say(`一键跑全片中断：${error.message}`, "error");
+    } finally {
+      setTimeout(() => { autoBusy = false; }, 2500);
     }
   }
 
@@ -1568,6 +1611,7 @@ function buildSelfLiftPane(host) {
 
   function render(data) {
     const task = data.task || {};
+    pumpQueue(data);
     if (task.running) {
       say(`正在跑：${task.kind}（约 3~4 分钟，可继续编辑其它段）`, "running");
       taskBox.style.display = "block";
@@ -1634,6 +1678,31 @@ function buildSelfLiftPane(host) {
   mergeBtn.addEventListener("click", () => post("/h3-long-video/selflift/merge", {
     cfg: cfgPath(), join: joinSel.value,
   }));
+  runAllBtn.addEventListener("click", async () => {
+    if (autoQueue) {           // 再点一次 = 取消
+      autoQueue = null;
+      runAllBtn.textContent = "一键跑全片";
+      say("已取消一键跑全片（当前正在跑的那段不会中断）", "info");
+      return;
+    }
+    const data = await refresh();
+    if (!data) return;
+    const task = data.task || {};
+    if (task.running) { say("已有任务在跑，等它结束再点", "error"); return; }
+    const pending = (data.segments || [])
+      .filter((s) => !s.done || s.stale).map((s) => s.index);
+    if (!pending.length) {
+      say("所有段都已完成，直接拼接成片…", "running");
+      post("/h3-long-video/selflift/merge", { cfg: cfgPath(), join: joinSel.value });
+      return;
+    }
+    autoQueue = pending;
+    autoBusy = false;
+    autoMerged = false;
+    runAllBtn.textContent = "取消全片";
+    say(`一键跑全片：共 ${pending.length} 段（第 ${pending.join(" / ")} 段）`, "running");
+    pumpQueue(data);
+  });
 
   start();
   return { start, stop, refresh };
