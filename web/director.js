@@ -1544,12 +1544,12 @@ function buildSelfLiftPane(host) {
       });
       transSel.addEventListener("change", applyLink);
       linkRow.append(makeElement("span", "h3-sl-label", "承接"), modeSel, transSel);
+    }
+    // 插入按钮：除末段外每段都有，首段也能插到 1↔2 之间（后端 insert --after 1 已支持）
+    if (seg.index < total) {
+      hasLink = true;
       const insertBtn = makeElement("button", "h3-sl-btn", "＋ 在此段后插入");
       insertBtn.title = "在下一段之前插入一个新段（默认链式承接），后续段自动重编号";
-      if (seg.index >= total) {
-        insertBtn.disabled = true;
-        insertBtn.title = "末段后不能插入";
-      }
       insertBtn.addEventListener("click", () => post("/h3-long-video/selflift/insert", {
         cfg: cfgPath(), after: seg.index,
       }));
