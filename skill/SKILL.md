@@ -417,6 +417,21 @@ Windows 双击 `tools/serve_app.bat`（自动找 venv、自动开浏览器）。
 再挂到自己的 `Application`。**两个入口共用同一套 handler，改功能只改 `selflift_panel.py`**。
 `tools/serve_app.py` 通过 `H3_COMFY_API` 环境变量告诉子进程 ComfyUI 在哪（子进程继承）。
 
+**子进程必须强制 UTF-8（踩过的坑，2026-11-11）**：
+
+`_run` / `_start` 调 `run_selflift.py` 时，现在统一传
+`env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}`，
+输出按 **utf-8 → gbk 回退**解码（`_decode()`）。
+
+不这么做的后果：Windows 下 Python 的 stdout 默认用 locale 编码（cp936/GBK），
+而父进程按 utf-8 解码 → 中文全变方块。**症状极具迷惑性**：
+页面按钮（静态 HTML）中文正常，只有段标题 / 提示词 / 状态栏（来自 `status` 返回的 JSON）全是 `♦`。
+开发机 bash 恰好有 `PYTHONUTF8=1`，所以本地怎么测都正常，用户双击 bat 才暴露。
+
+> 以后任何 `subprocess` 调 `run_selflift.py`（或任何会打印中文的驱动），都要带这个 env；
+> 不要依赖调用方的环境变量，也不要强制在 `run_selflift.py` 里 `reconfigure(utf-8)`
+> （那样在 cmd 里直接跑反而会乱）。
+
 **同时修掉的阻塞（必须记住）**：`selflift_panel.py` 里
 - `_run()` / `_status()` 保持同步（它们本来就该是纯函数）
 - handler 内一律 `await _run_async(...)` / `await _status_async(...)`
