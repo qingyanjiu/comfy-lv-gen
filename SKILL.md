@@ -417,6 +417,25 @@ Windows 双击 `tools/serve_app.bat`（自动找 venv、自动开浏览器）。
 再挂到自己的 `Application`。**两个入口共用同一套 handler，改功能只改 `selflift_panel.py`**。
 `tools/serve_app.py` 通过 `H3_COMFY_API` 环境变量告诉子进程 ComfyUI 在哪（子进程继承）。
 
+**轮询不要全量重建 DOM（2026-11-11 用户报的 bug）**
+
+页面每 3 秒轮询一次 `status`，`render()` 原来无条件 `$("list").replaceChildren(...)` 重建所有卡片，
+后果三条：① **textarea 滚动位置被打回顶部** ② 正在输入但没保存的提示词**被后端值覆盖**
+③ 焦点与光标丢失（中文输入法尤其致命）。用户只报了①，②更严重。
+
+现在两层保护：
+
+1. `cardSignature(data)` —— 只把「卡片长什么样」的数据纳入签名（段 index/id/seed/done/stale/running/
+   首尾帧 URL/body/link/finals），**不含 `task.log` 这类高频字段**。签名不变就完全跳过重建，
+   日志/状态栏照常刷新。
+2. 真要重建时，`snapshotEditors()` 先抓脏值 + scrollTop + 焦点/光标（`[data-keep]` 标记的
+   textarea 与 seed），重建后 `restoreEditors()` 还原。
+
+实测：滚到底 + 输入草稿 → 等 9 秒（3 轮轮询）滚动/草稿/焦点全在；
+再改 seg3 seed（签名变化，真实重建）→ 滚动 139、草稿、焦点仍保住，seed 也确实刷新了。
+
+> 换片（`import`）时必须 `state.cardSig = null` 强制整片重建，否则签名恰好相同会显示旧卡片。
+
 **子进程必须强制 UTF-8（踩过的坑，2026-11-11）**：
 
 `_run` / `_start` 调 `run_selflift.py` 时，现在统一传
