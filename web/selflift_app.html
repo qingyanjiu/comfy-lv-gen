@@ -208,6 +208,7 @@
     <button id="resApply">应用</button>
   </span>
   <span class="grow"></span>
+  <button id="randSeeds" title="给全片每一段各换一个新随机 seed，写入配置并标记需重出（不会自动开始跑片）">🎲 随机所有 seed</button>
   <button id="saveAll" title="把页面上所有改过的提示词、seed、全片 head/tail 一次性写回分镜 JSON">保存所有修改</button>
   <button id="refreshMedia" title="强制重新拉取所有首帧/尾帧/视频缩略图（缓存兜底）">刷新预览</button>
   <button id="runAll" class="primary">一键跑全片</button>
@@ -550,7 +551,8 @@ python run_selflift.py --cfg &lt;片&gt;/segments.json set --seg 3 --seed 528329
 const $ = (id) => document.getElementById(id);
 const state = { cfg: null, data: null, queue: null, waiting: null, busy: false, merged: false,
                 timer: null, cardSig: null, resDirty: false, cancelled: false,
-                mediaNonce: 0, filmSig: null, films: [], joinTouched: false, savedJoin: "auto" };
+                mediaNonce: 0, filmSig: null, films: [], joinTouched: false, savedJoin: "auto",
+                runallOn: false, lastRunMsg: "" };   // runallOn：上一轮是否在跑全片，用于只报一次结果
 
 function say(text, kind = "info") {
   const el = $("status");
@@ -1172,7 +1174,21 @@ function card(seg, total) {
       await reload();
     } catch (e) { say("保存失败：" + e.message, "error"); }
   });
-  row.append(seedLabel, seed, runBtn, saveBtn);
+  const diceBtn = document.createElement("button");
+  diceBtn.textContent = "🎲";
+  diceBtn.title = "换一个随机 seed 并写入配置（本段标记需重出；要出片再点「运行本段」）";
+  diceBtn.addEventListener("click", async () => {
+    const v = randSeed();
+    seed.value = v;
+    try {
+      await apiJson("/h3-long-video/selflift/set",
+        { cfg: state.cfg, seg: seg.index, seed: v });
+      seed.dataset.dirty = "";
+      say("第 " + seg.index + " 段 seed 已换为 " + v + "（需重出本段）", "ok");
+      await reload();
+    } catch (e) { say("随机失败：" + e.message, "error"); }
+  });
+  row.append(seedLabel, seed, diceBtn, runBtn, saveBtn);
   if (seg.video_url) {
     const play = document.createElement("button");
     play.textContent = "看视频";
@@ -1438,6 +1454,13 @@ $("lightbox").addEventListener("click", () => {
   $("lbImg").removeAttribute("src");
 });
 
+/* ---------- 随机 seed ---------- */
+// 100000 是实测的坏种子（高频伪影），区间直接从 100001 起；
+// 输出 100001~999999，与现有片的 6 位 seed 同一量级。
+function randSeed() {
+  return Math.floor(Math.random() * 899999) + 100001;
+}
+
 /* ---------- 一次保存所有改过的提示词 / seed / 全片 head+tail ---------- */
 function dirtyCount() {
   return document.querySelectorAll('#list [data-keep][data-dirty="1"]').length
@@ -1523,72 +1546,42 @@ function stopQueue(msg, kind = "error") {
   say(msg, kind);
 }
 
-async function pump(data) {
-  if (!state.queue || state.busy) return;
-  const task = data.task || {};
-
-  // 取消是服务端状态：别的标签页 / 旧页面也会在下一轮轮询看到并停下
-  if (data.cancelled) {
-    state.cancelled = true;
-    stopQueue("已取消全片：队列已停止，当前段已中断", "info");
+function pump(data) {
+  // 队列在服务端（POST /runall），这里只负责显示进度。
+  // 以前队列放在前端 state.queue 里：刷新 / 关标签 / 断网 / 切片子（selectFilm 会清队列）
+  // 都会让后面几段永远不提交，表现就是「跑到一半停了」。
+  const r = data.runall || null;
+  const btn = $("runAll");
+  if (!r) {
+    if (state.runallOn) { state.runallOn = false; btn.textContent = "一键跑全片"; }
     return;
   }
-
-  // 上一段已启动：等它真正结束，并确认视频确实生成了才推进队列。
-  // 旧版只看 /run 返回 {started:true} 就 shift，失败段被静默当完成，最后拼接缺段。
-  if (state.waiting != null) {
-    if (task.running) return;
-    const seg = state.waiting;
-    const segState = (data.segments || []).find((s) => s.index === seg);
-    const rc = task.returncode;
-    if (rc != null && rc !== 0) {
-      stopQueue("一键跑全片中断：第 " + seg + " 段渲染失败（" +
-        (task.error || "退出码 " + rc) + "）。看日志面板修好后重新点「一键跑全片」。");
-      return;
+  if (r.active) {
+    state.runallOn = true;
+    btn.textContent = "取消全片";
+    // 每 3 秒轮询都会走一遍，文案没变就别重写状态栏，否则会把别的提示冲掉
+    let msg = "";
+    if (r.merging) msg = "所有段已完成，正在拼接成片…";
+    else if (r.current) {
+      const left = Math.max(0, (r.pending || []).length);
+      msg = "一键跑全片：正在跑第 " + r.current + " 段（队列里还剩 " + left + " 段）"
+        + "　— 可以关掉页面，服务端会接着跑";
     }
-    if (!segState || !segState.done) {
-      stopQueue("一键跑全片中断：第 " + seg + " 段任务结束但视频没生成" +
-        "（多半是 ComfyUI 中途重启丢了 history）。看日志面板后重跑。");
-      return;
+    if (msg && msg !== state.lastRunMsg) {
+      state.lastRunMsg = msg;
+      say(msg, "running");
     }
-    state.waiting = null;
-    state.queue.shift();
-  }
-
-  if (!state.queue.length) {
-    if (state.merged) return;
-    state.merged = true; state.queue = null;
-    $("runAll").textContent = "一键跑全片";
-    say("全部段已完成，正在拼接成片…", "running");
-    try { await apiJson("/h3-long-video/selflift/merge",
-      { cfg: state.cfg, join: $("join").value }); } catch (e) { say("拼接失败：" + e.message, "error"); }
     return;
   }
-
-  const seg = state.queue[0];
-  state.busy = true;
-  say("一键跑全片：正在跑第 " + seg + " 段（剩 " + (state.queue.length - 1) + " 段）", "running");
-  try {
-    if (await saveAllEdits({ silent: true }) < 0) {
-      stopQueue("保存修改失败，队列已停止（改动仍在页面上）", "error");
-      return;
+  if (state.runallOn) {          // 本轮刚结束：只报一次结果
+    state.runallOn = false;
+    state.lastRunMsg = "";
+    btn.textContent = "一键跑全片";
+    if (r.error) {
+      say("一键跑全片中断：" + r.error + "　看日志面板修好后重新点「一键跑全片」", "error");
+    } else if ((r.total || 0) > 0 && !(r.pending || []).length) {
+      say("全片已完成，成片已拼好", "ok");
     }
-    await apiJson("/h3-long-video/selflift/run", { cfg: state.cfg, seg });
-    state.waiting = seg;               // 只记「已启动」，成功与否交给上面的轮询确认
-  } catch (e) {
-    // 409「已有任务在跑」多半是双入口 / 手点单段撞车，等下轮重试，别清空整个队列
-    if (/已取消全片/.test(e.message)) {
-      state.cancelled = true;
-      stopQueue("已取消全片：队列已停止", "info");
-      return;
-    } else if (/已有任务在跑/.test(e.message)) {
-      say("第 " + seg + " 段等待中：" + e.message, "info");
-    } else {
-      stopQueue("一键跑全片中断：" + e.message);
-      return;
-    }
-  } finally {
-    setTimeout(() => { state.busy = false; }, 2500);
   }
 }
 
@@ -1613,38 +1606,68 @@ $("saveAll").addEventListener("click", async () => {
   if (n > 0) await reload();
 });
 
+$("randSeeds").addEventListener("click", async () => {
+  if (!state.cfg || !state.data) { say("先导入分镜 JSON", "error"); return; }
+  const segs = state.data.segments || [];
+  if (!segs.length) { say("这部片还没有段", "error"); return; }
+  if (!confirm("给全片 " + segs.length + " 段各换一个新随机 seed？\n\n"
+      + "会写入配置并把所有段标记为「需重出」，不会自动开始跑片。")) return;
+  // 先落盘页面上改过的提示词/seed，后面的 reload 才不会丢编辑
+  if (await saveAllEdits({ silent: true }) < 0) {
+    say("保存页面上未保存的改动失败，已中止", "error");
+    return;
+  }
+  const btn = $("randSeeds");
+  btn.disabled = true;
+  let done = 0;
+  try {
+    // 逐段串行 /set：每次都是「读 cfg → 改 → 写回」的独立子进程，并发会互相覆盖
+    for (const s of segs) {
+      await apiJson("/h3-long-video/selflift/set",
+        { cfg: state.cfg, seg: s.index, seed: randSeed() });
+      done++;
+    }
+    await reload();
+    say("已为 " + done + " 段换新随机 seed，全部标记需重出；点「一键跑全片」按新 seed 重出", "ok");
+  } catch (e) {
+    say("第 " + (done + 1) + " 段随机失败（前 " + done + " 段已写入）：" + e.message, "error");
+    try { await reload(); } catch (_) {}
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 $("runAll").addEventListener("click", async () => {
-  if (state.queue) {
-    state.queue = null; state.waiting = null; state.busy = false;
-    state.cancelled = true;
-    $("runAll").textContent = "一键跑全片";
+  if (!state.cfg) { say("先导入分镜 JSON", "error"); return; }
+  const r = (state.data && state.data.runall) || {};
+  if (r.active) {                    // 正在跑 → 这个按钮此刻是「取消全片」
     try {
-      await apiJson("/h3-long-video/selflift/cancel", { cfg: state.cfg, op: "cancel" });
+      await apiJson("/h3-long-video/selflift/runall", { cfg: state.cfg, op: "stop" });
       say("已取消全片：当前段已中断、ComfyUI 队列已清空", "info");
-    } catch (e) { say("取消失败（前端队列已停）：" + e.message, "error"); }
+    } catch (e) { say("取消失败：" + e.message, "error"); }
     try { await reload(); } catch (_) {}
     return;
   }
-  if (!state.cfg) { say("先导入分镜 JSON", "error"); return; }
   if (await saveAllEdits({ silent: true }) < 0) return;
+  try { await apiJson("/h3-long-video/selflift/cancel", { cfg: state.cfg, op: "clear" }); }
+  catch (_) {}                        // 清不掉旧取消标志不致命，/runall 自己也会 discard
   try {
-    await apiJson("/h3-long-video/selflift/cancel", { cfg: state.cfg, op: "clear" });
-    state.cancelled = false;
-  } catch (e) { say("无法解除取消状态：" + e.message, "error"); return; }
-  const data = await reload();
-  if (!data) return;
-  if ((data.task || {}).running) { say("已有任务在跑，等它结束", "error"); return; }
-  const pending = data.segments.filter((s) => !s.done || s.stale).map((s) => s.index);
-  if (!pending.length) {
-    say("所有段都完成了，直接拼接…", "running");
-    try { await apiJson("/h3-long-video/selflift/merge", { cfg: state.cfg, join: $("join").value }); }
-    catch (e) { say("拼接失败：" + e.message, "error"); }
-    return;
+    const d = await apiJson("/h3-long-video/selflift/runall", { cfg: state.cfg });
+    state.runallOn = true;
+    $("runAll").textContent = "取消全片";
+    say("已开始跑全片：" + (d.segs || []).length + " 段排队（可以关掉页面，服务端会接着跑）",
+      "running");
+  } catch (e) {
+    if (/所有段都已完成/.test(e.message)) {
+      say("所有段都完成了，直接拼接…", "running");
+      try { await apiJson("/h3-long-video/selflift/merge",
+        { cfg: state.cfg, join: $("join").value }); }
+      catch (e2) { say("拼接失败：" + e2.message, "error"); }
+    } else {
+      say("启动失败：" + e.message, "error");
+    }
   }
-  state.queue = pending; state.waiting = null; state.busy = false; state.merged = false;
-  $("runAll").textContent = "取消全片";
-  say("一键跑全片：共 " + pending.length + " 段（第 " + pending.join(" / ") + " 段）", "running");
-  pump(data);
+  try { await reload(); } catch (_) {}
 });
 
 $("merge").addEventListener("click", async () => {

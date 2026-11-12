@@ -468,6 +468,19 @@ def _status(cfg):
     with LOCK:
         data["task"] = dict(TASKS.get(str(cfg), {}))
         data["cancelled"] = str(cfg) in CANCELLED
+        st = RUNALL.get(str(cfg))
+        if st is not None:
+            data["runall"] = {
+                "active": bool(st.get("active")),
+                "current": st.get("current"),
+                "pending": list(st.get("pending") or []),
+                "done": list(st.get("done") or []),
+                "merging": bool(st.get("merging")),
+                "error": st.get("error") or "",
+                "total": st.get("total") or 0,
+                "started": st.get("started"),
+                "finished": st.get("finished"),
+            }
     data["ok"] = True
     return data
 
@@ -486,6 +499,52 @@ async def _status_async(cfg):
     return await asyncio.to_thread(_status, cfg)
 
 
+def _exec_task(cfg, argv, kind, task):
+    """真正执行一个 driver 子进程：流式读输出写进 task，阻塞到子进程结束。
+
+    以前用 subprocess.run(capture_output=True) —— 进程结束前 task["log"] 永远是
+    空字符串，跑 4 分钟网页上什么都不显示，只在失败时甩一坨出来。
+    """
+    key = str(cfg)
+    text = ""
+    line_no = 0
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, str(DRIVER)] + list(argv) + ["--cfg", key],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=CHILD_ENV, bufsize=0,
+        )
+        with LOCK:
+            PROCS[key] = proc
+        assert proc.stdout is not None
+        for raw in iter(proc.stdout.readline, b""):
+            text += _decode(raw)
+            line_no += 1
+            if len(text) > 60000:          # 滚动窗口，别把内存吃满
+                text = text[-45000:]
+            task["log"] = text
+            task["lines"] = line_no
+        proc.wait()
+        task["returncode"] = proc.returncode
+        if proc.returncode != 0:
+            task["error"] = f"退出码 {proc.returncode}"
+    except Exception as exc:  # noqa: BLE001
+        task["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        with LOCK:
+            was_cancelled = key in CANCELLED
+            PROCS.pop(key, None)
+        if was_cancelled:
+            task["returncode"] = -1
+            task["error"] = "已取消"
+            text += "\n[已取消] 当前段已中断，ComfyUI 队列已清空。\n"
+        task["log"] = text
+        task["lines"] = line_no
+        task["running"] = False
+        task["finished"] = time.time()
+    return task
+
+
 def _start(cfg, argv, kind):
     """单段生成 / 拼接要 3~4 分钟，必须异步线程 + 状态轮询，不能卡住 HTTP。"""
     key = str(cfg)
@@ -502,51 +561,81 @@ def _start(cfg, argv, kind):
         }
         TASKS[key] = task
 
-    def worker():
-        """流式读子进程输出：边跑边把日志写进 task，网页才能看到实时进度。
-
-        以前用 subprocess.run(capture_output=True) —— 进程结束前 task["log"] 永远是
-        空字符串，跑 4 分钟网页上什么都不显示，只在失败时甩一坨出来。
-        """
-        text = ""
-        line_no = 0
-        try:
-            proc = subprocess.Popen(
-                [sys.executable, str(DRIVER)] + list(argv) + ["--cfg", key],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                env=CHILD_ENV, bufsize=0,
-            )
-            with LOCK:
-                PROCS[key] = proc
-            assert proc.stdout is not None
-            for raw in iter(proc.stdout.readline, b""):
-                text += _decode(raw)
-                line_no += 1
-                if len(text) > 60000:          # 滚动窗口，别把内存吃满
-                    text = text[-45000:]
-                task["log"] = text
-                task["lines"] = line_no
-            proc.wait()
-            task["returncode"] = proc.returncode
-            if proc.returncode != 0:
-                task["error"] = f"退出码 {proc.returncode}"
-        except Exception as exc:  # noqa: BLE001
-            task["error"] = f"{type(exc).__name__}: {exc}"
-        finally:
-            with LOCK:
-                was_cancelled = key in CANCELLED
-                PROCS.pop(key, None)
-            if was_cancelled:
-                task["returncode"] = -1
-                task["error"] = "已取消"
-                text += "\n[已取消] 当前段已中断，ComfyUI 队列已清空。\n"
-            task["log"] = text
-            task["lines"] = line_no
-            task["running"] = False
-            task["finished"] = time.time()
-
-    threading.Thread(target=worker, daemon=True, name="h3-selflift-worker").start()
+    threading.Thread(target=_exec_task, args=(cfg, argv, kind, task),
+                     daemon=True, name="h3-selflift-worker").start()
     return True, None
+
+
+def _run_blocking(cfg, argv, kind):
+    """同步跑一个 driver 任务，阻塞到结束，返回 (ok, err)。
+
+    给服务端跑全片队列用——队列必须「等这一段真的跑完」才推进下一段。
+    """
+    key = str(cfg)
+    with LOCK:
+        if key in CANCELLED:
+            return False, "已取消"
+        task = {
+            "running": True, "kind": kind, "started": time.time(),
+            "log": "", "error": "", "returncode": None, "finished": None,
+        }
+        TASKS[key] = task
+    _exec_task(cfg, argv, kind, task)
+    ok = task.get("returncode") == 0 and not task.get("error")
+    return ok, task.get("error") or ""
+
+
+# 服务端跑全片队列：key=cfg -> {pending, current, done, active, error, merging, ...}
+# 队列放服务端而不是浏览器，关页面 / 刷新 / 断网 / 切到别的片都不会中断——
+# 以前队列只在 JS 的 state.queue 里，页面一刷新后面几段就永远不提交了。
+RUNALL = {}
+
+
+def _runall_worker(cfg, segs):
+    key = str(cfg)
+    st = RUNALL[key]
+    try:
+        for seg in segs:
+            with LOCK:
+                if key in CANCELLED:
+                    st["error"] = "已取消"
+                    break
+            st["current"] = seg
+            ok, err = _run_blocking(cfg, ["seg", str(seg)], f"段 {seg}")
+            if not ok:
+                st["error"] = f"第 {seg} 段失败：{err or '未知原因'}"
+                break
+            # 退出码 0 也可能是「ComfyUI 中途重启丢了 history」，再确认产物真落地
+            try:
+                data = _status(cfg)
+                item = next((s for s in data.get("segments", [])
+                             if s.get("index") == seg), None)
+                if not item or not item.get("done"):
+                    st["error"] = (f"第 {seg} 段任务结束但视频没生成"
+                                   "（多半是 ComfyUI 中途重启丢了 history）")
+                    break
+            except Exception as exc:  # noqa: BLE001
+                st["error"] = f"第 {seg} 段检查产物失败：{exc}"
+                break
+            st["pending"] = [x for x in st["pending"] if x != seg]
+            st["done"].append(seg)
+        else:
+            # 全部成功才拼接（中途 break 不会走到这里）
+            with LOCK:
+                cancelled = key in CANCELLED
+            if not cancelled:
+                st["current"] = None
+                st["merging"] = True
+                ok, err = _run_blocking(cfg, ["merge"], "拼接")
+                st["merging"] = False
+                if not ok:
+                    st["error"] = f"拼接失败：{err or '未知原因'}"
+    finally:
+        st["active"] = False
+        st["merging"] = False
+        st["current"] = None
+        st["finished"] = time.time()
+
 
 
 def register_routes(routes, web):
@@ -625,6 +714,11 @@ def register_routes(routes, web):
                 CANCELLED.add(key)
                 proc = PROCS.pop(key, None)
                 task = TASKS.get(key)
+                # 服务端队列也要停，否则它会在这一段结束后接着提交下一段
+                st = RUNALL.get(key)
+                if st is not None:
+                    st["error"] = "已取消"
+                    st["active"] = False
             stopped = False
             if proc is not None and proc.poll() is None:
                 proc.terminate()
@@ -660,6 +754,76 @@ def register_routes(routes, web):
             if not ok:
                 return web.json_response({"ok": False, "error": err}, status=409)
             return web.json_response({"ok": True, "started": True, "seg": seg})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.post("/h3-long-video/selflift/runall")
+    async def selflift_runall(request):
+        """跑全片（服务端队列）：逐段跑，全成功自动拼接。
+
+        队列在服务端，浏览器关掉 / 刷新 / 断网 / 切到别的片都不会中断，
+        页面重开只是重新读一次状态。op=stop 取消并中断当前段。
+        """
+        try:
+            p = await request.json()
+            cfg = _safe(p.get("cfg"))
+            key = str(cfg)
+            op = str(p.get("op") or "start").strip().lower()
+
+            if op == "stop":
+                with LOCK:
+                    CANCELLED.add(key)
+                    proc = PROCS.pop(key, None)
+                    st = RUNALL.get(key)
+                    if st is not None:
+                        st["error"] = "已取消"
+                        st["active"] = False
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
+                # 算力后端也要停，否则 prompt 自己跑完还占着显存
+                for path, payload in (("/interrupt", {}), ("/queue", {"clear": True})):
+                    try:
+                        req = urllib.request.Request(
+                            COMFY_API + path, data=json.dumps(payload).encode(),
+                            headers={"Content-Type": "application/json"})
+                        urllib.request.urlopen(req, timeout=10).read()
+                    except Exception:
+                        pass
+                return web.json_response({"ok": True, "stopped": True})
+
+            if op != "start":
+                raise ValueError(f"未知操作：{op}")
+
+            with LOCK:
+                st = RUNALL.get(key)
+                if st and st.get("active"):
+                    return web.json_response(
+                        {"ok": False, "error": "全片队列已在跑"}, status=409)
+                cur = TASKS.get(key)
+                if cur and cur.get("running"):
+                    return web.json_response(
+                        {"ok": False, "error": f"已有任务在跑：{cur.get('kind')}"}, status=409)
+                CANCELLED.discard(key)
+
+            data = await _status_async(cfg)
+            segs = p.get("segs")
+            if not segs:
+                segs = [s["index"] for s in data.get("segments", [])
+                        if not s.get("done") or s.get("stale")]
+            segs = [int(x) for x in segs]
+            if not segs:
+                return web.json_response(
+                    {"ok": False, "error": "所有段都已完成，直接点「拼接成片」即可"})
+
+            RUNALL[key] = {
+                "pending": list(segs), "current": None, "done": [],
+                "active": True, "merging": False, "error": "",
+                "started": time.time(), "finished": None, "total": len(segs),
+            }
+            threading.Thread(target=_runall_worker, args=(cfg, list(segs)),
+                             daemon=True, name="h3-selflift-runall").start()
+            return web.json_response({"ok": True, "started": True, "segs": segs})
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
