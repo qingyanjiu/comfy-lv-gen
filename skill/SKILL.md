@@ -128,7 +128,12 @@ agent   ：跑工序 · 读质检 · 按失败码修参数重跑
 
 - 主模型 `minimax_h3_hybrid_fl2va_ref2va_b25-49-int8`；CLIP 见文末环境变化
 - Turbo 4step LoRA（1.0）；euler / simple，6 步 + SigmaRefiner 1 步，cfg 1.0，
-  `transition_step=4`、`lowres_scale=0.5`
+  `transition_step=4`，`lowres_scale` 由画质档位决定（见下）
+- **画质档位**（`cfg["quality"]` / 面板下拉 / `--quality`）：`fast`=0.50（默认，细节偏软）、
+  `standard`=0.65、`high`=0.75（细节明显更好，4 秒段实测几乎不增耗时）。
+  `rho` 一律 0——实测 0.3 多花约 50 秒、视觉无差别、体积相同，纯亏。
+  **换档位 = 换采样轨迹，同 seed 也会出不同画面**（服装颜色/发丝/背景都会变），
+  只能当新片默认档，不能拿来给旧片「提清晰度」。
 - `length` = **24fps + 17n+5 网格**；`duration=8` → 192 帧 = 8.00 秒
 - **分辨率默认 0.5 MP**（16:9 → 960×544）；VHS `frame_rate` 必须 24（工作流里存的 16 是旧值）
 - `task_type=auto`：给 `first_frame` 后自动走 FL2VA / Hybrid，实跑通过
@@ -161,6 +166,7 @@ agent   ：跑工序 · 读质检 · 按失败码修参数重跑
 | **`join_mode` / `join_dissolve_seconds`** | **默认 `dissolve` / 0.25**（项目原来的短叠化）；可选 `black`（0.8s 纯黑）、`cut`（无过场硬切） |
 | `join_black_seconds` | 0.8，仅 `join_mode=black` 时生效 |
 | `megapixels` | **不写就是 0.5**（`DEFAULT_MEGAPIXELS`） |
+| `quality` | **画质档位** `fast`(lowres 0.50，不写即此) / `standard`(0.65) / `high`(0.75)。改它会改采样轨迹 → 全片转 stale、画面会变 |
 | `head` / `tail` / `segments[].body` | 全片身份与画风锚 / 衔接锚 / 逐段动作与机位；`segments[].head` 可覆盖全局 `head`（Picture 序号随接线漂移时用，见下节） |
 
 ### 多人镜头：一人一张，绝不拼图

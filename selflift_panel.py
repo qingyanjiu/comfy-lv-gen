@@ -676,6 +676,10 @@ def register_routes(routes, web):
                 args += ["--tail", str(p["tail"])]
             if p.get("seg_head") is not None:
                 args += ["--seg-head", str(p["seg_head"])]
+            if p.get("seg_tail") is not None:
+                # 之前漏了这条：driver 早就支持 --seg-tail（clear=回落全局），
+                # 但面板没转发，段级 tail 在页面上永远改不了/清不掉。
+                args += ["--seg-tail", str(p["seg_tail"])]
             if p.get("first_frame") is not None:
                 args += ["--first-frame", str(p["first_frame"])]
             if p.get("last_frame") is not None:
@@ -690,6 +694,8 @@ def register_routes(routes, web):
                 args += ["--aspect-ratio", str(p["aspect_ratio"])]
             if p.get("join") is not None:
                 args += ["--join", str(p["join"])]
+            if p.get("quality") is not None:
+                args += ["--quality", str(p["quality"])]
             return web.json_response({"ok": True, "log": await _run_async(cfg, args)})
         except Exception as exc:  # noqa: BLE001
             return web.json_response(

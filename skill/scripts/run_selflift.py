@@ -82,6 +82,24 @@ ASPECT_RATIO_CHOICES = (
 )
 MAX_PEOPLE = 8  # 节点上限 9 个 ref_image 槽，留 1 个给空镜板
 
+# 画质档位 → (lowres_scale, rho)。SelfLift 采样前 N 步在低分辨率跑，lowres_scale 决定
+# 「低分辨率阶段有多低」，rho 决定切换点要不要用 VAE 像素锚点修正。
+# 实测（4 秒段 / 544x960 / 同 seed 472913）：
+#   A 0.50+rho0   125.3s  1.15MB  细节偏软
+#   C 0.75+rho0   120.4s  1.30MB  细节明显更好（发丝分缕、布料织纹、背景乘客清晰）
+#   B 0.75+rho0.3 170.5s  1.30MB  与 C 视觉无差别、体积相同 → rho 只多花约 50s，没收益
+# 结论：细节提升全部来自 lowres_scale；rho 的 VAE 解码→上采样→重编码往返是净亏，默认关掉。
+# 注意：换档位等于换采样轨迹，**同 seed 也会出不同画面**，所以只能当新片默认档，
+# 不能拿来「救旧片提清晰度」——那会让画面全变。改档位会把全片标注需重出。
+QUALITY_PRESETS = {
+    "fast": (0.50, 0.0),       # 最大省算力，细节偏软
+    "standard": (0.65, 0.0),   # 折中
+    "high": (0.75, 0.0),       # 实测首选：细节明显更好，4 秒段几乎不增耗时（长段才会显出来）
+}
+DEFAULT_QUALITY = "fast"
+# 节点 235 (SelfLiftH3Sampler) widgets 里的下标
+Q_IDX_LOWRES, Q_IDX_RHO = 4, 5
+
 REF_PROMPT = (
     "写实电影风格的人物设定参考图。一位 25 岁左右的东亚年轻女性，正面站立，"
     "从头顶到鞋底完整入画，身体正对镜头，双臂自然垂在身侧，站姿端正放松。\n"
@@ -296,6 +314,13 @@ def build_wf(cfg, seg, out_path):
     nodes[N_RES]["widgets_values"][0] = cfg.get("aspect_ratio") or DEFAULT_ASPECT_RATIO
     nodes[N_RES]["widgets_values"][1] = float(cfg.get("megapixels", DEFAULT_MEGAPIXELS))
     nodes[N_SAMPLER]["widgets_values"][0] = int(seg["seed"])
+    # 画质档位：写 lowres_scale / rho。没设过就用 fast（= base.json 原值 0.5/0），行为不变。
+    quality = cfg.get("quality") or DEFAULT_QUALITY
+    if quality in QUALITY_PRESETS:
+        lowres, rho = QUALITY_PRESETS[quality]
+        _w = nodes[N_SAMPLER]["widgets_values"]
+        _w[Q_IDX_LOWRES] = lowres
+        _w[Q_IDX_RHO] = rho
     nodes[N_VIDEO]["widgets_values"][0] = float(cfg["fps"])
     nodes[N_VIDEO]["widgets_values"][2] = f"{cfg['prefix']}_{seg['id']}"
     for i, pp in enumerate(people[1:], start=1):
@@ -521,7 +546,8 @@ def seg_status(cfg):
             continue
         edited = max(cfg["segments"][i].get("updated_at", 0),
                      cfg.get("head_updated_at", 0),
-                     cfg.get("res_updated_at", 0)) > item["mtime"] + 1
+                     cfg.get("res_updated_at", 0),
+                     cfg.get("quality_updated_at", 0)) > item["mtime"] + 1
         prev = segs[i-1]["last_frame"] if i > 0 else None
         # 转场模式(transition)的段首帧独立生成，上游尾帧变化不会让它失效
         lmode = (cfg["segments"][i].get("link") or {}).get("mode", "chain")
@@ -550,6 +576,10 @@ def seg_status(cfg):
         "films": list_films(),
         "megapixels": float(cfg.get("megapixels", DEFAULT_MEGAPIXELS)),
         "aspect_ratio": cfg.get("aspect_ratio") or DEFAULT_ASPECT_RATIO,
+        "quality": cfg.get("quality") or DEFAULT_QUALITY,
+        "quality_updated_at": cfg.get("quality_updated_at", 0),
+        "quality_presets": {k: {"lowres_scale": v[0], "rho": v[1]}
+                            for k, v in QUALITY_PRESETS.items()},
         "chain_first_frame": bool(cfg.get("chain_first_frame")),
         "head": cfg.get("head", ""),
         "tail": cfg.get("tail", ""),
@@ -608,6 +638,16 @@ def cmd_set(cfg, args):
             P.die(f"未知 join：{join}（应为 black / dissolve / cut / auto）")
         cfg["join_mode"] = join
         changed.append(f"join_mode={join}")
+
+    quality = getattr(args, "quality", None)  # 同上：老调用方可能没这个字段
+    if quality is not None:
+        if quality not in QUALITY_PRESETS:
+            P.die(f"未知画质档位：{quality}\n    可选：" + " / ".join(QUALITY_PRESETS))
+        cfg["quality"] = quality
+        lowres, rho = QUALITY_PRESETS[quality]
+        # 换档位 = 换采样轨迹，同 seed 也出不同画面 → 全片必须重出
+        cfg["quality_updated_at"] = time.time()
+        changed.append(f"quality={quality}（lowres_scale={lowres} rho={rho}）")
 
     if args.ref_video is not None:
         rv = str(args.ref_video).strip()
@@ -1415,6 +1455,9 @@ def main():
     ap.add_argument("--join", choices=["black", "dissolve", "cut", "auto"], default=None,
                     help="段间接续：auto=按每段 link 决定；black=0.8s 纯黑；"
                          "dissolve=0.25s 短叠化（项目原来的方式）；cut=首尾帧直连硬切")
+    ap.add_argument("--quality", choices=list(QUALITY_PRESETS), default=None,
+                    help="画质档位：fast=最快(默认) / standard=折中 / high=细节最好但慢约 36%%。"
+                         "换档位会改变采样轨迹，同 seed 也会出不同画面，全片需重出")
     ap.add_argument("--link-mode", dest="link_mode", default=None,
                     choices=["chain", "transition"],
                     help="set：本段承接上一段的方式 chain=像素承接 / transition=独立+转场")
