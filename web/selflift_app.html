@@ -15,6 +15,10 @@
     background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
   header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.5px}
   header .cfg{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+  #filmSel{max-width:360px;font-size:12px;padding:4px 6px}
+  #filmFilter{width:132px;min-width:0;font-size:12px;padding:4px 6px}
+  #filmUpdated{font-size:11px;color:var(--dim);white-space:nowrap}
+  #renameBtn{font-size:12px;padding:4px 9px;white-space:nowrap}
   .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 16px;
     background:var(--panel2);border-bottom:1px solid var(--line)}
   .bar .grow{flex:1}
@@ -36,6 +40,26 @@
   .status[data-k="ok"]{border-left-color:var(--ok)}
   .status[data-k="running"]{border-left-color:var(--warn)}
   .hint{margin:6px 16px 0;font-size:12px;color:var(--warn)}
+  .refbar{display:flex;flex-wrap:wrap;gap:10px;padding:12px 16px 0;align-items:flex-start}
+  .refbar .ref{flex:0 0 124px;width:124px;background:var(--panel);border:1px solid var(--line);
+    border-radius:8px;padding:6px}
+  .refbar .ref .cap{font-size:11px;color:var(--dim);margin-bottom:4px;
+    display:flex;align-items:center;gap:4px}
+  .refbar .ref .cap b{color:#9fc2ee;font-weight:600}
+  .refbar .ref img{width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:5px;
+    background:#101319;cursor:zoom-in;display:block}
+  .refbar .ref .none{width:100%;aspect-ratio:3/4;border-radius:5px;background:#101319;
+    display:flex;align-items:center;justify-content:center;color:#5a6272;font-size:11px}
+  .refbar .ref .ops{display:flex;gap:4px;margin-top:5px}
+  .refbar .ref .ops button{flex:1;padding:2px 0;font-size:11px}
+  .refbar .ref.plate{border-color:#6b5630}
+  .refbar .ref.plate .cap b{color:#e0c48a}
+  .refbar .ref.plate img,.refbar .ref.plate .none{aspect-ratio:16/9}
+  .refbar .add{flex:0 0 124px;width:124px;min-height:158px;display:flex;align-items:center;
+    justify-content:center;gap:4px;flex-direction:column;cursor:pointer;color:var(--dim);
+    background:transparent;border:1px dashed var(--line);border-radius:8px;font-size:12px}
+  .refbar .add:hover{border-color:var(--accent);color:var(--text)}
+  .refbar .note{font-size:11px;color:#6b7488;max-width:220px;line-height:1.5;padding-top:2px}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));
     gap:12px;padding:12px 16px 24px}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;
@@ -53,9 +77,62 @@
     display:flex;align-items:center;justify-content:center;color:#5a6272;font-size:11px}
   .row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
   .row input[type=number]{width:96px}
+  .segrefs{border-top:1px dashed var(--line);padding-top:6px;display:flex;flex-direction:column;gap:5px}
+  .segrefs .cap{font-size:11px;color:var(--dim)}
+  .segref-items{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+  .segref-chip{display:flex;align-items:center;gap:3px;background:var(--panel);
+    border:1px solid var(--line);border-radius:5px;padding:2px 4px}
+  .segref-chip img{width:30px;height:34px;object-fit:cover;border-radius:3px;
+    background:#101319;cursor:zoom-in}
+  .segref-chip button,.segref-items button{padding:2px 6px;font-size:11px}
+  .segref-plate-img{width:54px;height:31px;object-fit:cover;border-radius:3px;
+    background:#101319;cursor:zoom-in;border:1px solid #6b5630}
   .card textarea{min-height:96px;font-size:12px}
-  .log{margin:0 16px;max-height:170px;overflow:auto;background:#0e1116;color:#9db0c6;
-    border:1px solid var(--line);border-radius:6px;padding:8px;font-size:11px;white-space:pre-wrap;display:none}
+  .logpanel{margin:12px 16px 0;border:1px solid var(--line);border-radius:8px;
+    background:#0e1116;overflow:hidden}
+  .logbar{display:flex;align-items:center;gap:8px;padding:5px 10px;background:var(--panel);
+    border-bottom:1px solid var(--line);font-size:12px;color:var(--dim)}
+  .logbar b{color:var(--text);font-weight:500}
+  .logbar .dim{color:#6b7488}
+  .logbar .grow{flex:1}
+  .logbar button{padding:3px 9px;font-size:11px}
+  .logbar .chk{display:inline-flex;align-items:center;gap:3px;font-size:11px;
+    color:var(--dim);cursor:pointer;user-select:none}
+  .logbar .chk input{margin:0;appearance:none;-webkit-appearance:none;position:relative;
+    width:13px;height:13px;border:1px solid #4a5568;border-radius:3px;background:#12151b;
+    cursor:pointer}
+  .logbar .chk input:checked{background:#3d7fd6;border-color:#5a92d8}
+  .logbar .chk input:checked::after{content:"";position:absolute;left:3.5px;top:0.5px;
+    width:4px;height:7px;border:solid #fff;border-width:0 1.5px 1.5px 0;transform:rotate(45deg)}
+  .logbody{max-height:300px;min-height:90px;overflow:auto;resize:vertical;
+    padding:8px 10px;font:12px/1.65 ui-monospace,Consolas,"Courier New",monospace;
+    color:#b8c6d8;white-space:pre-wrap;word-break:break-word;
+    user-select:text;-webkit-user-select:text}
+  .logbody .ln{display:block;padding:0 2px;border-radius:2px}
+  .logbody .ln:hover{background:#161b24}
+  .logbody .ln.err{color:#ff9d9d;background:#2a1618}
+  .logbody .ln.warn{color:#e8b76a}
+  .logbody .ln.head{color:#8fbcf0;font-weight:500;margin-top:4px}
+  .logbody .ln.ok{color:#7fd6a3}
+  .logbody .ln.tip{color:#8a94a6}
+  .logbody:empty::before{content:"（还没有日志）";color:#5a6272}
+  .logpanel.collapsed .logbody{display:none}
+  .logbody.only-err .ln:not(.err):not(.warn):not(.head){display:none}
+  .promptbox{margin:12px 16px 0;background:var(--panel);border:1px solid var(--line);
+    border-radius:8px;overflow:hidden}
+  .pbbar{display:flex;align-items:center;gap:10px;padding:6px 10px;
+    border-bottom:1px solid var(--line);font-size:12px;color:var(--dim)}
+  .pbbar b{color:var(--text);font-weight:500}
+  .pbbar .grow{flex:1}
+  .pbbar button{padding:3px 9px;font-size:11px}
+  .pbbar code{background:#12151b;border:1px solid var(--line);border-radius:3px;
+    padding:0 3px;color:#9fc2ee;font-size:11px}
+  .pbbody{padding:10px;display:flex;flex-direction:column;gap:8px}
+  .pbbody label{display:block;font-size:11px;color:var(--dim)}
+  .pbbody textarea{width:100%;margin-top:3px;padding:7px 9px;resize:vertical;
+    background:#12151b;border:1px solid var(--line);border-radius:5px;
+    font:12px/1.6 ui-monospace,Consolas,"Courier New",monospace;color:var(--text)}
+  .promptbox.collapsed .pbbody{display:none}
   .finals{display:flex;flex-wrap:wrap;gap:10px;padding:12px 16px}
   .finals a{color:#8fc0f5;font-size:12px}
   .modal{position:fixed;inset:0;background:rgba(0,0,0,.62);display:flex;
@@ -73,7 +150,7 @@
   .doc-wrap{max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:6px}
   .doc{width:100%;border-collapse:collapse;font-size:12px}
   .doc th,.doc td{border-bottom:1px solid var(--line);padding:5px 8px;
-    text-align:left;vertical-align:top}
+    text-align:left;vertical-align:top;white-space:pre-wrap;line-height:1.6}
   .doc th{position:sticky;top:0;background:var(--panel);color:#9fc2ee;font-weight:600;z-index:1}
   .doc td:first-child{white-space:nowrap;color:#cfe0f5;
     font-family:ui-monospace,Consolas,monospace;font-size:11px}
@@ -81,12 +158,27 @@
   .doc .note{margin-top:8px;padding:7px 10px;background:#1b2029;border-left:3px solid var(--warn);
     color:#d6c69a;font-size:12px;white-space:pre-wrap;border-radius:4px}
   .doc .note b{display:block;margin-bottom:3px;color:#f0cf8a}
+  /* 全局分辨率控件：百万像素 + 画幅比例 */
+  .resctl{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);
+    background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:3px 8px}
+  .resctl b{color:var(--text);font-weight:600;white-space:nowrap}
+  .resctl input[type=range]{width:104px;accent-color:var(--accent)}
+  .resctl input[type=number]{width:62px}
+  .resctl select{max-width:150px;font-size:12px}
+  .resctl button{padding:3px 10px}
+  .resctl .resdim{min-width:88px;white-space:nowrap}
 </style>
 </head>
 <body>
 <header>
   <h1>SelfLift 出片台</h1>
+  <input id="filmFilter" type="text" placeholder="搜片名 / 编号" autocomplete="off"
+         title="输入片名或文件夹编号即可过滤下拉；清空显示全部（按最近改动排序）">
+  <select id="filmSel" title="选择片子：片名 · #编号 · 更新时间 · 进度"></select>
+  <button id="renameBtn" title="给本片起名字：片名、文件夹名、成片文件名都会带上同一个编号">改名</button>
+  <span id="filmUpdated" title="本片最近改动时间"></span>
   <div class="cfg" id="cfgLabel">未选择片</div>
+  <button id="manualBtn" title="打开完整使用手册（新窗口）">使用手册</button>
   <button id="reload">刷新</button>
 </header>
 
@@ -94,11 +186,27 @@
   <button id="importBtn" class="primary">导入分镜 JSON</button>
   <button id="tplBtn" title="下载一份带字段说明的 JSON 模板，照着改完再导入">下载模板</button>
   <button id="docBtn" title="看每个字段是什么意思">字段说明</button>
-  <label class="file">参考图<input type="file" id="refFile" accept="image/*"></label>
-  <button id="refUp">上传</button>
-  <label class="file">空镜板<input type="file" id="plateFile" accept="image/*"></label>
-  <button id="plateUp">上传</button>
+  <span class="resctl" title="全片输出分辨率。改动后所有已完成段都会标记为需重出，一键跑全片会按新尺寸重出">
+    <b>百万像素</b>
+    <input type="range" id="mpRange" min="0.2" max="1.5" step="0.05" value="0.5">
+    <input type="number" id="mpNum" min="0.1" max="2" step="0.05" value="0.5">
+    <span>MP</span>
+    <select id="arSel" title="画幅比例">
+      <option value="1:1 (Square)">1:1 方形</option>
+      <option value="2:3 (Portrait Photo)">2:3 竖幅</option>
+      <option value="3:2 (Photo)">3:2</option>
+      <option value="3:4 (Portrait Standard)">3:4 竖幅</option>
+      <option value="4:3 (Standard)">4:3</option>
+      <option value="9:16 (Portrait Widescreen)">9:16 竖屏</option>
+      <option value="16:9 (Widescreen)" selected>16:9 横屏</option>
+      <option value="21:9 (Ultrawide)">21:9 超宽</option>
+    </select>
+    <span class="resdim" id="resPreview">≈ 960×544</span>
+    <button id="resApply">应用</button>
+  </span>
   <span class="grow"></span>
+  <button id="saveAll" title="把页面上所有改过的提示词、seed、全片 head/tail 一次性写回分镜 JSON">保存所有修改</button>
+  <button id="refreshMedia" title="强制重新拉取所有首帧/尾帧/视频缩略图（缓存兜底）">刷新预览</button>
   <button id="runAll" class="primary">一键跑全片</button>
   <select id="join">
     <option value="auto">按每段转场</option>
@@ -111,8 +219,40 @@
 
 <div class="status" id="status" data-k="info">未选择片</div>
 <div class="hint" id="hint" style="display:none"></div>
+<div class="refbar" id="refbar"></div>
+<section class="promptbox" id="promptBox" hidden>
+  <div class="pbbar">
+    <b>全片提示词</b>
+    <span class="dim">图片编号写 <code>{pic:1}</code> / <code>{pic:plate}</code>，只在某些段才成立的句子用
+      <code>{pic?:first}</code>（本段没接就整行去掉）——全片共用一份，不用逐段写</span>
+    <span class="grow"></span>
+    <button id="pbToggle">收起</button>
+  </div>
+  <div class="pbbody">
+    <label>head · 全片身份与画风锚（拼在每段正文之前）
+      <textarea id="pbHead" rows="9" spellcheck="false"></textarea></label>
+    <label>tail · 画风 / 禁止项 / 段首尾衔接锚（拼在每段正文之后）
+      <textarea id="pbTail" rows="3" spellcheck="false"></textarea></label>
+    <div class="row">
+      <button id="pbSave" class="primary">保存全片提示词</button>
+      <span class="dim" id="pbState"></span>
+    </div>
+  </div>
+</section>
 <main class="grid" id="list"></main>
-<pre class="log" id="log"></pre>
+<section class="logpanel" id="logPanel" hidden>
+  <div class="logbar">
+    <b>运行日志</b>
+    <span class="dim" id="logMeta">—</span>
+    <span class="grow"></span>
+    <label class="chk" title="新内容出现时自动滚到底部；往上滚就暂停跟随"><input type="checkbox" id="logFollow" checked>跟随</label>
+    <label class="chk" title="只看报错和警告"><input type="checkbox" id="logOnlyErr">只看问题</label>
+    <button id="logCopy" title="复制完整日志到剪贴板">复制全部</button>
+    <button id="logSave" title="下载成 .log 文本文件">下载</button>
+    <button id="logToggle" title="收起 / 展开">收起</button>
+  </div>
+  <div class="logbody" id="logBody"></div>
+</section>
 <div class="finals" id="finals"></div>
 
 <div class="modal hidden" id="modal">
@@ -159,10 +299,255 @@
 
 <div id="lightbox"><img id="lbImg" alt="" style="display:none"><video id="lbVid" controls style="display:none"></video></div>
 
+<!-- MANUAL_DOC_BEGIN -->
+<script id="manualDoc" type="text/plain">
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>使用手册 · SelfLift 出片台</title>
+<style>
+  :root{
+    --bg:#16181d; --panel:#1d2028; --panel2:#232733; --line:#31364a;
+    --text:#e6eaf2; --dim:#93a0b4; --accent:#3d7fd6; --ok:#4caf7d;
+    --warn:#e0a44a; --err:#d06161;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:960px;margin:0 auto;padding:28px 24px 80px}
+  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
+    border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:22px}
+  h1{font-size:22px;margin:0;font-weight:600;letter-spacing:.5px}
+  .sub{color:var(--dim);font-size:13px}
+  .back{color:#8fc0f5;text-decoration:none;font-size:13px;margin-left:auto}
+  .back:hover{text-decoration:underline}
+  nav{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+    padding:14px 18px;margin-bottom:26px;columns:2;column-gap:32px}
+  nav a{display:block;color:#8fc0f5;text-decoration:none;font-size:13px;
+    padding:2px 0;break-inside:avoid}
+  nav a:hover{text-decoration:underline}
+  h2{font-size:17px;margin:34px 0 12px;padding-bottom:8px;
+    border-bottom:1px solid var(--line);font-weight:600}
+  h3{font-size:14px;margin:20px 0 8px;color:#9fc2ee;font-weight:600}
+  p{margin:8px 0}
+  ul,ol{margin:8px 0 8px 22px;padding:0}
+  li{margin:4px 0}
+  code{background:#12151b;border:1px solid var(--line);border-radius:4px;
+    padding:1px 5px;font:12px/1.5 ui-monospace,Consolas,monospace;color:#c9d8ee}
+  pre{background:#12151b;border:1px solid var(--line);border-radius:8px;
+    padding:12px 14px;overflow:auto;font:12px/1.6 ui-monospace,Consolas,monospace;
+    color:#c9d8ee;margin:10px 0}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#9fc2ee;font-weight:600}
+  .tip,.warn,.err{border-left:3px solid var(--accent);background:var(--panel);
+    padding:10px 14px;border-radius:0 8px 8px 0;margin:12px 0;font-size:13px}
+  .warn{border-left-color:var(--warn)}
+  .err{border-left-color:var(--err)}
+  .tip b,.warn b,.err b{color:var(--text)}
+  .k{color:var(--dim)}
+  .ok{color:var(--ok)}
+  footer{margin-top:48px;border-top:1px solid var(--line);padding-top:14px;
+    color:var(--dim);font-size:12px}
+  @media(max-width:640px){nav{columns:1}.wrap{padding:18px 14px 60px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>使用手册</h1>
+  <span class="sub">SelfLift 出片台 · 逐段人在回路长视频</span>
+  <a class="back" href="__APP_URL__">← 返回出片台</a>
+</header>
+
+<nav>
+  <a href="#s1">1. 五分钟上手</a>
+  <a href="#s2">2. 访问地址与片选择</a>
+  <a href="#s3">3. 参考图与空镜板</a>
+  <a href="#s4">4. 提示词与 {pic:} 占位符</a>
+  <a href="#s5">5. 分段卡片逐项说明</a>
+  <a href="#s6">6. 跑片、取消与保存</a>
+  <a href="#s7">7. 拼接与转场优先级</a>
+  <a href="#s8">8. 分辨率与画幅</a>
+  <a href="#s9">9. 预览图、日志与验收</a>
+  <a href="#s10">10. 常见坑与排错</a>
+  <a href="#s11">11. 改动什么时候生效</a>
+  <a href="#s12">12. 命令行速查</a>
+</nav>
+
+<h2 id="s1">1. 五分钟上手</h2>
+<ol>
+  <li><b>导入分镜</b>：点「导入分镜 JSON」，可以选文件、也可以直接粘贴 JSON 或一整段剧情文字（会自动切段）。不知道怎么写就先点「下载模板」，每个字段都带中文说明。JSON 里的 <code>title</code> 就是片名，会连同编号一起写进文件夹名；没写的话用第一段标题当默认名。</li>
+  <li><b>传参考图</b>：页面顶部参考图条带里，给每个人物各传一张半身/胸像，再传一张<b>完全无人</b>的场景空镜板（橙色边框）。这一步不能省——head 里引用的 <code>&lt;Picture N&gt;</code> 必须有真实接线，否则提交会被拒。</li>
+  <li><b>写全局提示词</b>：head 写身份与场景锚，tail 写画风与衔接规则。用 <code>{pic:1}</code> 之类的占位符，别手写编号。</li>
+  <li><b>逐段调整</b>：每段改 body / seed / 承接方式 / 段级参考图。改完不用逐个保存，直接跑片即可（会自动落盘）。</li>
+  <li><b>出片</b>：点「一键跑全片」串行渲染，全部完成后自动拼接；或点「拼接成片」只重拼现有段。</li>
+</ol>
+<div class="tip"><b>先跑一段看看。</b> 改了参考图或大段提示词时，先「运行本段」验证效果，确认了再跑全片，别一上来等十几分钟。</div>
+
+<h2 id="s2">2. 访问地址与片选择</h2>
+<p>三个入口，共用同一套页面和算力：</p>
+<table>
+  <tr><th>入口</th><th>地址</th><th>说明</th></tr>
+  <tr><td>独立服务（推荐）</td><td><code>http://127.0.0.1:8900/</code></td><td>双击 <code>tools/serve_app.bat</code> 启动，进程独立，重启不影响 ComfyUI</td></tr>
+  <tr><td>局域网 / 别的设备</td><td><code>http://192.168.x.x:8900/</code></td><td>服务监听 <code>0.0.0.0</code>，用本机局域网 IP 即可</td></tr>
+  <tr><td>内嵌页面</td><td><code>http://127.0.0.1:8188/h3-long-video/app</code></td><td>挂在 ComfyUI 桌面版下，改后端要重启桌面版</td></tr>
+</table>
+<div class="warn"><b>别写 <code>0.0.0.0</code> 当网址。</b> 它是「监听所有网卡」的绑定地址，不是可访问地址；浏览器打开会失败。<code>localhost</code> 会优先解析到 IPv6 <code>::1</code>，而服务只监听 IPv4，个别浏览器会卡住——<b>统一用 <code>127.0.0.1</code> 最稳</b>。换端口记得服务与网址一致。</div>
+<h3>片选择下拉</h3>
+<p>页面左上角的下拉会列出输出目录下所有片，<b>按最近更新时间倒序</b>，格式是「片名 · #编号 · 时间 · 完成段数」。选中即切换，同时更新地址栏 <code>?cfg=</code>，方便收藏或分享。</p>
+<p>更新时间取 <code>segments.json</code>、段视频、成片里最新的修改时间——改提示词、跑完一段、重拼成片都会让它往前排。</p>
+<h3>片名 · 编号 · 文件夹，三者一一对应</h3>
+<p>每部片有一个<b>固定编号</b>，就是文件夹末尾的 <code>MMDD_HHMMSS</code>：例如 <code>女生的午后_1112_135157</code> 的编号是 <code>#1112_135157</code>。下拉每项带编号，顶部标签显示「片名 · #编号 · 文件夹名」，去磁盘上找片子不用再靠时间猜。</p>
+<ul>
+  <li><b>搜片</b>：下拉左边的输入框可以输片名 / 编号 / 文件夹名，即时过滤；清空恢复全部。</li>
+  <li><b>改名</b>：点「改名」输入新片名，会同步做四件事——写 <code>segments.json</code> 的 <code>title</code>、把文件夹改成 <code>名字_编号</code>、把 cfg 里所有指向旧目录的绝对路径换掉、把成片文件名改成 <code>名字_编号_成片.mp4</code>。<b>编号永远不变</b>，所以名字、文件夹、成片始终对得上。</li>
+  <li><b>占位名</b>：从模板导入又没写标题的片，页面显示「未命名 #编号」，改名时会拿第一段标题当建议名，直接回车即可。</li>
+</ul>
+<div class="warn"><b>改名会换掉片目录。</b> 页面会自动切到新路径并刷新；其它还开着旧地址 <code>?cfg=</code> 的标签页要重新选片。跑片过程中不允许改名，等任务跑完再改。</div>
+<div class="tip"><b>为什么以前换个地址就「找不到片」？</b> 浏览器本地存储是按域名隔离的，<code>127.0.0.1:8900</code> 和 <code>192.168.0.66:8900</code>、<code>8188</code> 各存一份「上次打开的片」。现在片列表由服务端提供，任何地址打开看到的都是同一份。</div>
+
+<h2 id="s3">3. 参考图与空镜板</h2>
+<ul>
+  <li><b>一人一张，绝不拼图。</b> 一张图塞多个人，每张脸占比太小锁不住身份，还会把「几人并排」当构图模板复刻。</li>
+  <li><b>半身/胸像，脸占画幅 1/3 以上。</b> 全身景脸只占 10~15%，锁不住具体的人。</li>
+  <li><b>两人的服装/发色要明显区分</b>，否则链式段跑几段后两人会越跑越像。</li>
+  <li><b>空镜板永远排最后</b>（编号 P(N+1)），必须完全无人、无文字水印、无脏斑——参考图瑕疵会被逐像素复刻放大。</li>
+  <li>上传的图一律自动转 PNG（网页另存的图常带 <code>.webp</code> 后缀但内容是 JPEG，直接喂会 400）。</li>
+</ul>
+<h3>段级覆盖</h3>
+<p>每段卡片下面有「本段参考图」和「背景板」两块，可单独增删/换图：</p>
+<ul>
+  <li>标「跟随全片」= 用顶部条带的配置；改过之后标「自定义」，并出现「恢复全片」。</li>
+  <li>「本段不用」让这一段不接背景板，不影响其他段。</li>
+  <li>典型用法：只有第一段需要挂鞋款/道具参考图时，就只在 s01 挂，近景段不挂——避免模型为了找鞋把镜头推到腿脚特写。</li>
+</ul>
+<div class="err"><b>参考图会连「怎么拍」一起学。</b> H3 的 <code>ref_images</code> 由视觉模型整体理解，主体、构图、景别、机位、光线一起吸收，没有「只取款式」的开关。局部物件图（鞋、包）直接当参考，模型可能把物件当成画面主体摆进来，或跟着切到特写。正确做法是先把它合成到人物身上（Qwen 编辑），或明确写出「穿在她脚上、不作为独立物件出现」。</div>
+
+<h2 id="s4">4. 提示词与 {pic:} 占位符</h2>
+<p>全局 head / tail 只有一份，所有段共用；<code>{pic:}</code> 占位符会按<b>本段实际接线</b>自动换算成真编号：</p>
+<table>
+  <tr><th>写法</th><th>含义</th></tr>
+  <tr><td><code>{pic:1}</code> … <code>{pic:N}</code></td><td>第 N 个人物参考图</td></tr>
+  <tr><td><code>{pic:plate}</code></td><td>场景空镜板</td></tr>
+  <tr><td><code>{pic:first}</code></td><td>本段首帧（仅链式段有）</td></tr>
+  <tr><td><code>{pic?:first}</code></td><td>可选版：本段没接该媒体就<b>整行删掉</b></td></tr>
+</table>
+<p>编号顺序是「首帧 → 人物 1..N → 空镜板」。链式段比首段多一张首帧，所以后面的编号会整体后移一位——这正是要用占位符的原因。</p>
+<div class="err"><b>手写 <code>&lt;Picture 3&gt;</code> 是最常见的跑片失败原因。</b> 实际只接了 2 张图却引用了 P3，提交时 <code>strict_prompt_tags</code> 会直接拒绝（报错 1~2 秒，根本没进渲染）。报错信息现在会翻译成中文并提示补图或改占位符。</div>
+<div class="warn"><b>段级 head 是整段覆盖全局 head，不是追加。</b> 只改全局那一份救不了写了段级 head 的段。多人片建议删掉段级 head，统一用占位符版全局 head。同理段级 tail 覆盖全局 tail。</div>
+<p>占位符只支持上述几种；出现裸的 <code>{</code> 会在保存时提示，避免被误解析。</p>
+
+<h2 id="s5">5. 分段卡片逐项说明</h2>
+<table>
+  <tr><th>控件</th><th>作用</th></tr>
+  <tr><td>seed</td><td>换 seed 重出本段。注意 <b>100000 是坏种子</b>（高频伪影），别拿它做对照</td></tr>
+  <tr><td>提示词正文</td><td>本段动作/机位/光线/场景。跨段<b>别换姿势</b>：站→坐会让地面透视与接触阴影崩掉；姿势转换必须在同一段内连续完成</td></tr>
+  <tr><td>承接 / 转场</td><td><code>chain</code>=首帧像素承接上段尾帧；<code>transition</code>=本段独立生成、只靠转场连接。转场模式下右边的「叠化/黑屏/硬切」才生效</td></tr>
+  <tr><td>动作参考视频</td><td>截取视频前 N 秒（1~15）作软参考，只接管动作/节奏/机位，不接管场景和画风。插入时自动在提示词最前面加一段说明，删除时自动剥除</td></tr>
+  <tr><td>本段参考图 / 背景板</td><td>见第 3 节，可逐段覆盖全片配置</td></tr>
+  <tr><td>＋ 在此段后插入</td><td>插入新段并重编号 s01..s0N，同时重命名已有产物</td></tr>
+  <tr><td>看视频 / 首帧 / 尾帧</td><td>点缩略图看大图；重跑后若没刷新，点「刷新预览」强制重拉</td></tr>
+</table>
+
+<h2 id="s6">6. 跑片、取消与保存</h2>
+<ul>
+  <li><b>一键跑全片</b>：串行逐段提交，<b>确认上一段真的生成了视频</b>才推进下一段；失败会停下并报出段号，不会静默跳过。全部完成后自动拼接。</li>
+  <li><b>运行本段</b>：只跑这一段。重跑后链式尾帧变了，后续段需要按序重出才能接上。</li>
+  <li><b>保存所有修改 (N)</b>：一次把所有改过的提示词、seed、全局 head/tail 写回 JSON，N 是未保存字段数。</li>
+  <li><b>自动落盘</b>：一键跑全片、每次提交下一段、运行本段之前都会先静默保存——改了提示词直接跑不会跑旧配置。</li>
+  <li><b>取消全片</b>：服务端级取消，会中断当前段、清空 ComfyUI 队列，其他标签页也会停。重新点「一键跑全片」即解除。</li>
+  <li><b>需重出</b>标记：改了提示词/seed/全局 head/分辨率后，受影响段及之后的段会标 stale。改分辨率会让<b>全片</b>都标，避免新旧尺寸混拼。</li>
+</ul>
+<div class="warn"><b>不要同时在 8188 内嵌页和 :8900 页点运行。</b> 这是两个进程、各一份任务表，判重互相看不见，会往 ComfyUI 队列塞两笔任务。算力是单队列，不会并行渲染，只会排队等待。</div>
+
+<h2 id="s7">7. 拼接与转场优先级</h2>
+<p>右上角下拉是<b>全片级</b>，每段卡片里的「承接 + 转场」是<b>段级</b>。优先级：</p>
+<table>
+  <tr><th>右上角选择</th><th>结果</th></tr>
+  <tr><td>全片硬切 / 全片叠化 / 全片黑场</td><td><b>最高优先级</b>，所有接缝统一用该值，段级 link 完全忽略</td></tr>
+  <tr><td>按每段转场 (auto)</td><td>才看段级：<code>mode=transition</code> → 用该段的 <code>transition</code>；<code>mode=chain</code> 或没写 link → <b>固定 0.25s 叠化</b></td></tr>
+</table>
+<div class="warn"><b>段级「转场」下拉在链式承接时是灰的，也不生效。</b> 想让某段用黑场/硬切，必须先把它的「承接」切成「转场」，并保持右上角为「按每段转场」。chain 片里 auto 与「全片叠化」完全等价。</div>
+<h3>两个阶段别混</h3>
+<ul>
+  <li><b>生成期</b>：<code>link.mode=chain</code> 才把上段尾帧注入 first_frame，stale 会向后传染；<code>transition</code> 段独立生成、不接首帧。</li>
+  <li><b>拼接期</b>：右上角 join 只决定 ffmpeg 用叠化 / 插黑帧 / 直连，<b>不会改已生成的段</b>。「全片硬切」= 仅去掉叠化，链式接缝的帧差不变。</li>
+</ul>
+<p>叠化 0.25s、黑场 0.8s 都会改变总时长；硬切不额外加帧。选择会写回片配置，换浏览器/换地址打开也是同一个值，命令行不带 <code>--join</code> 时也沿用。</p>
+<div class="tip"><b>叠化不一定更平滑。</b> 链式段首帧本来就承接上段尾帧（帧差通常 2~4），叠化只是把两张极像的画面半透明叠在一起，反而多一层重影。觉得接缝「发虚」时优先试「全片硬切」。</div>
+
+<h2 id="s8">8. 分辨率与画幅</h2>
+<p>工具条上的「百万像素」滑块 + 数值输入 + 画幅下拉，实时显示预估尺寸（如 <code>0.5MP / 16:9 → ≈960×544</code>）。点「应用」写回配置，所有已完成段立刻标「需重出」。</p>
+<div class="warn"><b>8GB 显存建议 0.5MP 左右</b>，优先 int8 / w4a8 模型；调到 1MP 以上容易 OOM。允许范围 0.1~2.0MP。</div>
+
+<h2 id="s9">9. 预览图、日志与验收</h2>
+<ul>
+  <li><b>刷新预览</b>：重跑后缩略图没变就点它，强制重建卡片并重拉图片/视频（缓存兜底）。后端也会给媒体 URL 带文件版本号，正常情况下重跑会自动更新。</li>
+  <li><b>日志面板</b>：逐行着色（错误红 / 警告橙 / 段标题蓝 / 完成绿），支持复制全部、下载 .log、跟随开关、只看问题。</li>
+  <li><b>验收两指标</b>：① 构图——抽上段尾帧与下段首帧算 MAE，<b>&lt;5 即接续正常</b>；② 光线——逐秒算亮度与色温数值曲线，别只目测拼图。</li>
+  <li>段内出现帧级抖动（相邻帧差尖峰）不是接缝问题，换转场救不了，只能换 seed 重出该段或把段首动作写得更缓。</li>
+</ul>
+
+<h2 id="s10">10. 常见坑与排错</h2>
+<table>
+  <tr><th>现象</th><th>原因 / 处理</th></tr>
+  <tr><td>提交几秒就失败，提示 Picture N 悬空</td><td>实际接线数与手写编号不符。补空镜板，或改用 <code>{pic:}</code> 占位符</td></tr>
+  <tr><td>换装 / 换风格不明显</td><td>画风由参考图锁定，纯提示词权重不够。先用本地 Qwen-Image-Edit 造一张干净的目标参考图</td></tr>
+  <tr><td>模型切到腿脚特写、把物件摆进画面</td><td>参考图带景别/主体信号。见第 3 节，清图或合成到人物身上</td></tr>
+  <tr><td>跨段从站变坐，地面崩</td><td>段间换姿势。统一姿势，转换在同一段内完成</td></tr>
+  <tr><td>总有几个段跑失败</td><td>多半不是并行（ComfyUI 是单队列、无 OOM），而是编号对账失败，原样重跑还会挂</td></tr>
+  <tr><td>任务卡在「渲染中」但队列是空的</td><td>ComfyUI 中途重启清了 history。驱动现在会在队列空转 30 秒后提前退出</td></tr>
+  <tr><td>重跑后预览图还是旧的</td><td>浏览器缓存。点「刷新预览」；文件时间戳正常就说明模型链路没问题</td></tr>
+  <tr><td>改了提示词却跑了旧内容</td><td>老版本页面未自动落盘。现在所有跑片动作前都会自动保存，刷新一次页面即可</td></tr>
+</table>
+
+<h2 id="s11">11. 改动什么时候生效</h2>
+<table>
+  <tr><th>改了什么</th><th>生效方式</th></tr>
+  <tr><td>出片逻辑 / 状态字段（driver）</td><td>每次调用都是新进程 → <b>立刻生效</b></td></tr>
+  <tr><td>页面 HTML / JS</td><td>每次请求现读 → <b>刷新页面即可</b>，两个入口都一样</td></tr>
+  <tr><td>常驻后端的路由（panel.py）</td><td>独立服务要重启 <code>:8900</code>；内嵌页面要<b>重启桌面版</b></td></tr>
+  <tr><td>新增 custom_nodes</td><td>必须重启桌面版（桌面版没有 ComfyUI-Manager）</td></tr>
+</table>
+<div class="err"><b>不要用 Stop-Process 杀桌面版后端。</b> Desktop 不会自动重启，8188 会变 502；也不要另起一个临时 ComfyUI 抢 8188。</div>
+
+<h2 id="s12">12. 命令行速查</h2>
+<pre># 建片 / 导入分镜
+python run_selflift.py --cfg &lt;片&gt;/segments.json import --src &lt;分镜.json&gt;
+
+# 接线校验（正式跑之前先做，能对出 Picture 编号）
+python run_selflift.py --cfg &lt;片&gt;/segments.json graph
+
+# 逐段 / 全片 / 强制重出
+python run_selflift.py --cfg &lt;片&gt;/segments.json seg 1
+python run_selflift.py --cfg &lt;片&gt;/segments.json all
+python run_selflift.py --cfg &lt;片&gt;/segments.json --force all
+
+# 拼接（不带 --join 时按片配置里的 join_mode）
+python run_selflift.py --cfg &lt;片&gt;/segments.json merge
+python run_selflift.py --cfg &lt;片&gt;/segments.json --join cut merge
+
+# 改全局字段
+python run_selflift.py --cfg &lt;片&gt;/segments.json set --megapixels 0.8 --aspect-ratio "9:16 (Portrait Widescreen)"
+python run_selflift.py --cfg &lt;片&gt;/segments.json set --join cut
+python run_selflift.py --cfg &lt;片&gt;/segments.json set --seg 3 --seed 528329 --body "..."</pre>
+<p class="k">Windows 下请用 <code>ComfyUI/.venv/Scripts/python.exe</code>，并设 <code>PYTHONUTF8=1 PYTHONIOENCODING=utf-8</code>，否则子进程中文输出会变方块。</p>
+
+<footer>SelfLift 出片台 · 使用手册 · 内容与页面同源，改页面后刷新即可看到最新版</footer>
+</div>
+</body>
+</html>
+
+</script>
+<!-- MANUAL_DOC_END -->
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { cfg: null, data: null, queue: null, busy: false, merged: false,
-                timer: null, cardSig: null };
+const state = { cfg: null, data: null, queue: null, waiting: null, busy: false, merged: false,
+                timer: null, cardSig: null, resDirty: false, cancelled: false,
+                mediaNonce: 0, filmSig: null, films: [], joinTouched: false, savedJoin: "auto" };
 
 function say(text, kind = "info") {
   const el = $("status");
@@ -200,23 +585,305 @@ async function status() {
   return data;
 }
 
-/* ---------- 首次进入：恢复上次的片 ---------- */
+/* ---------- 全局分辨率：百万像素 + 画幅比例 ---------- */
+const AR_RATIO = {
+  "1:1 (Square)": 1, "2:3 (Portrait Photo)": 2/3, "3:2 (Photo)": 3/2,
+  "3:4 (Portrait Standard)": 3/4, "4:3 (Standard)": 4/3,
+  "9:16 (Portrait Widescreen)": 9/16, "16:9 (Widescreen)": 16/9,
+  "21:9 (Ultrawide)": 21/9,
+};
+const RES_MULTIPLE = 32;   // 与工作流 ResolutionSelector 节点的 multiple 一致
+
+function resSize(mp, ar) {
+  const r = AR_RATIO[ar] || 16/9;
+  const w = Math.ceil(Math.sqrt(mp * 1e6 * r) / RES_MULTIPLE) * RES_MULTIPLE;
+  const h = Math.max(RES_MULTIPLE, Math.round(w / r / RES_MULTIPLE) * RES_MULTIPLE);
+  return [w, h];
+}
+function updateResPreview() {
+  const mp = Number($("mpNum").value) || 0.5;
+  const [w, h] = resSize(mp, $("arSel").value);
+  $("resPreview").textContent = "≈ " + w + "×" + h;
+  $("mpRange").value = Math.min(1.5, Math.max(0.2, mp));
+}
+function syncRes(data) {
+  if (state.resDirty) return;   // 3s 轮询别覆盖用户正在拖 / 正在输的值
+  if (data.megapixels != null) {
+    const mp = Number(data.megapixels);
+    $("mpNum").value = mp;
+    $("mpRange").value = Math.min(1.5, Math.max(0.2, mp));
+  }
+  const ar = data.aspect_ratio;
+  if (ar && [...$("arSel").options].some((o) => o.value === ar)) $("arSel").value = ar;
+  updateResPreview();
+}
+function bindResControls() {
+  const mark = () => { state.resDirty = true; };
+  $("mpRange").addEventListener("input", () => {
+    $("mpNum").value = $("mpRange").value; mark(); updateResPreview();
+  });
+  $("mpNum").addEventListener("input", () => { mark(); updateResPreview(); });
+  $("arSel").addEventListener("change", () => { mark(); updateResPreview(); });
+  $("resApply").addEventListener("click", async () => {
+    if (!state.cfg) { say("先导入分镜 JSON", "error"); return; }
+    const mp = Number($("mpNum").value);
+    if (!(mp >= 0.1 && mp <= 2)) { say("百万像素要在 0.1~2.0 之间（8GB 建议 0.5 左右）", "error"); return; }
+    const ar = $("arSel").value;
+    try {
+      await apiJson("/h3-long-video/selflift/set",
+        { cfg: state.cfg, megapixels: mp, aspect_ratio: ar });
+      state.resDirty = false;
+      const d = await reload();
+      // 独立服务若还是旧进程，/set 会忽略新参数：明确报错，别让用户以为生效了
+      const got = d ? Number(d.megapixels) : NaN;
+      if (!Number.isFinite(got) || Math.abs(got - mp) > 1e-6) {
+        say("参数没写进去：独立服务还是旧后端，跑完这轮后重启 :8900 再应用", "error");
+        return;
+      }
+      const [w, h] = resSize(mp, ar);
+      say("全片分辨率已设为 " + mp + " MP / ≈" + w + "×" + h + "，所有段已标记需重出", "ok");
+    } catch (e) { say("应用失败：" + e.message, "error"); }
+  });
+  updateResPreview();
+  // 事件委托：卡片里的 seed/body 与全片 head/tail 一改动就刷新未保存计数
+  document.addEventListener("input", (ev) => {
+    const t = ev.target;
+    if (t && ((t.matches && t.matches("#list [data-keep]"))
+              || t.id === "pbHead" || t.id === "pbTail")) updateSaveBadge();
+  });
+  updateSaveBadge();
+}
+
+/* ---------- 片列表：由服务端 status 提供，换地址/换设备都看得到同一份 ---------- */
+function normPath(p) { return String(p || "").replace(/\\/g, "/").toLowerCase(); }
+
+function filmSearch(f) {
+  return String(f.search || [f.title, f.film_id, f.dir, f.prefix].join(" ")).toLowerCase();
+}
+
+/* 只重建 select 的 options：不动提示词输入框/textarea，搜索可以边输边过滤。 */
+function renderFilmOptions() {
+  const sel = $("filmSel");
+  const q = ($("filmFilter").value || "").trim().toLowerCase();
+  const cur = sel.value;
+  const all = state.films || [];
+  const list = all.filter((f) => !q || filmSearch(f).includes(q));
+  sel.replaceChildren();
+  if (!list.length) {
+    const o = document.createElement("option");
+    o.value = "";
+    o.textContent = q ? "（没有匹配的片）" : "（输出目录下没有片）";
+    sel.appendChild(o);
+  }
+  const add = (f, suffix) => {
+    const o = document.createElement("option");
+    o.value = f.path;
+    o.textContent = (f.label ||
+      `${f.display || f.title} · #${f.film_id} · ${f.updated_text} · ${f.done}/${f.segments}段`)
+      + (suffix || "");
+    o.title = `${f.path}\n片名：${f.title}\n编号：#${f.film_id}\n文件夹：${f.dir}`;
+    sel.appendChild(o);
+  };
+  list.forEach((f) => add(f));
+  // 当前片被过滤掉也留一条，别让下拉显示的片跟页面内容对不上
+  const curFilm = all.find((f) => normPath(f.path) === normPath(cur));
+  if (cur && curFilm && !list.includes(curFilm)) add(curFilm, " · 当前片");
+  if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
+}
+
+/* ---------- 从文件夹读片清单，不依赖 localStorage / ?cfg= ---------- */
+async function loadFilms() {
+  // 首屏 bootstrap 总是先调这个：即使 localStorage 里没有任何片、也没有 ?cfg=，
+  // 下拉也能从输出目录里扫描出来的片路径直接填充，不再「读不出来」。
+  try {
+    const r = await fetch("/h3-long-video/selflift/films");
+    const d = await r.json();
+    state.films = d.films || [];
+  } catch (_) {
+    state.films = [];
+  }
+  renderFilmOptions();
+  return state.films;
+}
+
+async function selectFilm(cfgPath, opts) {
+  opts = opts || {};
+  const next = cfgPath;
+  if (!next || normPath(next) === normPath(state.cfg)) return;
+  // 换片要清掉旧片的队列/任务态，否则 pump 会拿旧队列往新片提交
+  state.queue = null; state.waiting = null; state.busy = false;
+  state.cancelled = false; state.merged = false;
+  state.cardSig = null; state.filmSig = null; state.resDirty = false;
+  state.joinTouched = false; state.mediaNonce = 0;
+  $("runAll").textContent = "一键跑全片";
+  state.cfg = next;
+  localStorage.setItem(KEY, next);
+  const u = new URL(location.href);
+  u.searchParams.set("cfg", next);
+  history.replaceState(null, "", u);
+  if (!opts.skipReload) {
+    try {
+      await reload();
+      if (!opts.silent) say("已切换片子（其它窗口里正在跑的任务不受影响）", "ok");
+    } catch (e) { say("切换失败：" + e.message, "error"); }
+  }
+}
+
+function renderFilms(data) {
+  const sel = $("filmSel");
+  if (!sel) return;
+  const films = data.films || [];
+  const sig = films.map((f) => [f.path, f.title, f.film_id, f.dir, f.label,
+                                f.updated_text, f.done, f.segments,
+                                f.has_final ? 1 : 0].join("|")).join("\n");
+  if (sig !== state.filmSig) {
+    state.films = films;
+    state.filmSig = sig;
+    renderFilmOptions();
+  }
+  const mine = normPath(data.cfg);
+  const hit = films.find((f) => normPath(f.path) === mine);
+  if (hit) {
+    sel.value = hit.path;
+    $("filmUpdated").textContent = "更新 " + hit.updated_text;
+    $("cfgLabel").textContent = `${hit.display || hit.title} · ${hit.dir}`;
+    $("cfgLabel").title = hit.path;
+  } else {
+    $("filmUpdated").textContent = "";
+    $("cfgLabel").textContent = (data.film_display || data.title || "未命名")
+      + (/^\d{4}_\d{6}$/.test(data.film_id || "") ? " · #" + data.film_id : "")
+      + (data.folder ? " · " + data.folder : "");
+    if (data.cfg && ![...sel.options].some((o) => normPath(o.value) === mine)) {
+      const o = document.createElement("option");
+      o.value = data.cfg; o.textContent = "当前片（不在列表）";
+      sel.appendChild(o);
+    }
+    if (data.cfg) sel.value = data.cfg;
+  }
+}
+
+$("filmFilter").addEventListener("input", renderFilmOptions);
+
+/* ---------- 改名：片名 / 文件夹 / 成片文件名共用同一个编号 ---------- */
+$("renameBtn").addEventListener("click", async () => {
+  if (!state.cfg) { say("先在下拉里选一部片", "error"); return; }
+  const d = state.data || {};
+  const raw = String(d.title || "").trim();
+  const placeholder = !raw || ["segments-template", "segments_template",
+    "未命名长片", "未命名", "film", "untitled"].includes(raw.toLowerCase());
+  const segTitle = String((d.segments && d.segments[0] && d.segments[0].title) || "")
+    .replace(/\s+/g, " ").slice(0, 20);
+  const suggestion = placeholder ? (segTitle || `片_${d.film_id || ""}`) : raw;
+  const name = window.prompt(
+    "给这部片起个名字：\n\n片编号 #" + (d.film_id || "—") + " 保持不变；\n"
+    + "文件夹会改成「名字_编号」，成片文件名也带同一个编号。",
+    suggestion);
+  if (name === null) return;
+  const title = name.trim();
+  if (!title) { say("片名不能为空", "error"); return; }
+  try {
+    const r = await apiJson("/h3-long-video/selflift/rename",
+                            { cfg: state.cfg, title });
+    // 目录改名后旧 cfg 路径失效：按「换片」处理，清掉旧片的队列/任务态
+    state.queue = null; state.waiting = null; state.busy = false;
+    state.cancelled = false; state.merged = false;
+    state.cardSig = null; state.filmSig = null; state.resDirty = false;
+    state.joinTouched = false; state.mediaNonce = 0;
+    $("runAll").textContent = "一键跑全片";
+    $("filmFilter").value = "";
+    state.cfg = r.cfg;
+    localStorage.setItem(KEY, r.cfg);
+    const u = new URL(location.href);
+    u.searchParams.set("cfg", r.cfg);
+    history.replaceState(null, "", u);
+    await reload();
+    say(`已改名：${r.title} · #${r.film_id} · 文件夹 ${r.dir}`
+      + (r.final_renamed ? "（成片文件同步改名）" : ""), "ok");
+  } catch (e) { say("改名失败：" + e.message, "error"); }
+});
+
+$("filmSel").addEventListener("change", async () => {
+  await selectFilm($("filmSel").value);
+});
+
+/* ---------- 拼接方式：本机即时记住 + 拼接后写回片配置（跨地址一致） ---------- */
+function joinKey() { return "h3_join_" + normPath(state.cfg); }
+function syncJoin(data) {
+  // 记录服务端配置里的 join，供「保存」时判断是否改动
+  state.savedJoin = data.join_mode || "auto";
+  if (state.joinTouched) return;
+  let v = data.join_mode || "auto";
+  try {
+    const raw = localStorage.getItem(joinKey());
+    if (raw) {
+      const o = JSON.parse(raw);
+      if (o && o.t > (data.join_updated_at || 0)) v = o.v;
+    }
+  } catch (_) {}
+  if ([...$("join").options].some((o) => o.value === v)) $("join").value = v;
+}
+$("join").addEventListener("change", () => {
+  const v = $("join").value;
+  state.joinTouched = true;
+  try { localStorage.setItem(joinKey(), JSON.stringify({ v, t: Date.now() / 1000 })); }
+  catch (_) {}
+  say("拼接方式：" + $("join").selectedOptions[0].textContent
+    + "（点「保存所有修改」会写回片配置）", "ok");
+  setTimeout(() => { state.joinTouched = false; }, 0);
+});
+
+/* ---------- 使用手册：内容内嵌在页面，用 Blob 打开独立窗口，零后端路由 ---------- */
+$("manualBtn").addEventListener("click", () => {
+  const raw = $("manualDoc")?.textContent || "";
+  if (!raw) { say("手册内容未加载，刷新页面再试", "error"); return; }
+  // Blob 页面里相对路径会失效，把出片台地址写成绝对 URL 再注入
+  const doc = raw.replaceAll("__APP_URL__", location.origin + "/h3-long-video/app");
+  const url = URL.createObjectURL(new Blob([doc], { type: "text/html;charset=utf-8" }));
+  const w = window.open(url, "_blank");
+  if (!w) {
+    URL.revokeObjectURL(url);
+    say("浏览器拦截了新窗口，请允许本站弹窗", "error");
+    return;
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  say("使用手册已在新窗口打开", "ok");
+});
+
+/* ---------- 首次进入：先从文件夹把下拉建出来，再决定选哪部片 ---------- */
 const KEY = "h3_app_cfg";
 window.addEventListener("DOMContentLoaded", async () => {
-  const saved = localStorage.getItem(KEY);
-  if (saved) {
-    state.cfg = saved;
-    $("cfgLabel").textContent = saved;
-    try { await reload(); } catch (e) { say("读取失败：" + e.message, "error"); }
+  // 1) 永远先扫文件夹、把下拉填出来——localStorage 里有没有历史都能选片
+  await loadFilms();
+  // 2) 首屏选哪部片：?cfg= 优先 → 验证后 localStorage → 列表里最新的那部
+  const q = new URLSearchParams(location.search).get("cfg");
+  let initial = null;
+  if (q && state.films.some((f) => normPath(f.path) === normPath(q))) initial = q;
+  if (!initial) {
+    const saved = localStorage.getItem(KEY);
+    if (saved && state.films.some((f) => normPath(f.path) === normPath(saved)))
+      initial = saved;
   }
+  if (!initial && state.films.length) initial = state.films[0].path;
+  if (initial) {
+    await selectFilm(initial, { silent: true });
+  } else {
+    $("cfgLabel").textContent = "输出目录下还没有片：点「导入分镜 JSON」新建一部";
+  }
+  bindResControls();
   startTimer();
 });
 
+let filmsTick = 0;
 function startTimer() {
   if (state.timer) clearInterval(state.timer);
   state.timer = setInterval(async () => {
-    if (!state.cfg) return;
-    try { const d = await status(); if (d) render(d); } catch (_) {}
+    if (state.cfg) {
+      try { const d = await status(); if (d) render(d); } catch (_) {}
+    } else {
+      // 没选片时，每约 15s 刷新一次下拉，让新导入的片能出现
+      filmsTick = (filmsTick + 1) % 5;
+      if (filmsTick === 0) loadFilms();
+    }
   }, 3000);
 }
 
@@ -230,25 +897,35 @@ async function reload() {
 /* ---------- 渲染 ---------- */
 function render(data) {
   state.data = data;
+  syncRes(data);
+  renderFilms(data);
+  syncJoin(data);
   const task = data.task || {};
-  if (task.running) {
+  if (state.cancelled) {
+    say("已取消全片：当前段已中断、ComfyUI 队列已清空。要继续请重新点「一键跑全片」", "info");
+  } else if (task.running) {
     say("正在跑：" + task.kind + "（约 2.5~4 分钟/段）", "running");
-    $("log").style.display = "block";
-    $("log").textContent = (task.log || "").slice(-2500);
   } else {
-    $("log").style.display = task.error ? "block" : "none";
-    if (task.error) $("log").textContent = task.error + "\n" + (task.log || "").slice(-1500);
     const ready = data.segments.filter((s) => s.done && !s.stale).length;
-    say(`${data.title || "未命名"} · ${ready}/${data.segments.length} 段就绪 · `
+    say(`${data.film_display || data.title || "未命名"} · ${ready}/${data.segments.length} 段就绪 · `
       + `接续 链式 ${data.segments.filter(s=>s.index>1 && (s.link?.mode||"chain")==="chain").length}`
       + ` / 转场 ${data.segments.filter(s=>s.index>1 && s.link?.mode==="transition").length}`,
       task.error ? "error" : "info");
   }
+  renderLog(task);
   hint(data.segments.some((s) => !s.done) ? "缺段就用「一键跑全片」；没上传参考图会跑失败。" : "");
+  renderRefs(data);
+  renderPromptBox(data);
   $("finals").replaceChildren(...(data.finals || []).map((f) => {
+    const wrap = document.createElement("span");
+    wrap.style.marginRight = "16px";
     const a = document.createElement("a");
     a.href = f.url; a.target = "_blank"; a.textContent = "▶ " + f.name;
-    return a;
+    wrap.appendChild(a);
+    const d = dlButton(f.url, "下载");
+    d.style.marginLeft = "6px";
+    wrap.appendChild(d);
+    return wrap;
   }));
   // 卡片只在内容真变了才重建：每 3 秒无条件重建会让 textarea 的滚动位置归零、
   // 正在输入但没保存的提示词被后端值覆盖。
@@ -260,6 +937,7 @@ function render(data) {
     restoreEditors(keep);
   }
   pump(data);
+  updateSaveBadge();
 }
 
 /** 只包含「卡片长什么样」的数据；task.log 之类高频变化不进签名。 */
@@ -267,12 +945,17 @@ function cardSignature(data) {
   return JSON.stringify([
     data.title,
     data.segments.map((s) => [
-      s.index, s.id, s.seed, s.done, s.stale, s.running,
+      s.index, s.id, s.seed, s.done, s.stale, s.running, s.mtime,
       s.first_url, s.last_url, s.video_url, s.body,
       s.link?.mode, s.link?.transition,
       s.first_frame_override, s.last_frame_override,
+      s.ref_video_url, s.ref_video_seconds,
+      s.refs_override, s.plate_override, s.bg_plate_url, s.bg_plate,
+      (s.ref_images || []).map((r) => [r.url, r.comfy_name, r.path]),
     ]),
-    (data.finals || []).map((f) => f.name),
+    (data.finals || []).map((f) => [f.name, f.url]),
+    (data.ref_images || []).map((r) => [r.url, r.comfy_name, r.path]),
+    data.bg_plate_url, data.bg_plate,
   ]);
 }
 
@@ -319,13 +1002,50 @@ function badgeFor(seg) {
   return seg.stale ? "需重出" : "已生成";
 }
 
+/* 媒体 URL 版本号优先由服务端 _media_url 生成（文件 mtime_ns + size）。
+   这里只是兜底：老后端返回的 URL 没带 v= 时，用段视频 mtime / 参考图名补一个。
+   已带 v= 的 URL 一律原样返回，绝不重复拼。 */
+function bust(url, v) {
+  if (!url) return url;
+  // 「刷新预览」会置 mediaNonce：无条件让所有媒体 URL 变化，绕过浏览器缓存。
+  // 这条不依赖后端是否已重启，老后端返回的 URL 没有 v= 时也一样生效。
+  if (state.mediaNonce) {
+    return url + (url.includes("?") ? "&" : "?") + "r=" + state.mediaNonce;
+  }
+  if (v == null || v === "" || /[?&]v=/.test(url)) return url;
+  return url + (url.includes("?") ? "&" : "?") + "v=" + encodeURIComponent(v);
+}
+
+// 把一个媒体 URL 变成「下载」链接：后端检测到 download=1 会改用
+// Content-Disposition: attachment，浏览器直接把整文件拉回本地（外网穿透下比预览稳）。
+function dlUrl(u) {
+  if (!u) return u;
+  return u + (u.includes("?") ? "&" : "?") + "download=1";
+}
+
+// 生成一个「下载」按钮：点击后触发后端 attachment 响应，浏览器直接把整文件拉回本地，
+// 不会离开当前页面（比裸超链接好看，也避免外网预览卡顿）。
+function dlButton(url, label) {
+  const b = document.createElement("button");
+  b.textContent = label || "下载";
+  b.addEventListener("click", () => {
+    const a = document.createElement("a");
+    a.href = dlUrl(url);
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+  return b;
+}
+
 function thumb(seg, side, label) {
   const box = document.createElement("div");
   box.className = "thumb";
   const cap = document.createElement("div");
   cap.className = "cap"; cap.textContent = label;
   box.appendChild(cap);
-  const url = side === "first" ? seg.first_url : seg.last_url;
+  const url = bust(side === "first" ? seg.first_url : seg.last_url, seg.mtime);
   if (url) {
     const img = document.createElement("img");
     img.src = url; img.loading = "lazy";
@@ -372,6 +1092,11 @@ function card(seg, total) {
   runBtn.textContent = "运行本段";
   runBtn.addEventListener("click", async () => {
     try {
+      // 先把所有改过的提示词/seed 落盘，否则 /run 读到的还是磁盘上的旧配置
+      if (await saveAllEdits({ silent: true }) < 0) return;
+      // 手动跑某段 = 解除上一次「取消全片」
+      await apiJson("/h3-long-video/selflift/cancel", { cfg: state.cfg, op: "clear" });
+      state.cancelled = false;
       await apiJson("/h3-long-video/selflift/run",
         { cfg: state.cfg, seg: seg.index, seed: Number(seed.value) });
       seed.dataset.dirty = "";
@@ -392,8 +1117,10 @@ function card(seg, total) {
   if (seg.video_url) {
     const play = document.createElement("button");
     play.textContent = "看视频";
-    play.addEventListener("click", () => lightbox(seg.video_url, "video"));
-    row.append(play);
+    play.addEventListener("click", () => lightbox(bust(seg.video_url, seg.mtime), "video"));
+    const dl = dlButton(seg.video_url, "下载");
+    dl.style.marginLeft = "6px";
+    row.append(play, dl);
   }
 
   const body = document.createElement("textarea");
@@ -430,6 +1157,73 @@ function card(seg, total) {
     } catch (e) { say("上传失败：" + e.message, "error"); }
   });
   editRow.append(saveBody, fileIn, upFirst);
+
+  // ---- 动作参考视频（每段一个：截取视频前 n 秒作动作软参考）----
+  const rvRow = document.createElement("div");
+  rvRow.className = "row";
+  if (seg.ref_video_url) {
+    const cap = document.createElement("span");
+    cap.className = "cap";
+    cap.textContent = "🎬 动作参考视频（前 " + (seg.ref_video_seconds || 8) + " 秒）";
+    const play = document.createElement("button");
+    play.textContent = "看视频";
+    play.addEventListener("click", () => lightbox(bust(seg.ref_video_url, seg.ref_video), "video"));
+    const dl = dlButton(seg.ref_video_url, "下载");
+    dl.style.marginLeft = "6px";
+    const del = document.createElement("button");
+    del.textContent = "删除动作参考";
+    del.title = "删除后提示词最前面的动作参考说明会自动移除";
+    del.addEventListener("click", async () => {
+      try {
+        const form = new FormData();
+        form.append("cfg", state.cfg);
+        form.append("seg", seg.index);
+        form.append("op", "delete");
+        await apiForm("/h3-long-video/selflift/refvideo", form);
+        say("已删除动作参考视频，提示词中的动作参考说明也已移除", "ok");
+        await reload();
+      } catch (e) { say("删除失败：" + e.message, "error"); }
+    });
+    rvRow.append(cap, play, dl, del);
+  } else {
+    const sec = document.createElement("input");
+    sec.type = "number"; sec.min = "1"; sec.max = "15"; sec.value = "8";
+    sec.style.maxWidth = "54px"; sec.style.fontSize = "11px";
+    const btn = document.createElement("button");
+    btn.textContent = "🎬 插入动作参考视频";
+    btn.title = "选择一个视频，截取前 n 秒（1~15）作为动作指导；自动在提示词最前面加入动作参考说明";
+    btn.addEventListener("click", () => {
+      const input = document.createElement("input");
+      input.type = "file"; input.accept = "video/*";
+      input.addEventListener("change", async () => {
+        const file = input.files && input.files[0];
+        if (!file) return;
+        let n = parseFloat(sec.value);
+        if (!isFinite(n) || n <= 0) n = 8;
+        n = Math.max(1, Math.min(15, n));
+        const form = new FormData();
+        form.append("cfg", state.cfg);
+        form.append("seg", seg.index);
+        form.append("seconds", String(n));
+        form.append("file", file);
+        btn.textContent = "截取中…"; btn.disabled = true;
+        try {
+          await apiForm("/h3-long-video/selflift/refvideo", form);
+          say("已插入动作参考视频（前 " + n + " 秒），提示词已自动加入动作说明", "ok");
+          await reload();
+        } catch (e) {
+          say("插入失败：" + e.message, "error");
+          btn.disabled = false; btn.textContent = "🎬 插入动作参考视频";
+        }
+      });
+      input.click();
+    });
+    const lbl = document.createElement("span");
+    lbl.className = "cap"; lbl.textContent = "前";
+    const lbl2 = document.createElement("span");
+    lbl2.className = "cap"; lbl2.textContent = "秒";
+    rvRow.append(btn, lbl, sec, lbl2);
+  }
 
   const linkRow = document.createElement("div");
   linkRow.className = "row";
@@ -476,7 +1270,90 @@ function card(seg, total) {
     linkRow.append(ins);
   }
 
-  el.append(head, thumbs, row, body, editRow);
+  // ---- 段级参考图 / 背景板（可逐段覆盖全片配置）----
+  const srBox = document.createElement("div");
+  srBox.className = "segrefs";
+  const srHead = document.createElement("div");
+  srHead.className = "cap";
+  srHead.textContent = "本段参考图 " + (seg.refs_override ? "· 自定义" : "· 跟随全片");
+  const srItems = document.createElement("div");
+  srItems.className = "segref-items";
+  (seg.ref_images || []).forEach((r, i) => {
+    const chip = document.createElement("div");
+    chip.className = "segref-chip";
+    if (r.url) {
+      const im = document.createElement("img");
+      const u = bust(r.url, r.comfy_name || r.path);
+      im.src = u; im.loading = "lazy";
+      im.title = r.label || ("P" + (i + 1));
+      im.addEventListener("click", () => lightbox(u, "image"));
+      chip.appendChild(im);
+    }
+    const tag = document.createElement("span");
+    tag.className = "cap"; tag.textContent = "P" + (i + 1);
+    const up = document.createElement("button");
+    up.textContent = "换";
+    up.title = "替换本段第 " + (i + 1) + " 张参考图";
+    up.addEventListener("click", () => pickImage((f) => segRefUpload(seg.index, "ref", i, f)));
+    const del = document.createElement("button");
+    del.textContent = "×";
+    del.title = "移除本段这张参考图";
+    del.addEventListener("click", () => segRefDelete(seg.index, "ref", i));
+    chip.append(tag, up, del);
+    srItems.appendChild(chip);
+  });
+  const srAdd = document.createElement("button");
+  srAdd.textContent = "＋ 参考图";
+  srAdd.title = "给本段单独加一张参考图（会先从全片配置复制一份）";
+  srAdd.addEventListener("click", () => pickImage(
+    (f) => segRefUpload(seg.index, "ref", (seg.ref_images || []).length, f)));
+  srItems.appendChild(srAdd);
+  if (seg.refs_override) {
+    const rst = document.createElement("button");
+    rst.textContent = "恢复全片";
+    rst.title = "删掉本段自定义参考图，回落到全片配置";
+    rst.addEventListener("click", () => segRefReset(seg.index, "ref"));
+    srItems.appendChild(rst);
+  }
+  srBox.append(srHead, srItems);
+
+  const bpHead = document.createElement("div");
+  bpHead.className = "cap";
+  bpHead.textContent = "背景板 " + (seg.plate_override ? "· 自定义" : "· 跟随全片");
+  const bpItems = document.createElement("div");
+  bpItems.className = "segref-items";
+  if (seg.bg_plate_url) {
+    const im = document.createElement("img");
+    const u = bust(seg.bg_plate_url, seg.bg_plate);
+    im.src = u; im.loading = "lazy"; im.className = "segref-plate-img";
+    im.addEventListener("click", () => lightbox(u, "image"));
+    bpItems.appendChild(im);
+  } else {
+    const none = document.createElement("span");
+    none.className = "cap";
+    none.textContent = seg.bg_plate === "" ? "本段不接背景板" : "未上传";
+    bpItems.appendChild(none);
+  }
+  const bpUp = document.createElement("button");
+  bpUp.textContent = "换背景";
+  bpUp.title = "给本段单独指定一张空镜板";
+  bpUp.addEventListener("click", () => pickImage((f) => segRefUpload(seg.index, "plate", 0, f)));
+  bpItems.appendChild(bpUp);
+  const bpNone = document.createElement("button");
+  bpNone.textContent = "本段不用";
+  bpNone.title = "本段不接背景板（全片配置不变）";
+  bpNone.addEventListener("click", () => segRefNone(seg.index));
+  bpItems.appendChild(bpNone);
+  if (seg.plate_override) {
+    const rst = document.createElement("button");
+    rst.textContent = "恢复全片";
+    rst.title = "删掉本段背景板覆盖，回落到全片空镜板";
+    rst.addEventListener("click", () => segRefReset(seg.index, "plate"));
+    bpItems.appendChild(rst);
+  }
+  srBox.append(bpHead, bpItems);
+
+  el.append(head, thumbs, row, body, editRow, rvRow, srBox);
   if (linkRow.childNodes.length) el.append(linkRow);
   return el;
 }
@@ -485,19 +1362,140 @@ function lightbox(url, kind) {
   const box = $("lightbox"), img = $("lbImg"), vid = $("lbVid");
   img.style.display = kind === "image" ? "block" : "none";
   vid.style.display = kind === "video" ? "block" : "none";
-  if (kind === "image") img.src = url; else { vid.src = url; vid.play().catch(() => {}); }
+  if (kind === "image") {
+    img.src = url;
+  } else {
+    vid.src = url;
+    vid.load();                       // 同名文件被覆盖后必须重新加载，别复用旧缓冲
+    vid.play().catch(() => {});
+  }
   box.style.display = "flex";
 }
 $("lightbox").addEventListener("click", () => {
   $("lightbox").style.display = "none";
   $("lbVid").pause();
+  // 清空 src：下次打开即便 URL 相同也不会复用上一次的解码帧
+  $("lbVid").removeAttribute("src"); $("lbVid").load();
+  $("lbImg").removeAttribute("src");
 });
 
-/* ---------- 一键跑全片（一次只提交一段，靠轮询推进） ---------- */
+/* ---------- 一次保存所有改过的提示词 / seed / 全片 head+tail ---------- */
+function dirtyCount() {
+  return document.querySelectorAll('#list [data-keep][data-dirty="1"]').length
+    + (pbDirty ? 1 : 0);
+}
+function updateSaveBadge() {
+  const n = dirtyCount();
+  const btn = $("saveAll");
+  if (!btn) return;
+  btn.textContent = n ? "保存所有修改 (" + n + ")" : "保存所有修改";
+  btn.disabled = n === 0;
+}
+function collectDirtyEdits() {
+  const bySeg = {};
+  document.querySelectorAll('#list [data-keep][data-dirty="1"]').forEach((el) => {
+    const s = (state.data ? state.data.segments : []).find((x) => x.id === el.dataset.seg);
+    if (!s) return;
+    const e = bySeg[s.index] || (bySeg[s.index] = { seg: s.index });
+    if (el.dataset.keep === "body") e.body = el.value;
+    if (el.dataset.keep === "seed") {
+      const v = String(el.value).trim();
+      if (v !== "" && Number.isFinite(Number(v))) e.seed = Number(v);
+    }
+  });
+  return Object.values(bySeg).filter((e) => e.body !== undefined || e.seed !== undefined);
+}
+/** 返回保存条数；失败返回 -1（脏标记保留，页面上改的内容不丢）。 */
+async function saveAllEdits({ silent = false } = {}) {
+  const edits = collectDirtyEdits();
+  const head = pbDirty ? $("pbHead").value : null;
+  const tail = pbDirty ? $("pbTail").value : null;
+  // 全篇拼接方式（右上角的「全片硬切/叠化/黑场」）属于全局配置，改动后需要显式保存落盘
+  const joinCur = $("join").value;
+  const joinChanged = joinCur && joinCur !== state.savedJoin;
+  const total = edits.length + (head !== null ? 1 : 0) + (joinChanged ? 1 : 0);
+  if (!total) return 0;
+  if (head !== null && /\{(?!pic[?:])/.test(head + tail)) {
+    say("提示词里有裸的 { 符号，只支持 {pic:1} / {pic:plate} / {pic?:first}", "error");
+    return -1;
+  }
+  try {
+    // 串行：每条 /set 都是独立子进程「读 cfg → 改 → 写回」，并发会互相覆盖
+    for (const e of edits) {
+      const payload = { cfg: state.cfg, seg: e.seg };
+      if (e.body !== undefined) payload.body = e.body;
+      if (e.seed !== undefined) payload.seed = e.seed;
+      await apiJson("/h3-long-video/selflift/set", payload);
+    }
+    if (head !== null) {
+      await apiJson("/h3-long-video/selflift/set",
+        { cfg: state.cfg, seg: 0, head, tail });
+    }
+    if (joinChanged) {
+      await apiJson("/h3-long-video/selflift/set", { cfg: state.cfg, join: joinCur });
+      state.savedJoin = joinCur;
+    }
+    // 全部成功才清脏标记；中途失败保留，下次可重试
+    document.querySelectorAll('#list [data-keep][data-dirty="1"]')
+      .forEach((el) => { el.dataset.dirty = ""; });
+    pbDirty = false;
+    $("pbState").textContent = "";
+    updateSaveBadge();
+    if (!silent) {
+      let msg = "已保存 " + edits.length + " 段的提示词/seed"
+        + (head !== null ? " + 全片 head/tail" : "");
+      if (joinChanged) msg += " + 全篇拼接方式(" + $("join").selectedOptions[0].textContent + ")";
+      msg += "，受影响段已标需重出";
+      say(msg, "ok");
+    }
+    return total;
+  } catch (e) {
+    say("保存失败（未保存的修改仍在页面上）：" + e.message, "error");
+    return -1;
+  }
+}
+
+/* ---------- 一键跑全片（一次只提交一段，确认上一段成功后才推进） ---------- */
+function stopQueue(msg, kind = "error") {
+  state.queue = null;
+  state.waiting = null;
+  state.busy = false;
+  $("runAll").textContent = "一键跑全片";
+  say(msg, kind);
+}
+
 async function pump(data) {
   if (!state.queue || state.busy) return;
   const task = data.task || {};
-  if (task.running) return;
+
+  // 取消是服务端状态：别的标签页 / 旧页面也会在下一轮轮询看到并停下
+  if (data.cancelled) {
+    state.cancelled = true;
+    stopQueue("已取消全片：队列已停止，当前段已中断", "info");
+    return;
+  }
+
+  // 上一段已启动：等它真正结束，并确认视频确实生成了才推进队列。
+  // 旧版只看 /run 返回 {started:true} 就 shift，失败段被静默当完成，最后拼接缺段。
+  if (state.waiting != null) {
+    if (task.running) return;
+    const seg = state.waiting;
+    const segState = (data.segments || []).find((s) => s.index === seg);
+    const rc = task.returncode;
+    if (rc != null && rc !== 0) {
+      stopQueue("一键跑全片中断：第 " + seg + " 段渲染失败（" +
+        (task.error || "退出码 " + rc) + "）。看日志面板修好后重新点「一键跑全片」。");
+      return;
+    }
+    if (!segState || !segState.done) {
+      stopQueue("一键跑全片中断：第 " + seg + " 段任务结束但视频没生成" +
+        "（多半是 ComfyUI 中途重启丢了 history）。看日志面板后重跑。");
+      return;
+    }
+    state.waiting = null;
+    state.queue.shift();
+  }
+
   if (!state.queue.length) {
     if (state.merged) return;
     state.merged = true; state.queue = null;
@@ -507,28 +1505,73 @@ async function pump(data) {
       { cfg: state.cfg, join: $("join").value }); } catch (e) { say("拼接失败：" + e.message, "error"); }
     return;
   }
+
   const seg = state.queue[0];
   state.busy = true;
   say("一键跑全片：正在跑第 " + seg + " 段（剩 " + (state.queue.length - 1) + " 段）", "running");
   try {
+    if (await saveAllEdits({ silent: true }) < 0) {
+      stopQueue("保存修改失败，队列已停止（改动仍在页面上）", "error");
+      return;
+    }
     await apiJson("/h3-long-video/selflift/run", { cfg: state.cfg, seg });
-    state.queue.shift();
-    await new Promise((r) => setTimeout(r, 1200));
+    state.waiting = seg;               // 只记「已启动」，成功与否交给上面的轮询确认
   } catch (e) {
-    state.queue = null; $("runAll").textContent = "一键跑全片";
-    say("一键跑全片中断：" + e.message, "error");
+    // 409「已有任务在跑」多半是双入口 / 手点单段撞车，等下轮重试，别清空整个队列
+    if (/已取消全片/.test(e.message)) {
+      state.cancelled = true;
+      stopQueue("已取消全片：队列已停止", "info");
+      return;
+    } else if (/已有任务在跑/.test(e.message)) {
+      say("第 " + seg + " 段等待中：" + e.message, "info");
+    } else {
+      stopQueue("一键跑全片中断：" + e.message);
+      return;
+    }
   } finally {
     setTimeout(() => { state.busy = false; }, 2500);
   }
 }
 
+$("refreshMedia").addEventListener("click", async () => {
+  if (!state.cfg) { say("先导入分镜 JSON", "error"); return; }
+  state.mediaNonce = Date.now();     // 让每个 img/video 的 URL 都变，强制绕过缓存
+  state.cardSig = null;              // 强制重建所有卡片，重新发起媒体请求
+  try {
+    await reload();
+    say("预览已刷新（首帧 / 尾帧 / 视频均为最新文件）", "ok");
+  } catch (e) {
+    say("刷新失败：" + e.message, "error");
+  } finally {
+    // 只用于这一次强制刷新；保持非零会让后续重跑的自动版本号失效
+    state.mediaNonce = 0;
+  }
+});
+
+$("saveAll").addEventListener("click", async () => {
+  if (!state.cfg) { say("先导入分镜 JSON", "error"); return; }
+  const n = await saveAllEdits();
+  if (n > 0) await reload();
+});
+
 $("runAll").addEventListener("click", async () => {
   if (state.queue) {
-    state.queue = null; $("runAll").textContent = "一键跑全片";
-    say("已取消队列（当前段不会中断）", "info");
+    state.queue = null; state.waiting = null; state.busy = false;
+    state.cancelled = true;
+    $("runAll").textContent = "一键跑全片";
+    try {
+      await apiJson("/h3-long-video/selflift/cancel", { cfg: state.cfg, op: "cancel" });
+      say("已取消全片：当前段已中断、ComfyUI 队列已清空", "info");
+    } catch (e) { say("取消失败（前端队列已停）：" + e.message, "error"); }
+    try { await reload(); } catch (_) {}
     return;
   }
   if (!state.cfg) { say("先导入分镜 JSON", "error"); return; }
+  if (await saveAllEdits({ silent: true }) < 0) return;
+  try {
+    await apiJson("/h3-long-video/selflift/cancel", { cfg: state.cfg, op: "clear" });
+    state.cancelled = false;
+  } catch (e) { say("无法解除取消状态：" + e.message, "error"); return; }
   const data = await reload();
   if (!data) return;
   if ((data.task || {}).running) { say("已有任务在跑，等它结束", "error"); return; }
@@ -539,7 +1582,7 @@ $("runAll").addEventListener("click", async () => {
     catch (e) { say("拼接失败：" + e.message, "error"); }
     return;
   }
-  state.queue = pending; state.busy = false; state.merged = false;
+  state.queue = pending; state.waiting = null; state.busy = false; state.merged = false;
   $("runAll").textContent = "取消全片";
   say("一键跑全片：共 " + pending.length + " 段（第 " + pending.join(" / ") + " 段）", "running");
   pump(data);
@@ -552,27 +1595,287 @@ $("merge").addEventListener("click", async () => {
 });
 
 $("reload").addEventListener("click", async () => {
-  try { await reload(); say("已刷新", "ok"); } catch (e) { say("刷新失败：" + e.message, "error"); }
+  await loadFilms();
+  if (state.cfg) {
+    try { await reload(); say("已刷新", "ok"); }
+    catch (e) { say("刷新失败：" + e.message, "error"); }
+  } else {
+    say("已刷新下拉", "ok");
+  }
 });
 
-/* ---------- 参考图 / 空镜板上传 ---------- */
-async function uploadRef(kind, input, label) {
-  if (!P0(input)) return;
+/* ---------- 人物参考图（可多张）/ 空镜板 ---------- */
+function pickImage(cb) {
+  const input = document.createElement("input");
+  input.type = "file"; input.accept = "image/*";
+  input.addEventListener("change", () => { if (input.files[0]) cb(input.files[0]); });
+  input.click();
+}
+
+async function refUpload(kind, index, file) {
+  if (!state.cfg) { say("先导入分镜 JSON", "error"); return; }
   try {
     const form = new FormData();
-    form.append("cfg", state.cfg); form.append("kind", kind); form.append("file", input.files[0]);
+    form.append("cfg", state.cfg);
+    form.append("kind", kind);
+    form.append("index", String(index));
+    form.append("file", file);
     await apiForm("/h3-long-video/selflift/refimg", form);
-    say(label + "已更新（存进片目录 refs/，跑片时自动拷给 ComfyUI）", "ok");
-    input.value = ""; await reload();
-  } catch (e) { say("上传" + label + "失败：" + e.message, "error"); }
+    say(kind === "plate" ? "空镜板已更新" : `人物 ${index + 1} 的参考图已更新`, "ok");
+    await reload();
+  } catch (e) { say("上传失败：" + e.message, "error"); }
 }
-function P0(input) {
-  if (!state.cfg) { say("先导入分镜 JSON", "error"); return false; }
-  if (!input.files?.length) { say("先选一张图片", "error"); return false; }
-  return true;
+
+async function refDelete(kind, index) {
+  if (!state.cfg) return;
+  try {
+    const form = new FormData();
+    form.append("cfg", state.cfg);
+    form.append("kind", kind);
+    form.append("index", String(index));
+    form.append("op", "delete");
+    await apiForm("/h3-long-video/selflift/refimg", form);
+    say("已移除", "ok");
+    await reload();
+  } catch (e) { say("移除失败：" + e.message, "error"); }
 }
-$("refUp").addEventListener("click", () => uploadRef("ref", $("refFile"), "人物参考图"));
-$("plateUp").addEventListener("click", () => uploadRef("plate", $("plateFile"), "空镜板"));
+
+/* ---------- 段级参考图 / 背景板：走同一个 refimg 路由，用 seg 区分 ---------- */
+async function segRefPost(seg, kind, index, op, file) {
+  if (!state.cfg) { say("先导入分镜 JSON", "error"); return; }
+  const form = new FormData();
+  form.append("cfg", state.cfg);
+  form.append("seg", String(seg));
+  form.append("kind", kind);
+  form.append("index", String(index));
+  if (op) form.append("op", op);
+  if (file) form.append("file", file);
+  try {
+    await apiForm("/h3-long-video/selflift/refimg", form);
+    say("第 " + seg + " 段参考配置已更新", "ok");
+    await reload();
+  } catch (e) { say("更新失败：" + e.message, "error"); }
+}
+const segRefUpload = (seg, kind, index, file) => segRefPost(seg, kind, index, null, file);
+const segRefDelete = (seg, kind, index) => segRefPost(seg, kind, index, "delete", null);
+const segRefReset  = (seg, kind) => segRefPost(seg, kind, 0, "reset", null);
+const segRefNone   = (seg) => segRefPost(seg, "plate", 0, "none", null);
+
+function refCard(opts) {
+  const { label, tag, url, missing, onUpload, onDelete, plate, ver } = opts;
+  const el = document.createElement("div");
+  el.className = "ref" + (plate ? " plate" : "");
+  const cap = document.createElement("div");
+  cap.className = "cap";
+  const b = document.createElement("b");
+  b.textContent = tag;
+  cap.append(b, document.createTextNode(label));
+  el.appendChild(cap);
+  if (url && !missing) {
+    const img = document.createElement("img");
+    const u = bust(url, ver);
+    img.src = u; img.loading = "lazy";
+    img.addEventListener("click", () => lightbox(u, "image"));
+    el.appendChild(img);
+  } else {
+    const none = document.createElement("div");
+    none.className = "none"; none.textContent = missing ? "文件丢了" : "未上传";
+    el.appendChild(none);
+  }
+  const ops = document.createElement("div");
+  ops.className = "ops";
+  const up = document.createElement("button");
+  up.textContent = url && !missing ? "换图" : "上传";
+  up.addEventListener("click", onUpload);
+  ops.appendChild(up);
+  if (url) {
+    const del = document.createElement("button");
+    del.textContent = "移除";
+    del.addEventListener("click", onDelete);
+    ops.appendChild(del);
+  }
+  el.appendChild(ops);
+  return el;
+}
+
+function renderRefs(data) {
+  const box = $("refbar");
+  if (!state.cfg) { box.replaceChildren(); return; }
+  const refs = data.ref_images || [];
+  const n = refs.length;
+  const nodes = [];
+
+  refs.forEach((r, i) => {
+    nodes.push(refCard({
+      label: r.label || `人物 ${String.fromCharCode(65 + i)}`,
+      tag: "P" + (i + 1),
+      url: r.url, missing: !r.exists, ver: r.comfy_name || r.path,
+      onUpload: () => pickImage((f) => refUpload("ref", i, f)),
+      onDelete: () => refDelete("ref", i),
+    }));
+  });
+
+  if (n < 8) {
+    const add = document.createElement("div");
+    add.className = "add";
+    add.innerHTML = "<span style='font-size:20px;line-height:1'>+</span><span>添加人物</span>";
+    add.title = "一人一张，用半身或胸像（脸占画幅 1/3 以上）";
+    add.addEventListener("click", () => pickImage((f) => refUpload("ref", n, f)));
+    nodes.push(add);
+  }
+
+  nodes.push(refCard({
+    label: "空镜板",
+    tag: "P" + (n + 1),
+    url: data.bg_plate_url, missing: false,
+    plate: true, ver: data.bg_plate,
+    onUpload: () => pickImage((f) => refUpload("plate", 0, f)),
+    onDelete: () => refDelete("plate", 0),
+  }));
+
+  const note = document.createElement("div");
+  note.className = "note";
+  note.textContent = "一人一张，别拼图——拼在一起每张脸只占 1/4 画幅，谁都锁不住。"
+    + "关系写进 body：谁在左、朝向、接触点与遮挡。链式段接了首帧后全部编号再后移一位。";
+  nodes.push(note);
+  box.replaceChildren(...nodes);
+}
+
+/* ---------- 全片提示词（head / tail 只存一份） ---------- */
+let pbDirty = false;
+
+function renderPromptBox(data) {
+  $("promptBox").hidden = false;
+  if (!pbDirty) {
+    // 轮询每 3 秒来一次，不能覆盖用户正在敲的内容
+    if ($("pbHead").value !== (data.head || "")) $("pbHead").value = data.head || "";
+    if ($("pbTail").value !== (data.tail || "")) $("pbTail").value = data.tail || "";
+  }
+  $("pbState").textContent = pbDirty ? "有未保存修改" : "";
+}
+
+for (const id of ["pbHead", "pbTail"]) {
+  $(id).addEventListener("input", () => {
+    pbDirty = true;
+    $("pbState").textContent = "有未保存修改";
+  });
+}
+
+$("pbToggle").addEventListener("click", () => {
+  const on = $("promptBox").classList.toggle("collapsed");
+  $("pbToggle").textContent = on ? "展开" : "收起";
+});
+
+$("pbSave").addEventListener("click", async () => {
+  if (!state.cfg) { say("先导入分镜 JSON", "error"); return; }
+  const head = $("pbHead").value;
+  const tail = $("pbTail").value;
+  if (/\{(?!pic[?:])/.test(head + tail)) {
+    say("提示词里有裸的 { 符号，只支持 {pic:1} / {pic:plate} / {pic?:first} 这几种占位符", "error");
+    return;
+  }
+  try {
+    await apiJson("/h3-long-video/selflift/set", { cfg: state.cfg, seg: 0, head, tail });
+    pbDirty = false;
+    say("全片提示词已保存。head/tail 改了全片画面都会变，已有段会标成「需重出」", "ok");
+    await reload();
+  } catch (e) { say("保存失败：" + e.message, "error"); }
+});
+
+/* ---------- 运行日志（逐行追加，不重建：选中文本不会被轮询冲掉） ---------- */
+const LOG = { text: "", shown: 0 };
+
+function logLineClass(s) {
+  if (/^\[错误\]|退出码 \d+|^Traceback|^\s+File "/.test(s)) return "err";
+  if (/^\[警告\]/.test(s)) return "warn";
+  if (/^=====/.test(s)) return "head";
+  if (/^\s*->|^\[free\]|^成片：|^ALL SYNCED/.test(s)) return "ok";
+  if (/^\s*\.\.\.渲染中|^prompt_id/.test(s)) return "tip";
+  return "";
+}
+
+function renderLog(task) {
+  const panel = $("logPanel"), body = $("logBody");
+  const text = (task.error ? `[错误] ${task.error}\n` : "") + (task.log || "");
+  panel.hidden = !text.trim() && !task.running;
+  if (panel.hidden) { LOG.text = ""; LOG.shown = 0; body.replaceChildren(); return; }
+
+  const prevTail = LOG.text.slice(-40);
+  const appended = !prevTail || text.includes(prevTail);
+  LOG.text = text;
+
+  const lines = text.split("\n");
+  // 后端日志有滚动窗口：内容不是「在旧文本后面接」时整体重建一次
+  if (!appended || lines.length < LOG.shown) {
+    body.replaceChildren();
+    LOG.shown = 0;
+  }
+  if (lines.length > LOG.shown) {
+    const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 48;
+    const frag = document.createDocumentFragment();
+    for (let i = LOG.shown; i < lines.length; i++) {
+      const el = document.createElement("span");
+      el.className = "ln " + logLineClass(lines[i]);
+      el.textContent = lines[i] || " ";     // 空行也占高度，对齐原输出
+      frag.appendChild(el);
+    }
+    body.appendChild(frag);
+    LOG.shown = lines.length;
+    if ($("logFollow").checked || nearBottom) body.scrollTop = body.scrollHeight;
+  }
+  const kb = (text.length / 1024).toFixed(1);
+  $("logMeta").textContent = `${LOG.shown} 行 · ${kb} KB`
+    + (task.running ? " · 运行中"
+       : task.returncode === 0 ? " · 完成" : task.returncode ? " · 失败" : "");
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (_) { /* 非安全上下文回退 */ }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (_) {}
+  ta.remove();
+  return ok;
+}
+
+$("logCopy").addEventListener("click", async () => {
+  const t = LOG.text || "";
+  if (!t.trim()) { say("还没有日志可复制", "error"); return; }
+  const ok = await copyText(t);
+  say(ok ? `已复制完整日志（${LOG.shown} 行 / ${(t.length / 1024).toFixed(1)} KB）`
+         : "复制失败，请手动选中日志区再 Ctrl+C", ok ? "ok" : "error");
+});
+
+$("logSave").addEventListener("click", () => {
+  const t = LOG.text || "";
+  if (!t.trim()) { say("还没有日志可下载", "error"); return; }
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  const blob = new Blob([t], { type: "text/plain;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `selflift_log_${stamp}.log`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  say(`已下载 ${a.download}`, "ok");
+});
+
+$("logToggle").addEventListener("click", () => {
+  const on = $("logPanel").classList.toggle("collapsed");
+  $("logToggle").textContent = on ? "展开" : "收起";
+});
+
+$("logOnlyErr").addEventListener("change", (e) => {
+  $("logBody").classList.toggle("only-err", e.target.checked);
+});
 
 /* ---------- 模板下载 / 字段说明 ---------- */
 const TPL_URL = "/h3-long-video/selflift/template";
@@ -580,6 +1883,7 @@ const esc = (s) => String(s).replace(/[&<>]/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 const NOTE_TITLE = {
   picture: "参考图编号（最容易踩的坑）",
+  multi_person: "多人镜头怎么给参考图",
   length: "逐段时长",
   transition_switch: "转场改回链式",
   auto_cut: "自动切段",

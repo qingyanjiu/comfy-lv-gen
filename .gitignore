@@ -21,3 +21,6 @@ runninghub.local.json
 *.capsule-bak
 *.orig
 
+# 本地服务运行日志（serve_app.py 控制台输出）
+_serve8900*.log
+

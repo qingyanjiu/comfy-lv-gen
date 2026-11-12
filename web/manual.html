@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>使用手册 · SelfLift 出片台</title>
+<style>
+  :root{
+    --bg:#16181d; --panel:#1d2028; --panel2:#232733; --line:#31364a;
+    --text:#e6eaf2; --dim:#93a0b4; --accent:#3d7fd6; --ok:#4caf7d;
+    --warn:#e0a44a; --err:#d06161;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:960px;margin:0 auto;padding:28px 24px 80px}
+  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
+    border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:22px}
+  h1{font-size:22px;margin:0;font-weight:600;letter-spacing:.5px}
+  .sub{color:var(--dim);font-size:13px}
+  .back{color:#8fc0f5;text-decoration:none;font-size:13px;margin-left:auto}
+  .back:hover{text-decoration:underline}
+  nav{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+    padding:14px 18px;margin-bottom:26px;columns:2;column-gap:32px}
+  nav a{display:block;color:#8fc0f5;text-decoration:none;font-size:13px;
+    padding:2px 0;break-inside:avoid}
+  nav a:hover{text-decoration:underline}
+  h2{font-size:17px;margin:34px 0 12px;padding-bottom:8px;
+    border-bottom:1px solid var(--line);font-weight:600}
+  h3{font-size:14px;margin:20px 0 8px;color:#9fc2ee;font-weight:600}
+  p{margin:8px 0}
+  ul,ol{margin:8px 0 8px 22px;padding:0}
+  li{margin:4px 0}
+  code{background:#12151b;border:1px solid var(--line);border-radius:4px;
+    padding:1px 5px;font:12px/1.5 ui-monospace,Consolas,monospace;color:#c9d8ee}
+  pre{background:#12151b;border:1px solid var(--line);border-radius:8px;
+    padding:12px 14px;overflow:auto;font:12px/1.6 ui-monospace,Consolas,monospace;
+    color:#c9d8ee;margin:10px 0}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#9fc2ee;font-weight:600}
+  .tip,.warn,.err{border-left:3px solid var(--accent);background:var(--panel);
+    padding:10px 14px;border-radius:0 8px 8px 0;margin:12px 0;font-size:13px}
+  .warn{border-left-color:var(--warn)}
+  .err{border-left-color:var(--err)}
+  .tip b,.warn b,.err b{color:var(--text)}
+  .k{color:var(--dim)}
+  .ok{color:var(--ok)}
+  footer{margin-top:48px;border-top:1px solid var(--line);padding-top:14px;
+    color:var(--dim);font-size:12px}
+  @media(max-width:640px){nav{columns:1}.wrap{padding:18px 14px 60px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>使用手册</h1>
+  <span class="sub">SelfLift 出片台 · 逐段人在回路长视频</span>
+  <a class="back" href="__APP_URL__">← 返回出片台</a>
+</header>
+
+<nav>
+  <a href="#s1">1. 五分钟上手</a>
+  <a href="#s2">2. 访问地址与片选择</a>
+  <a href="#s3">3. 参考图与空镜板</a>
+  <a href="#s4">4. 提示词与 {pic:} 占位符</a>
+  <a href="#s5">5. 分段卡片逐项说明</a>
+  <a href="#s6">6. 跑片、取消与保存</a>
+  <a href="#s7">7. 拼接与转场优先级</a>
+  <a href="#s8">8. 分辨率与画幅</a>
+  <a href="#s9">9. 预览图、日志与验收</a>
+  <a href="#s10">10. 常见坑与排错</a>
+  <a href="#s11">11. 改动什么时候生效</a>
+  <a href="#s12">12. 命令行速查</a>
+</nav>
+
+<h2 id="s1">1. 五分钟上手</h2>
+<ol>
+  <li><b>导入分镜</b>：点「导入分镜 JSON」，可以选文件、也可以直接粘贴 JSON 或一整段剧情文字（会自动切段）。不知道怎么写就先点「下载模板」，每个字段都带中文说明。JSON 里的 <code>title</code> 就是片名，会连同编号一起写进文件夹名；没写的话用第一段标题当默认名。</li>
+  <li><b>传参考图</b>：页面顶部参考图条带里，给每个人物各传一张半身/胸像，再传一张<b>完全无人</b>的场景空镜板（橙色边框）。这一步不能省——head 里引用的 <code>&lt;Picture N&gt;</code> 必须有真实接线，否则提交会被拒。</li>
+  <li><b>写全局提示词</b>：head 写身份与场景锚，tail 写画风与衔接规则。用 <code>{pic:1}</code> 之类的占位符，别手写编号。</li>
+  <li><b>逐段调整</b>：每段改 body / seed / 承接方式 / 段级参考图。改完不用逐个保存，直接跑片即可（会自动落盘）。</li>
+  <li><b>出片</b>：点「一键跑全片」串行渲染，全部完成后自动拼接；或点「拼接成片」只重拼现有段。</li>
+</ol>
+<div class="tip"><b>先跑一段看看。</b> 改了参考图或大段提示词时，先「运行本段」验证效果，确认了再跑全片，别一上来等十几分钟。</div>
+
+<h2 id="s2">2. 访问地址与片选择</h2>
+<p>三个入口，共用同一套页面和算力：</p>
+<table>
+  <tr><th>入口</th><th>地址</th><th>说明</th></tr>
+  <tr><td>独立服务（推荐）</td><td><code>http://127.0.0.1:8900/</code></td><td>双击 <code>tools/serve_app.bat</code> 启动，进程独立，重启不影响 ComfyUI</td></tr>
+  <tr><td>局域网 / 别的设备</td><td><code>http://192.168.x.x:8900/</code></td><td>服务监听 <code>0.0.0.0</code>，用本机局域网 IP 即可</td></tr>
+  <tr><td>内嵌页面</td><td><code>http://127.0.0.1:8188/h3-long-video/app</code></td><td>挂在 ComfyUI 桌面版下，改后端要重启桌面版</td></tr>
+</table>
+<div class="warn"><b>别写 <code>0.0.0.0</code> 当网址。</b> 它是「监听所有网卡」的绑定地址，不是可访问地址；浏览器打开会失败。<code>localhost</code> 会优先解析到 IPv6 <code>::1</code>，而服务只监听 IPv4，个别浏览器会卡住——<b>统一用 <code>127.0.0.1</code> 最稳</b>。换端口记得服务与网址一致。</div>
+<h3>片选择下拉</h3>
+<p>页面左上角的下拉会列出输出目录下所有片，<b>按最近更新时间倒序</b>，格式是「片名 · #编号 · 时间 · 完成段数」。选中即切换，同时更新地址栏 <code>?cfg=</code>，方便收藏或分享。</p>
+<p>更新时间取 <code>segments.json</code>、段视频、成片里最新的修改时间——改提示词、跑完一段、重拼成片都会让它往前排。</p>
+<h3>片名 · 编号 · 文件夹，三者一一对应</h3>
+<p>每部片有一个<b>固定编号</b>，就是文件夹末尾的 <code>MMDD_HHMMSS</code>：例如 <code>女生的午后_1112_135157</code> 的编号是 <code>#1112_135157</code>。下拉每项带编号，顶部标签显示「片名 · #编号 · 文件夹名」，去磁盘上找片子不用再靠时间猜。</p>
+<ul>
+  <li><b>搜片</b>：下拉左边的输入框可以输片名 / 编号 / 文件夹名，即时过滤；清空恢复全部。</li>
+  <li><b>改名</b>：点「改名」输入新片名，会同步做四件事——写 <code>segments.json</code> 的 <code>title</code>、把文件夹改成 <code>名字_编号</code>、把 cfg 里所有指向旧目录的绝对路径换掉、把成片文件名改成 <code>名字_编号_成片.mp4</code>。<b>编号永远不变</b>，所以名字、文件夹、成片始终对得上。</li>
+  <li><b>占位名</b>：从模板导入又没写标题的片，页面显示「未命名 #编号」，改名时会拿第一段标题当建议名，直接回车即可。</li>
+</ul>
+<div class="warn"><b>改名会换掉片目录。</b> 页面会自动切到新路径并刷新；其它还开着旧地址 <code>?cfg=</code> 的标签页要重新选片。跑片过程中不允许改名，等任务跑完再改。</div>
+<div class="tip"><b>为什么以前换个地址就「找不到片」？</b> 浏览器本地存储是按域名隔离的，<code>127.0.0.1:8900</code> 和 <code>192.168.0.66:8900</code>、<code>8188</code> 各存一份「上次打开的片」。现在片列表由服务端提供，任何地址打开看到的都是同一份。</div>
+
+<h2 id="s3">3. 参考图与空镜板</h2>
+<ul>
+  <li><b>一人一张，绝不拼图。</b> 一张图塞多个人，每张脸占比太小锁不住身份，还会把「几人并排」当构图模板复刻。</li>
+  <li><b>半身/胸像，脸占画幅 1/3 以上。</b> 全身景脸只占 10~15%，锁不住具体的人。</li>
+  <li><b>两人的服装/发色要明显区分</b>，否则链式段跑几段后两人会越跑越像。</li>
+  <li><b>空镜板永远排最后</b>（编号 P(N+1)），必须完全无人、无文字水印、无脏斑——参考图瑕疵会被逐像素复刻放大。</li>
+  <li>上传的图一律自动转 PNG（网页另存的图常带 <code>.webp</code> 后缀但内容是 JPEG，直接喂会 400）。</li>
+</ul>
+<h3>段级覆盖</h3>
+<p>每段卡片下面有「本段参考图」和「背景板」两块，可单独增删/换图：</p>
+<ul>
+  <li>标「跟随全片」= 用顶部条带的配置；改过之后标「自定义」，并出现「恢复全片」。</li>
+  <li>「本段不用」让这一段不接背景板，不影响其他段。</li>
+  <li>典型用法：只有第一段需要挂鞋款/道具参考图时，就只在 s01 挂，近景段不挂——避免模型为了找鞋把镜头推到腿脚特写。</li>
+</ul>
+<div class="err"><b>参考图会连「怎么拍」一起学。</b> H3 的 <code>ref_images</code> 由视觉模型整体理解，主体、构图、景别、机位、光线一起吸收，没有「只取款式」的开关。局部物件图（鞋、包）直接当参考，模型可能把物件当成画面主体摆进来，或跟着切到特写。正确做法是先把它合成到人物身上（Qwen 编辑），或明确写出「穿在她脚上、不作为独立物件出现」。</div>
+
+<h2 id="s4">4. 提示词与 {pic:} 占位符</h2>
+<p>全局 head / tail 只有一份，所有段共用；<code>{pic:}</code> 占位符会按<b>本段实际接线</b>自动换算成真编号：</p>
+<table>
+  <tr><th>写法</th><th>含义</th></tr>
+  <tr><td><code>{pic:1}</code> … <code>{pic:N}</code></td><td>第 N 个人物参考图</td></tr>
+  <tr><td><code>{pic:plate}</code></td><td>场景空镜板</td></tr>
+  <tr><td><code>{pic:first}</code></td><td>本段首帧（仅链式段有）</td></tr>
+  <tr><td><code>{pic?:first}</code></td><td>可选版：本段没接该媒体就<b>整行删掉</b></td></tr>
+</table>
+<p>编号顺序是「首帧 → 人物 1..N → 空镜板」。链式段比首段多一张首帧，所以后面的编号会整体后移一位——这正是要用占位符的原因。</p>
+<div class="err"><b>手写 <code>&lt;Picture 3&gt;</code> 是最常见的跑片失败原因。</b> 实际只接了 2 张图却引用了 P3，提交时 <code>strict_prompt_tags</code> 会直接拒绝（报错 1~2 秒，根本没进渲染）。报错信息现在会翻译成中文并提示补图或改占位符。</div>
+<div class="warn"><b>段级 head 是整段覆盖全局 head，不是追加。</b> 只改全局那一份救不了写了段级 head 的段。多人片建议删掉段级 head，统一用占位符版全局 head。同理段级 tail 覆盖全局 tail。</div>
+<p>占位符只支持上述几种；出现裸的 <code>{</code> 会在保存时提示，避免被误解析。</p>
+
+<h2 id="s5">5. 分段卡片逐项说明</h2>
+<table>
+  <tr><th>控件</th><th>作用</th></tr>
+  <tr><td>seed</td><td>换 seed 重出本段。注意 <b>100000 是坏种子</b>（高频伪影），别拿它做对照</td></tr>
+  <tr><td>提示词正文</td><td>本段动作/机位/光线/场景。跨段<b>别换姿势</b>：站→坐会让地面透视与接触阴影崩掉；姿势转换必须在同一段内连续完成</td></tr>
+  <tr><td>承接 / 转场</td><td><code>chain</code>=首帧像素承接上段尾帧；<code>transition</code>=本段独立生成、只靠转场连接。转场模式下右边的「叠化/黑屏/硬切」才生效</td></tr>
+  <tr><td>动作参考视频</td><td>截取视频前 N 秒（1~15）作软参考，只接管动作/节奏/机位，不接管场景和画风。插入时自动在提示词最前面加一段说明，删除时自动剥除</td></tr>
+  <tr><td>本段参考图 / 背景板</td><td>见第 3 节，可逐段覆盖全片配置</td></tr>
+  <tr><td>＋ 在此段后插入</td><td>插入新段并重编号 s01..s0N，同时重命名已有产物</td></tr>
+  <tr><td>看视频 / 首帧 / 尾帧</td><td>点缩略图看大图；重跑后若没刷新，点「刷新预览」强制重拉</td></tr>
+</table>
+
+<h2 id="s6">6. 跑片、取消与保存</h2>
+<ul>
+  <li><b>一键跑全片</b>：串行逐段提交，<b>确认上一段真的生成了视频</b>才推进下一段；失败会停下并报出段号，不会静默跳过。全部完成后自动拼接。</li>
+  <li><b>运行本段</b>：只跑这一段。重跑后链式尾帧变了，后续段需要按序重出才能接上。</li>
+  <li><b>保存所有修改 (N)</b>：一次把所有改过的提示词、seed、全局 head/tail 写回 JSON，N 是未保存字段数。</li>
+  <li><b>自动落盘</b>：一键跑全片、每次提交下一段、运行本段之前都会先静默保存——改了提示词直接跑不会跑旧配置。</li>
+  <li><b>取消全片</b>：服务端级取消，会中断当前段、清空 ComfyUI 队列，其他标签页也会停。重新点「一键跑全片」即解除。</li>
+  <li><b>需重出</b>标记：改了提示词/seed/全局 head/分辨率后，受影响段及之后的段会标 stale。改分辨率会让<b>全片</b>都标，避免新旧尺寸混拼。</li>
+</ul>
+<div class="warn"><b>不要同时在 8188 内嵌页和 :8900 页点运行。</b> 这是两个进程、各一份任务表，判重互相看不见，会往 ComfyUI 队列塞两笔任务。算力是单队列，不会并行渲染，只会排队等待。</div>
+
+<h2 id="s7">7. 拼接与转场优先级</h2>
+<p>右上角下拉是<b>全片级</b>，每段卡片里的「承接 + 转场」是<b>段级</b>。优先级：</p>
+<table>
+  <tr><th>右上角选择</th><th>结果</th></tr>
+  <tr><td>全片硬切 / 全片叠化 / 全片黑场</td><td><b>最高优先级</b>，所有接缝统一用该值，段级 link 完全忽略</td></tr>
+  <tr><td>按每段转场 (auto)</td><td>才看段级：<code>mode=transition</code> → 用该段的 <code>transition</code>；<code>mode=chain</code> 或没写 link → <b>固定 0.25s 叠化</b></td></tr>
+</table>
+<div class="warn"><b>段级「转场」下拉在链式承接时是灰的，也不生效。</b> 想让某段用黑场/硬切，必须先把它的「承接」切成「转场」，并保持右上角为「按每段转场」。chain 片里 auto 与「全片叠化」完全等价。</div>
+<h3>两个阶段别混</h3>
+<ul>
+  <li><b>生成期</b>：<code>link.mode=chain</code> 才把上段尾帧注入 first_frame，stale 会向后传染；<code>transition</code> 段独立生成、不接首帧。</li>
+  <li><b>拼接期</b>：右上角 join 只决定 ffmpeg 用叠化 / 插黑帧 / 直连，<b>不会改已生成的段</b>。「全片硬切」= 仅去掉叠化，链式接缝的帧差不变。</li>
+</ul>
+<p>叠化 0.25s、黑场 0.8s 都会改变总时长；硬切不额外加帧。选择会写回片配置，换浏览器/换地址打开也是同一个值，命令行不带 <code>--join</code> 时也沿用。</p>
+<div class="tip"><b>叠化不一定更平滑。</b> 链式段首帧本来就承接上段尾帧（帧差通常 2~4），叠化只是把两张极像的画面半透明叠在一起，反而多一层重影。觉得接缝「发虚」时优先试「全片硬切」。</div>
+
+<h2 id="s8">8. 分辨率与画幅</h2>
+<p>工具条上的「百万像素」滑块 + 数值输入 + 画幅下拉，实时显示预估尺寸（如 <code>0.5MP / 16:9 → ≈960×544</code>）。点「应用」写回配置，所有已完成段立刻标「需重出」。</p>
+<div class="warn"><b>8GB 显存建议 0.5MP 左右</b>，优先 int8 / w4a8 模型；调到 1MP 以上容易 OOM。允许范围 0.1~2.0MP。</div>
+
+<h2 id="s9">9. 预览图、日志与验收</h2>
+<ul>
+  <li><b>刷新预览</b>：重跑后缩略图没变就点它，强制重建卡片并重拉图片/视频（缓存兜底）。后端也会给媒体 URL 带文件版本号，正常情况下重跑会自动更新。</li>
+  <li><b>日志面板</b>：逐行着色（错误红 / 警告橙 / 段标题蓝 / 完成绿），支持复制全部、下载 .log、跟随开关、只看问题。</li>
+  <li><b>验收两指标</b>：① 构图——抽上段尾帧与下段首帧算 MAE，<b>&lt;5 即接续正常</b>；② 光线——逐秒算亮度与色温数值曲线，别只目测拼图。</li>
+  <li>段内出现帧级抖动（相邻帧差尖峰）不是接缝问题，换转场救不了，只能换 seed 重出该段或把段首动作写得更缓。</li>
+</ul>
+
+<h2 id="s10">10. 常见坑与排错</h2>
+<table>
+  <tr><th>现象</th><th>原因 / 处理</th></tr>
+  <tr><td>提交几秒就失败，提示 Picture N 悬空</td><td>实际接线数与手写编号不符。补空镜板，或改用 <code>{pic:}</code> 占位符</td></tr>
+  <tr><td>换装 / 换风格不明显</td><td>画风由参考图锁定，纯提示词权重不够。先用本地 Qwen-Image-Edit 造一张干净的目标参考图</td></tr>
+  <tr><td>模型切到腿脚特写、把物件摆进画面</td><td>参考图带景别/主体信号。见第 3 节，清图或合成到人物身上</td></tr>
+  <tr><td>跨段从站变坐，地面崩</td><td>段间换姿势。统一姿势，转换在同一段内完成</td></tr>
+  <tr><td>总有几个段跑失败</td><td>多半不是并行（ComfyUI 是单队列、无 OOM），而是编号对账失败，原样重跑还会挂</td></tr>
+  <tr><td>任务卡在「渲染中」但队列是空的</td><td>ComfyUI 中途重启清了 history。驱动现在会在队列空转 30 秒后提前退出</td></tr>
+  <tr><td>重跑后预览图还是旧的</td><td>浏览器缓存。点「刷新预览」；文件时间戳正常就说明模型链路没问题</td></tr>
+  <tr><td>改了提示词却跑了旧内容</td><td>老版本页面未自动落盘。现在所有跑片动作前都会自动保存，刷新一次页面即可</td></tr>
+</table>
+
+<h2 id="s11">11. 改动什么时候生效</h2>
+<table>
+  <tr><th>改了什么</th><th>生效方式</th></tr>
+  <tr><td>出片逻辑 / 状态字段（driver）</td><td>每次调用都是新进程 → <b>立刻生效</b></td></tr>
+  <tr><td>页面 HTML / JS</td><td>每次请求现读 → <b>刷新页面即可</b>，两个入口都一样</td></tr>
+  <tr><td>常驻后端的路由（panel.py）</td><td>独立服务要重启 <code>:8900</code>；内嵌页面要<b>重启桌面版</b></td></tr>
+  <tr><td>新增 custom_nodes</td><td>必须重启桌面版（桌面版没有 ComfyUI-Manager）</td></tr>
+</table>
+<div class="err"><b>不要用 Stop-Process 杀桌面版后端。</b> Desktop 不会自动重启，8188 会变 502；也不要另起一个临时 ComfyUI 抢 8188。</div>
+
+<h2 id="s12">12. 命令行速查</h2>
+<pre># 建片 / 导入分镜
+python run_selflift.py --cfg &lt;片&gt;/segments.json import --src &lt;分镜.json&gt;
+
+# 接线校验（正式跑之前先做，能对出 Picture 编号）
+python run_selflift.py --cfg &lt;片&gt;/segments.json graph
+
+# 逐段 / 全片 / 强制重出
+python run_selflift.py --cfg &lt;片&gt;/segments.json seg 1
+python run_selflift.py --cfg &lt;片&gt;/segments.json all
+python run_selflift.py --cfg &lt;片&gt;/segments.json --force all
+
+# 拼接（不带 --join 时按片配置里的 join_mode）
+python run_selflift.py --cfg &lt;片&gt;/segments.json merge
+python run_selflift.py --cfg &lt;片&gt;/segments.json --join cut merge
+
+# 改全局字段
+python run_selflift.py --cfg &lt;片&gt;/segments.json set --megapixels 0.8 --aspect-ratio "9:16 (Portrait Widescreen)"
+python run_selflift.py --cfg &lt;片&gt;/segments.json set --join cut
+python run_selflift.py --cfg &lt;片&gt;/segments.json set --seg 3 --seed 528329 --body "..."</pre>
+<p class="k">Windows 下请用 <code>ComfyUI/.venv/Scripts/python.exe</code>，并设 <code>PYTHONUTF8=1 PYTHONIOENCODING=utf-8</code>，否则子进程中文输出会变方块。</p>
+
+<footer>SelfLift 出片台 · 使用手册 · 内容与页面同源，改页面后刷新即可看到最新版</footer>
+</div>
+</body>
+</html>
