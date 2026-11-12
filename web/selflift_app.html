@@ -211,8 +211,13 @@
   <button id="randSeeds" title="给全片每一段各换一个新随机 seed，写入配置并标记需重出（不会自动开始跑片）">🎲 随机所有 seed</button>
   <button id="saveAll" title="把页面上所有改过的提示词、seed、全片 head/tail 一次性写回分镜 JSON">保存所有修改</button>
   <button id="refreshMedia" title="强制重新拉取所有首帧/尾帧/视频缩略图（缓存兜底）">刷新预览</button>
+  <select id="quality" title="画质档位（决定采样前几步在低分辨率跑）：省时=细节偏软；标准=折中；高画质=细节明显更好（实测 4 秒段几乎不增加耗时）。换档位等于换采样轨迹，同 seed 也会出不同画面，所以会让全片标记「需重出」">
+    <option value="fast">省时画质</option>
+    <option value="standard">标准画质</option>
+    <option value="high">高画质（推荐）</option>
+  </select>
   <button id="runAll" class="primary">一键跑全片</button>
-  <select id="join">
+  <select id="join" title="段间接续方式：只影响拼接，不改变画面内容"> 
     <option value="auto">按每段转场</option>
     <option value="dissolve">全片叠化</option>
     <option value="cut">全片硬切</option>
@@ -240,6 +245,7 @@
     <div class="row">
       <button id="pbSave" class="primary">保存全片提示词</button>
       <span class="dim" id="pbState"></span>
+      <span class="dim" id="pbCover"></span>
     </div>
   </div>
 </section>
@@ -552,6 +558,7 @@ const $ = (id) => document.getElementById(id);
 const state = { cfg: null, data: null, queue: null, waiting: null, busy: false, merged: false,
                 timer: null, cardSig: null, resDirty: false, cancelled: false,
                 mediaNonce: 0, filmSig: null, films: [], joinTouched: false, savedJoin: "auto",
+                qualityTouched: false, savedQuality: "fast",
                 runallOn: false, lastRunMsg: "" };   // runallOn：上一轮是否在跑全片，用于只报一次结果
 
 function say(text, kind = "info") {
@@ -893,6 +900,38 @@ $("join").addEventListener("change", () => {
   setTimeout(() => { state.joinTouched = false; }, 0);
 });
 
+/* ---------- 画质档位：决定采样前几步在低分辨率跑，改的是画面本身 ---------- */
+function syncQuality(data) {
+  state.savedQuality = data.quality || "fast";
+  if (state.qualityTouched) return;
+  const v = state.savedQuality;
+  if ([...$("quality").options].some((o) => o.value === v)) $("quality").value = v;
+}
+$("quality").addEventListener("change", async () => {
+  if (!state.cfg) { say("先选一部片", "error"); syncQuality(state.data || {}); return; }
+  const v = $("quality").value;
+  const label = $("quality").selectedOptions[0].textContent.trim();
+  if (v === state.savedQuality) return;
+  if (!confirm("把画质换成「" + label + "」？\n\n"
+      + "这改的是采样本身，不是后处理：同一个 seed 也会生成不同的画面（服装、发丝、背景都会变）。\n"
+      + "所以全片会被标记「需重出」，已经跑好的段也要重跑。\n\n"
+      + "省时 = 细节偏软；标准 = 折中；高画质 = 细节明显更好（实测 4 秒段几乎不增加耗时）。")) {
+    syncQuality(state.data || {});
+    return;
+  }
+  state.qualityTouched = true;
+  try {
+    await apiJson("/h3-long-video/selflift/set", { cfg: state.cfg, quality: v });
+    say("画质已切换为「" + label + "」，全片标记需重出（点「一键跑全片」按新档位重跑）", "ok");
+    await reload();
+  } catch (e) {
+    say("切换画质失败：" + e.message, "error");
+    syncQuality(state.data || {});
+  } finally {
+    state.qualityTouched = false;
+  }
+});
+
 /* ---------- 使用手册：内容内嵌在页面，用 Blob 打开独立窗口，零后端路由 ---------- */
 $("manualBtn").addEventListener("click", () => {
   const raw = $("manualDoc")?.textContent || "";
@@ -961,6 +1000,7 @@ function render(data) {
   syncRes(data);
   renderFilms(data);
   syncJoin(data);
+  syncQuality(data);
   const task = data.task || {};
   if (state.cancelled) {
     say("已取消全片：当前段已中断、ComfyUI 队列已清空。要继续请重新点「一键跑全片」", "info");
@@ -1834,6 +1874,14 @@ function renderPromptBox(data) {
     if ($("pbTail").value !== (data.tail || "")) $("pbTail").value = data.tail || "";
   }
   $("pbState").textContent = pbDirty ? "有未保存修改" : "";
+  // 有独立提示词的段不读这一栏（seg_prompt: seg.get("head") or cfg.get("head")），
+  // 不说明的话用户改完发现画面没变，会以为「保存没生效」。
+  const segs = data.segments || [];
+  const over = segs.filter((s) => (s.head_override || "").trim()
+    || (s.tail_override || "").trim()).map((s) => s.id);
+  $("pbCover").textContent = over.length
+    ? "⚠ " + over.join(" / ") + " 有自己的提示词，这一栏的修改对它们不生效"
+    : "";
 }
 
 for (const id of ["pbHead", "pbTail"]) {
