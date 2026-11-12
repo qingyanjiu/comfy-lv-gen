@@ -589,24 +589,34 @@ async function status() {
 }
 
 /* ---------- 全局分辨率：百万像素 + 画幅比例 ---------- */
-const AR_RATIO = {
-  "1:1 (Square)": 1, "2:3 (Portrait Photo)": 2/3, "3:2 (Photo)": 3/2,
-  "3:4 (Portrait Standard)": 3/4, "4:3 (Standard)": 4/3,
-  "9:16 (Portrait Widescreen)": 9/16, "16:9 (Widescreen)": 16/9,
-  "21:9 (Ultrawide)": 21/9,
+// 必须与 ComfyUI 的 ResolutionSelector 节点算法逐位一致（comfy_extras/nodes_resolution.py）：
+//   total = megapixels * 1024 * 1024      ← 是 1024²，不是 1e6
+//   scale = sqrt(total / (w_ratio * h_ratio))
+//   width  = round(w_ratio * scale / multiple) * multiple
+//   height = round(h_ratio * scale / multiple) * multiple   ← 宽高各自独立算，不是用宽反推
+// 用浮点比值 + 1e6 + 用宽反推高会算偏（0.5MP/3:2 得 896×608，节点实际 896×576），
+// 用户会以为「分辨率没管用」。改这段务必回去对一遍节点源码。
+const AR_PAIR = {
+  "1:1 (Square)": [1, 1], "2:3 (Portrait Photo)": [2, 3], "3:2 (Photo)": [3, 2],
+  "3:4 (Portrait Standard)": [3, 4], "4:3 (Standard)": [4, 3],
+  "9:16 (Portrait Widescreen)": [9, 16], "16:9 (Widescreen)": [16, 9],
+  "21:9 (Ultrawide)": [21, 9],
 };
 const RES_MULTIPLE = 32;   // 与工作流 ResolutionSelector 节点的 multiple 一致
 
 function resSize(mp, ar) {
-  const r = AR_RATIO[ar] || 16/9;
-  const w = Math.ceil(Math.sqrt(mp * 1e6 * r) / RES_MULTIPLE) * RES_MULTIPLE;
-  const h = Math.max(RES_MULTIPLE, Math.round(w / r / RES_MULTIPLE) * RES_MULTIPLE);
+  const pair = AR_PAIR[ar] || [16, 9];
+  const wr = pair[0], hr = pair[1];
+  const scale = Math.sqrt((mp * 1024 * 1024) / (wr * hr));
+  const m = RES_MULTIPLE;
+  const w = Math.max(m, Math.round(wr * scale / m) * m);
+  const h = Math.max(m, Math.round(hr * scale / m) * m);
   return [w, h];
 }
 function updateResPreview() {
   const mp = Number($("mpNum").value) || 0.5;
   const [w, h] = resSize(mp, $("arSel").value);
-  $("resPreview").textContent = "≈ " + w + "×" + h;
+  $("resPreview").textContent = w + "×" + h;
   $("mpRange").value = Math.min(1.5, Math.max(0.2, mp));
 }
 function syncRes(data) {
