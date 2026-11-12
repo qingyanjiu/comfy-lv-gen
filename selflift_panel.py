@@ -882,6 +882,39 @@ def register_routes(routes, web):
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
 
+    @routes.post("/h3-long-video/selflift/delete")
+    async def selflift_delete(request):
+        """删除整部片：删掉它的输出目录（含 segments.json / 分段 / 成片 / refs）。
+
+        只接受 OUTPUT_ROOT 下的直接片目录（即一个含 segments.json 的子目录），且要求
+        本片没在跑任务。页面会在调用前弹窗让用户输入片名二次确认，这里只做最后的路径
+        安全校验与文件删除，避免误删别的目录或 OUTPUT_ROOT 自身。
+        """
+        try:
+            p = await request.json()
+            cfg = _safe(p.get("cfg"))            # segments.json，必须在 OUTPUT_ROOT 下
+            key = str(cfg)
+            film_dir = cfg.parent
+            root = OUTPUT_ROOT.resolve()
+            # 护栏：只删 OUTPUT_ROOT 的直接子目录，绝不碰 OUTPUT_ROOT 自身或别的目录
+            if film_dir.parent.resolve() != root:
+                raise ValueError("只允许删除 OUTPUT_ROOT 下的片目录")
+            if not film_dir.is_dir():
+                raise FileNotFoundError(str(film_dir))
+            with LOCK:
+                if (TASKS.get(key, {}).get("running") or key in PROCS):
+                    raise RuntimeError("本片正在跑任务，跑完再删除")
+            await asyncio.to_thread(shutil.rmtree, str(film_dir))
+            with LOCK:
+                # 清掉这部片的任务/进程/取消态，别留幽灵状态
+                TASKS.pop(key, None)
+                PROCS.pop(key, None)
+                CANCELLED.discard(key)
+            return web.json_response({"ok": True, "dir": film_dir.name})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
     @routes.post("/h3-long-video/selflift/init")
     async def selflift_init(request):
         """从 skill 模板开一个新片目录，产物自动写到分镜 json 同目录。"""
