@@ -204,6 +204,21 @@ def _rewrite_paths(node, old_dir, new_dir):
     return conv(node) if isinstance(node, str) else node
 
 
+def _delete_tree(path):
+    """删除整目录，**绝不让异常逃出线程**。
+
+    `shutil.rmtree` 在带「安全删除」垫片的环境里（如 WorkBuddy 的 sitecustomize：
+    _safe_shutil_rmtree → _try_trash → 批量删除守卫）会抛 SystemExit。SystemExit 属于
+    BaseException，不是 Exception —— 在线程池里抛出会顺着 aiohttp 的事件循环把整个
+    服务带走（实测：删一部真实片，8900 直接退出）。所以这里连 BaseException 一起接住，
+    失败也只是一次 400，不让删片把出片台弄挂。
+    """
+    try:
+        shutil.rmtree(path)
+    except BaseException as exc:  # noqa: BLE001 —— SystemExit 也要接
+        raise RuntimeError(f"{type(exc).__name__}: {exc}") from None
+
+
 def _rename_film(cfg_path, new_title, rename_folder=True):
     """给本片起名，并同步目录名 / cfg 内绝对路径 / 成片文件名。
 
@@ -904,7 +919,9 @@ def register_routes(routes, web):
             with LOCK:
                 if (TASKS.get(key, {}).get("running") or key in PROCS):
                     raise RuntimeError("本片正在跑任务，跑完再删除")
-            await asyncio.to_thread(shutil.rmtree, str(film_dir))
+            await asyncio.to_thread(_delete_tree, film_dir)
+            if film_dir.exists():
+                raise RuntimeError(f"删除未完成，目录仍存在：{film_dir}")
             with LOCK:
                 # 清掉这部片的任务/进程/取消态，别留幽灵状态
                 TASKS.pop(key, None)

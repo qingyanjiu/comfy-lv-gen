@@ -1075,6 +1075,16 @@ def cmd_merge(cfg, join=None):
             P.die(f"缺段文件：{s}")
     probes = [ffprobe(s) for s in segs]
     w, h, fps = probes[0]["w"], probes[0]["h"], probes[0]["fps"]
+    # 改过分辨率却只重出部分段时，新段尺寸和旧段不同；_normalize_clip 会把每段
+    # 硬 scale 到第一段的 w:h（非等比）—— 3:2 内容被拉成 16:9 就是无声的变形。
+    # 宁可报错让用户整片重出，也不要悄悄出一版歪的成片。
+    sizes = {(p["w"], p["h"]) for p in probes if p.get("w") and p.get("h")}
+    if len(sizes) > 1:
+        detail = " / ".join(f"{cfg['segments'][i]['id']}={p['w']}x{p['h']}"
+                            for i, p in enumerate(probes))
+        P.die("各段分辨率不一致，直接拼会被拉伸变形：" + detail +
+              "\n    改过分辨率后要把整片重出（面板逐段重出 / 跑全片），别只重出其中几段。")
+
     d = float(cfg.get("join_dissolve_seconds", 0.25))
     gap = float(cfg.get("join_black_seconds", 0.8))
     gap_frames = max(1, round(gap * fps))
