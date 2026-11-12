@@ -29,7 +29,7 @@ echo   url    : http://127.0.0.1:8900/   (override: --port 8901)
 echo   ComfyUI is used as the renderer only (default 127.0.0.1:8188).
 echo   Close this window or press Ctrl+C to stop.
 echo.
-"%PY%" "%SERVE%" --port 8900 --open %*
+"%PY%" "%SERVE%" --port 8900 --host 0.0.0.0 --open %*
 echo.
 echo Service stopped.
 pause >nul

@@ -172,9 +172,34 @@ def normalize(raw, *, title=None, seconds=None, fps=24, megapixels=0.5,
         "fps": fps,
         "megapixels": megapixels,
         "ref_image": str(meta.get("ref_image") or ""),
+        "ref_images": ref_list(meta.get("ref_images")),
         "bg_plate_path": str(meta.get("bg_plate_path") or ""),
         "segments": segments,
     }
+
+
+def ref_list(raw):
+    """规整 ref_images：既接受 ["a.png", …]，也接受 [{"path","comfy_name","label"}, …]。
+
+    返回顺序就是 Picture 编号顺序（第 1 个是 P1）。空镜板不在这里，由 bg_plate 单独管。
+    """
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if isinstance(item, str):
+            path, name, label = item, "", ""
+        elif isinstance(item, dict):
+            path = item.get("path") or item.get("image") or ""
+            name = item.get("comfy_name") or item.get("name") or ""
+            label = item.get("label") or ""
+        else:
+            continue
+        path = str(path).strip()
+        if path:
+            out.append({"path": path, "comfy_name": str(name),
+                        "label": str(label)})
+    return out
 
 
 # ---------------------------------------------------------------- 模板（供网页下载）
@@ -184,16 +209,29 @@ FIELD_DOC = {
     "seconds": "每段时长（秒），「全片统一」。会被量化成 17n+5 帧：5s→124 帧、8s→209 帧、10s→260 帧。改这里等于改所有段。",
     "fps": "帧率，默认 24。非必要不要改，模型按 24fps 训练。",
     "megapixels": "每段画幅，按总像素算。0.5 ≈ 960×544（16:9），0.3 ≈ 736×416，0.8 ≈ 1216×688。8GB 显存建议 ≤0.5。",
-    "head": "全片公共前置提示词，拼在每段 body 之前。用来锁定人物身份、空镜板环境、画风。「注意 <Picture N> 编号随接线变化」，链式段要用段级 head 覆盖。",
+    "head": "全片公共前置提示词，拼在每段 body 之前。用来锁定人物身份、空镜板环境、画风。"
+            "「图片编号请写 {pic:1} / {pic:plate} 这种占位符，不要写死 <Picture 1>」——"
+            "工具会按每段实际接线自动换算成真实编号（见 _规则说明 的 picture 条）。",
     "tail": "全片公共后置提示词，拼在每段 body 之后。放画风/颗粒/禁止文字水印/段首尾静止锚。",
-    "ref_image": "人物参考图的「绝对路径」（D:/xxx/refs/girl.png）。留空则用网页上「上传参考图」传的那张。",
+    "ref_image": "【单人写法】人物参考图的「绝对路径」（D:/xxx/refs/girl.png）。留空则用网页上「上传参考图」传的那张。有多个人物请改用下面的 ref_images，两者同时存在时 ref_images 优先。",
+    "ref_images": (
+        "【多人写法】人物参考图数组，顺序就是 Picture 编号顺序：第 1 个是 P1、第 2 个是 P2……\n"
+        "每项写成 {\"path\": \"D:/xxx/refs/a.png\", \"comfy_name\": \"xx_a.png\", \"label\": \"女生 A\"}，"
+        "comfy_name 可省（自动按「前缀_ref序号」生成），label 只用于网页显示。\n"
+        "⚠ 一人一张，别把多个人拼进一张图——拼图后每张脸只占 1/4 画幅，谁都锁不住，"
+        "而且模型会把整张图的四人并排构图当成模板去复刻。\n"
+        "⚠ 参考图用「半身或胸像」，脸占画幅 1/3 以上；全身景脸只占 10~15% 高时锁不住具体的人。\n"
+        "空镜板不占人物位，永远是最后一张（3 个人物 + 空镜板 → 人物 P1/P2/P3，空镜板 P4）。"
+    ),
     "bg_plate_path": "空镜板（无人场景图）的「绝对路径」。留空则用网页「上传空镜板」。",
     "segments": "分段列表，顺序即播放顺序。每段至少要有 body。",
 
     "segments[].title": "段标题，只用于网页卡片与日志显示，不参与生成。",
     "segments[].body": "该段提示词（必填）。只写这一段发生的事：人物动作 + 机位 + 光线 + 场景，不要写「上一段如何、下一段如何」。head/tail 会自动包在外面。",
     "segments[].seed": "该段随机种子（整数）。同一个 body 换 seed 就换一条演绎；不满意就换 seed 重出，别改 body。「别用 100000」（0.1% 恶性种子，必出瑕疵）。留空则自动随机。",
-    "segments[].head": "可选。覆盖全局 head，只对这一段生效。「当本段接了首帧时必写」（<Picture 1> 会变成首帧，人物参考后移到 P2）。留空回落到全局 head。",
+    "segments[].head": "可选。**整段覆盖**全局 head（不是追加），只对这一段生效。"
+                       "以前链式段必须重写 head，现在 head 里用 {pic:} 占位符就自动换算，"
+                       "所以只有「本段要额外强调某件事」或「本段接线特殊」时才需要写。",
     "segments[].link": "可选。本段与「上一段」怎么接。第 1 段忽略此字段。不写 = 默认链式承接。",
     "segments[].link.mode": "chain = 链式承接：本段第 0 帧 = 上段尾帧，动作连续、像素级接上（实测接缝 MAE 2~3）。transition = 转场：本段独立生成，不接上段尾帧，只靠拼接时叠化/黑屏过渡；改上游不会让你重出。",
     "segments[].link.transition": "仅 mode=transition 时生效。dissolve = 0.25s 交叉溶解（默认，最自然）；black = 0.8s 纯黑硬切（换场/换时间）；cut = 直接硬切（同场景切机位）。",
@@ -204,11 +242,25 @@ FIELD_DOC = {
 FIELD_NOTE = {
     "picture": (
         "<Picture N> 按「本段实际接了几张图」从 1 数起，顺序是：先 first_frame → 再 last_frame → "
-        "再 ref_image_1..9（人物参考、空镜板）。所以编号会漂：\n"
-        "· 第 1 段 / 转场段（没接首帧）：P1=人物参考，P2=空镜板\n"
-        "· 链式段（接了上段尾帧）：P1=首帧，P2=人物参考，P3=空镜板\n"
-        "· 再锁了 last_frame：P1=首帧，P2=尾帧，P3=人物，P4=空镜板\n"
-        "引用超出本段图数会直接报错拒单；不超但写错位不报错，只是身份锚被顶替（静默降级）。"
+        "再 ref_image_1..9（人物参考按顺序排前面，空镜板永远最后）。所以同一片里编号会漂：\n"
+        "· 单人第 1 段：P1=人物，P2=空镜板\n"
+        "· 单人链式段：P1=首帧，P2=人物，P3=空镜板\n"
+        "· 双人链式段：P1=首帧，P2=人物A，P3=人物B，P4=空镜板\n\n"
+        "**所以不要在 head 里写死数字**，写成占位符，工具按本段接线自动换算：\n"
+        "· {pic:1} / {pic:2} … = 第几个人物\n"
+        "· {pic:plate} = 空镜板\n"
+        "· {pic:first} = 本段首帧（上段尾帧）、{pic:last} = 本段锁定的尾帧\n"
+        "· {pic?:first} = **可选**：本段没接首帧时，这一整行自动消失（写「本段首帧必须无缝延续」"
+        "这种句子时用它，第 1 段就不会留半句空话）\n"
+        "head 写一遍就能全片通用，第 1 段和链式段各自算对。"
+        "引用本段没接的媒体会直接报错并列出本段实际接线。"
+    ),
+    "multi_person": (
+        "多人镜头：参考图只给「这个人长什么样」，不给「他们怎么站」。"
+        "关系必须写进 body——谁在画面左/右、各自朝向、有没有接触与遮挡，一个都不能省，例如：\n"
+        "「<Picture 1> 的女生站在画面左侧，面朝右；<Picture 2> 的男生在右侧，半侧身面向她，"
+        "右手搭在她左肩上，女生左肩被遮住一部分。」\n"
+        "人一多脸就小：0.5MP 下建议用中近景，否则抬到 0.8~1.0MP（8GB 显存每段约 8 分钟）。"
     ),
     "length": "段时长只由顶层 seconds 决定（全片统一），不支持逐段不同时长。",
     "transition_switch": "把某段从 transition 改回 chain 时，上段尾帧可能没备进 ComfyUI input（转场段不共享尾帧），"
@@ -221,7 +273,7 @@ FIELD_NOTE = {
 def build_template() -> dict:
     """返回一份可直接下载、照着改的模板（合法 JSON，注释放在 _ 开头的兄弟字段里）。"""
     seg1 = {
-        "_说明": "第 1 段：不写 link（首段没有上一段）。本段只接人物参考+空镜板，所以 P1=人物、P2=空镜板。",
+        "_说明": "第 1 段：不写 link（首段没有上一段）。head 只在顶层写一次，这里不用重复。",
         "title": "推门走出天台",
         "seed": 460211,
         "body": (
@@ -233,15 +285,11 @@ def build_template() -> dict:
         ),
     }
     seg2 = {
-        "_说明": "第 2 段：link=chain（默认）→ 第 0 帧接上段尾帧。因为接了首帧，Picture 编号整体后移，head 必须重写。",
+        "_说明": "第 2 段：link=chain（默认）→ 第 0 帧接上段尾帧。这一段 Picture 编号会比第 1 段整体后移一位，"
+                "但 head 里用的是 {pic:N}，会自动换算，所以依然不用重写。",
         "title": "走向栏杆",
         "seed": 460223,
         "link": {"mode": "chain", "transition": "dissolve"},
-        "head": (
-            "<Picture 1> 是本段首帧、也就是上一段的最后一帧，必须无缝延续，人物位置与朝向不得跳变。\n\n"
-            "<Picture 2> 是人物参考，脸型、五官、发型、服装、身材以它为准，全程不换人。\n\n"
-            "<Picture 3> 是全片唯一的场景空镜，环境结构与光源方向以它为准。"
-        ),
         "body": (
             "她从铁门边起步，缓步走向画面右侧的金属栏杆，右手抬起搭在栏杆上。\n\n"
             "[机位] 摄影机跟随她向右平移，保持中景，腰部高度。\n\n"
@@ -270,8 +318,9 @@ def build_template() -> dict:
         "fps": 24,
         "megapixels": 0.5,
         "head": (
-            "<Picture 1> 是人物参考，完整还原其中人物的脸型、五官、发型、服装与身材比例，全程不换人、不换装。\n\n"
-            "<Picture 2> 是全片唯一的场景空镜参考，环境结构、陈设与光源方向以它为准，保持不变。"
+            "<Picture {pic:1}> 是人物参考，完整还原其中人物的脸型、五官、发型、服装与身材比例，"
+            "全程不换人、不换装。\n\n"
+            "<Picture {pic:plate}> 是全片唯一的场景空镜参考，环境结构、陈设与光源方向以它为准，保持不变。"
         ),
         "tail": (
             "写实电影摄影，35mm 镜头，柔和浅景深，真实光学散景，细腻胶片颗粒。"
@@ -279,6 +328,7 @@ def build_template() -> dict:
             "[衔接] 段首约 0.5 秒动作与镜头保持稳定，段尾约 0.5 秒动作收住。"
         ),
         "ref_image": "",
+        "ref_images": [],
         "bg_plate_path": "",
         "segments": [seg1, seg2, seg3],
     }

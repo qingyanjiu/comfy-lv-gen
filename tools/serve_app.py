@@ -46,7 +46,9 @@ def build_app() -> web.Application:
 
     @routes.get("/")
     async def index(request):
-        raise web.HTTPFound("/h3-long-video/app")
+        # 保留 query（?cfg=… 直接打开指定片），否则重定向会把它丢掉
+        qs = request.query_string
+        raise web.HTTPFound("/h3-long-video/app" + (f"?{qs}" if qs else ""))
 
     @routes.get("/health")
     async def health(request):

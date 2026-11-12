@@ -28,6 +28,7 @@ import argparse
 import copy
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -68,9 +69,18 @@ N_CLIP = 128
 N_VIDEO_VAE = 227
 N_AUDIO_VAE = 184
 N_FIRST = 151   # LoadImage：上一段尾帧 → first_frame
-N_PLATE = 152   # LoadImage：全片唯一无人空镜板 → ref_images.ref_image_1
+N_PLATE = 152   # LoadImage：全片唯一无人空镜板 → ref_images.ref_image_<人数>
 N_LAST = 153    # LoadImage：可选的本段尾帧锁 → last_frame（默认不接）
+N_PEOPLE_BASE = 160  # 第 2、3… 个人物参考的 LoadImage 起始节点号（160/161/…）
 DEFAULT_MEGAPIXELS = 0.5  # 用户定：长视频默认 0.5MP，别再沿用旧值 0.3/0.98
+DEFAULT_ASPECT_RATIO = "16:9 (Widescreen)"
+# 与 ComfyUI ResolutionSelector 节点的 options 保持一致，别自己造字符串
+ASPECT_RATIO_CHOICES = (
+    "1:1 (Square)", "2:3 (Portrait Photo)", "3:2 (Photo)",
+    "3:4 (Portrait Standard)", "4:3 (Standard)",
+    "9:16 (Portrait Widescreen)", "16:9 (Widescreen)", "21:9 (Ultrawide)",
+)
+MAX_PEOPLE = 8  # 节点上限 9 个 ref_image 槽，留 1 个给空镜板
 
 REF_PROMPT = (
     "写实电影风格的人物设定参考图。一位 25 岁左右的东亚年轻女性，正面站立，"
@@ -101,6 +111,63 @@ def load_cfg(path=None):
         return json.load(f)
 
 
+def person_node(i):
+    """第 i 个人物参考（0-based）的 LoadImage 节点号。0 号是 base.json 自带的 150。"""
+    return N_IMAGE if i == 0 else N_PEOPLE_BASE + i - 1
+
+
+def people_refs(cfg, seg=None):
+    """人物参考图列表，顺序 = Picture 编号顺序。
+
+    新写法（多人）：cfg["ref_images"] = [{"path","comfy_name","label"}, …]
+    老写法（单人）：cfg["ref_image"] + cfg["comfy_ref_name"]
+    两者都支持；有空镜板时它永远排在最后一张，不占人物位。
+
+    段级覆盖（2026-11-12）：seg["ref_images"] 写了就用本段这份列表，可以做到
+    「只有看得到脚的段才挂鞋款参考图」。没写的段自动回落到 cfg 级。
+    to_api 按 wf 里实际 LoadImage 节点数接线，段间槽位数不同也没问题；
+    提示词请用 {pic:} 占位符，只在某些段才有的媒体用 {pic?:} 让整行自动消失。
+    """
+    arr = (seg or {}).get("ref_images") if seg is not None else None
+    if arr is None:
+        arr = cfg.get("ref_images")
+    out = []
+    if isinstance(arr, list):
+        for i, it in enumerate(arr):
+            if isinstance(it, str):
+                p, name, label = it, "", ""
+            elif isinstance(it, dict):
+                p = it.get("path") or it.get("image") or ""
+                name = it.get("comfy_name") or it.get("name") or ""
+                label = it.get("label") or ""
+            else:
+                continue
+            if not p:
+                continue
+            if not name:
+                ext = os.path.splitext(p)[1] or ".png"
+                name = f"{cfg.get('prefix', 'selflift')}_ref{i}{ext}"
+            out.append({"path": p, "comfy_name": name,
+                        "label": label or f"人物 {chr(65 + i)}"})
+    if out:
+        return out[:MAX_PEOPLE]
+    p = cfg.get("ref_image")
+    if p:
+        return [{"path": p,
+                 "comfy_name": cfg.get("comfy_ref_name") or os.path.basename(p),
+                 "label": "人物 A"}]
+    return []
+
+
+def count_people_in_wf(wf):
+    """从 UI wf 里数接了几个 ref_image 槽（150 恒定在，160… 连续递增）。"""
+    ids = {n["id"] for n in wf["nodes"]}
+    c = 1 if N_IMAGE in ids else 0
+    while (N_PEOPLE_BASE + c - 1) in ids:
+        c += 1
+    return c
+
+
 def normalize(wf):
     """VHS 节点的 widgets_values 在 UI 里是 dict，build_prompt 只认 list，
     按 object_info 的 required 顺序摊平（只保留 API 层认识的 6 个）。"""
@@ -118,17 +185,87 @@ def normalize(wf):
     return wf
 
 
-def seg_prompt(cfg, seg):
-    """段级 head 优先。
+PIC_TOKEN = re.compile(r"\{pic:([A-Za-z]+|\d+)\}")
+PIC_OPT_TOKEN = re.compile(r"\{pic\?:([A-Za-z]+|\d+)\}")
 
-    `<Picture N>` 是**按接线顺序**编号的（节点侧先数 first_frame / last_frame，
-    再数 ref_image_1..9）。所以同一片里，第 1 段（无首帧）P1=人物参考、P2=空镜板；
-    链式段（接了首帧）P1=首帧、P2=人物参考、P3=空镜板。序号会整体后移。
-    需要精确引用时用 `seg["head"]` 覆盖全局 head（不写则沿用 cfg["head"]）。
+
+def pic_numbers(cfg, seg):
+    """本段各媒体实际对应的 Picture 编号（与 conditioning.py 的 push 顺序一致）。
+
+    顺序：first_frame → last_frame → 人物 1..N → 空镜板。
+    返回 {"first":1, "last":2, "1":3, "2":4, "plate":5} 这样的映射（只含本段真接了的）。
     """
-    head = seg.get("head") or cfg.get("head") or ""
-    tail = cfg.get("tail") or ""
-    return "\n\n".join([part for part in (head, seg["body"], tail) if part])
+    m = {}
+    n = 0
+    if seg.get("first_frame"):
+        n += 1
+        m["first"] = n
+    if seg.get("last_frame_override"):
+        n += 1
+        m["last"] = n
+    for i in range(len(people_refs(cfg, seg))):
+        n += 1
+        m[str(i + 1)] = n
+    plate = seg.get("bg_plate", cfg.get("bg_plate"))
+    if plate:
+        n += 1
+        m["plate"] = n
+    return m
+
+
+def expand_pic_tags(text, mapping, where="提示词"):
+    """把 `{pic:1}` / `{pic:plate}` / `{pic:first}` 换成本段真实的 `<Picture N>` 编号。
+
+    这样 head 只写一遍就能全片通用：第 1 段没有首帧 → `{pic:1}`=1；链式段接了首帧
+    → `{pic:1}` 自动变成 2。
+
+    带问号的 `{pic?:first}` 是**可选**写法：本段没接这个媒体时，**整行都去掉**。
+    全局 head 里写「<Picture {pic?:first}> 是本段首帧…」这种句子时，第 1 段（无首帧）
+    就不会留下半句空话，链式段才出现。
+
+    引用了本段没接、又没打问号的媒体会直接报错，而不是留个错编号给 strict_prompt_tags
+    去炸（或静默把身份锚换成别的图）。
+    """
+    if not text or "{pic" not in text:
+        return text
+
+    if "{pic?:" in text:
+        kept = []
+        for line in text.split("\n"):
+            keys = PIC_OPT_TOKEN.findall(line)
+            if any(k not in mapping for k in keys):
+                continue          # 这一行依赖本段没接的媒体 → 整行不要
+            kept.append(line)
+        text = "\n".join(kept)
+    text = PIC_OPT_TOKEN.sub(lambda mo: str(mapping[mo.group(1)]), text)
+
+    missing = sorted({k for k in PIC_TOKEN.findall(text) if k not in mapping})
+    if missing:
+        have = "、".join(f"{{pic:{k}}}=P{v}" for k, v in sorted(mapping.items())) or "无"
+        P.die(
+            f"{where} 里引用了本段没有连接的媒体："
+            + "、".join(f"{{pic:{k}}}" for k in missing)
+            + f"\n    本段实际接线：{have}"
+            + "\n    （要接空镜板就在 cfg 里配 bg_plate；要引用某个人物检查 ref_images 数量；"
+              "如果是「只在某些段才有」的句子，改用 {pic?:key} 让它整行自动消失）"
+        )
+    return PIC_TOKEN.sub(lambda mo: str(mapping[mo.group(1)]), text)
+
+
+def seg_prompt(cfg, seg):
+    """拼出本段完整提示词，并把 `{pic:N}` 展开成真实 Picture 编号。
+
+    `<Picture N>` 是**按接线顺序**编号的（first_frame → last_frame → 人物 → 空镜板），
+    所以第 1 段和链式段的编号天然不同。head 里用 `{pic:1}` / `{pic:plate}` 写一次，
+    这里按本段实际接线自动换算，就**不用逐段重写 head**了。
+    段级 `seg["head"]` 仍是整段覆盖（不是追加），个别段要特殊强调时才用。
+    """
+    m = pic_numbers(cfg, seg)
+    head = expand_pic_tags(seg.get("head") or cfg.get("head") or "", m, "head")
+    tail = expand_pic_tags(seg.get("tail") or cfg.get("tail") or "", m, "tail")
+    body = expand_pic_tags(seg.get("body") or "", m, "segments[].body")
+    # {pic?:first} 在首段整行删掉后会留下前导空行，strip 一下别把空行喂给文本编码器
+    return "\n\n".join([p.strip() for p in (head, body, tail) if p and p.strip()])
 
 
 def add_load_image(wf, node_id, filename):
@@ -149,21 +286,30 @@ def build_wf(cfg, seg, out_path):
     with open(cfg["workflow"], encoding="utf-8") as f:
         wf = normalize(json.load(f))
     nodes = {n["id"]: n for n in wf["nodes"]}
-    nodes[N_IMAGE]["widgets_values"][0] = cfg["comfy_ref_name"]
+    people = people_refs(cfg, seg)
+    nodes[N_IMAGE]["widgets_values"][0] = (people[0]["comfy_name"] if people
+                                           else cfg.get("comfy_ref_name") or "image.png")
     if cfg.get("clip_name"):
         nodes[N_CLIP]["widgets_values"][0] = cfg["clip_name"]
     nodes[N_PROMPT]["widgets_values"][0] = seg_prompt(cfg, seg)
     nodes[N_DUR]["widgets_values"][0] = float(cfg["seconds"])
+    nodes[N_RES]["widgets_values"][0] = cfg.get("aspect_ratio") or DEFAULT_ASPECT_RATIO
     nodes[N_RES]["widgets_values"][1] = float(cfg.get("megapixels", DEFAULT_MEGAPIXELS))
     nodes[N_SAMPLER]["widgets_values"][0] = int(seg["seed"])
     nodes[N_VIDEO]["widgets_values"][0] = float(cfg["fps"])
     nodes[N_VIDEO]["widgets_values"][2] = f"{cfg['prefix']}_{seg['id']}"
-    if cfg.get("bg_plate"):
-        add_load_image(wf, N_PLATE, cfg["bg_plate"])
+    for i, pp in enumerate(people[1:], start=1):
+        add_load_image(wf, person_node(i), pp["comfy_name"])
+    plate = seg.get("bg_plate", cfg.get("bg_plate"))
+    if plate:
+        add_load_image(wf, N_PLATE, plate)
     if seg.get("first_frame"):
         add_load_image(wf, N_FIRST, seg["first_frame"])
     if seg.get("last_frame_override"):
         add_load_image(wf, N_LAST, seg["last_frame_override"])
+    global REF_VIDEO_PATH, REF_VIDEO_SECONDS
+    REF_VIDEO_PATH = seg.get("ref_video") or cfg.get("ref_video") or None
+    REF_VIDEO_SECONDS = seg.get("ref_video_seconds") or None
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(wf, f, ensure_ascii=False)
     return out_path
@@ -184,13 +330,19 @@ def check_graph(cfg, seg, verbose=True):
         print(f"    video: fps={c.get('frame_rate')} prefix={c.get('filename_prefix')!r} "
               f"fmt={c.get('format')} audio={c.get('audio')}", flush=True)
         print(f"    238: {d.get('width')}x{d.get('height')} len={d.get('length')} "
-              f"task={d.get('task_type')} audio={d.get('audio_mode')} "
-              f"ref0={d.get('ref_images.ref_image_0')}", flush=True)
-        print(f"    接续: plate={d.get('ref_images.ref_image_1')} "
-              f"first_frame={d.get('first_frame')}", flush=True)
+              f"task={d.get('task_type')} audio={d.get('audio_mode')}", flush=True)
+        print(f"    image={a!r} seed={b.get('seed')} cfg={b.get('cfg')} "
+              f"trans={b.get('transition_step')} rho={b.get('rho')}", flush=True)
+        refs = sorted((k for k in d if k.startswith("ref_images.")),
+                      key=lambda k: int(k.rsplit("_", 1)[-1]))
+        print("    ref_images: " + " | ".join(
+            f"{k.rsplit('.', 1)[-1]}<-node{v[0]}" for k, v in
+            ((k, d[k]) for k in refs)), flush=True)
+        print(f"    接续: first_frame={d.get('first_frame')} "
+              f"last_frame={d.get('last_frame')}", flush=True)
         res = prompt[str(N_RES)]["inputs"]
-        print(f"    resolution: {res.get('aspect_ratio')} / {res.get('megapixels')} MP "
-              f"(0.5MP@16:9 = 960x544)", flush=True)
+        print(f"    resolution: {res.get('aspect_ratio')} / {res.get('megapixels')} MP",
+              flush=True)
         print(f"    prompt chars={len(seg_prompt(cfg, seg))}", flush=True)
     return prompt
 
@@ -212,6 +364,118 @@ def extract_first_frame(video, out_png):
     if not os.path.exists(out_png):
         P.die(f"首帧抽取失败：{video}")
     return out_png
+
+
+# ---------------------------------------------------------------------------
+# 片名 / 片编号（2026-11-12）
+# 文件夹末尾的 MMDD_HHMMSS 就是这部片的稳定编号。以前两部片都叫
+# `segments-template`、下拉里只能靠「更新时间」猜是哪部；现在页面统一显示
+# 「片名 · #编号 · 文件夹」，编号 = 目录名后缀 = prefix 后缀，三者一一对应。
+# ---------------------------------------------------------------------------
+FILM_ID_RE = re.compile(r"(\d{4}_\d{6})$")
+PLACEHOLDER_TITLES = {"", "film", "segments-template", "segments_template",
+                      "未命名长片", "未命名", "untitled"}
+
+
+def film_id_of(folder, cfg=None):
+    """片编号 = 文件夹末尾的时间编号；历史片没编号就用 prefix 里的 / 目录名。"""
+    m = FILM_ID_RE.search(str(folder or ""))
+    if m:
+        return m.group(1)
+    m = FILM_ID_RE.search(str((cfg or {}).get("prefix") or ""))
+    if m:
+        return m.group(1)
+    return str((cfg or {}).get("film_id") or folder or "").strip()
+
+
+def film_display(title, film_id):
+    """占位标题（模板默认名）显示成「未命名 #编号」，保证每部片一眼可分。"""
+    t = str(title or "").strip()
+    if t.lower() in PLACEHOLDER_TITLES:
+        return f"未命名 #{film_id}" if film_id else "未命名"
+    return t
+
+
+def film_label(title, film_id, updated_text, done, segments, has_final):
+    """下拉选项文字：名字与编号绑在一起显示，查文件夹时能对上。"""
+    disp = film_display(title, film_id)
+    parts = [disp]
+    if (film_id and re.fullmatch(r"\d{4}_\d{6}", film_id)
+            and f"#{film_id}" not in disp):
+        parts.append(f"#{film_id}")
+    parts += [updated_text, f"{done}/{segments}段"]
+    if has_final:
+        parts.append("✓成片")
+    return " · ".join(str(p) for p in parts if p)
+
+
+def list_films(limit=80):
+    """扫描输出根下所有片（含 segments.json 的子目录），按「最近动过」倒序。
+
+    更新时间取 cfg / segments/*.mp4 / final/*.mp4 里最新的 mtime —— 只改提示词
+    和跑完一段都会反映出来，比单看 segments.json 更符合「我刚动过哪部片」。
+    status 每 3 秒被轮询一次，这里只读 json + stat，不做任何写操作。
+    """
+    root = os.environ.get("H3_FILMS_ROOT") or os.path.dirname(
+        os.path.dirname(os.path.abspath(DEFAULT_CFG)))
+    out = []
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return out
+    for ent in entries:
+        try:
+            if not ent.is_dir():
+                continue
+            cfg_path = os.path.join(ent.path, "segments.json")
+            if not os.path.isfile(cfg_path):
+                continue
+            with open(cfg_path, encoding="utf-8") as f:
+                c = json.load(f)
+            segs = c.get("segments") or []
+            prefix = str(c.get("prefix") or "")
+            ts = os.path.getmtime(cfg_path)
+            done = 0
+            sd = os.path.join(ent.path, "segments")
+            for sg in segs:
+                f = os.path.join(sd, f"{prefix}_{sg.get('id', '')}.mp4")
+                if os.path.isfile(f):
+                    done += 1
+                    ts = max(ts, os.path.getmtime(f))
+            has_final = False
+            fd = os.path.join(ent.path, "final")
+            if os.path.isdir(fd):
+                for f in os.scandir(fd):
+                    try:
+                        if f.is_file():
+                            ts = max(ts, f.stat().st_mtime)
+                            if f.name.lower().endswith(".mp4"):
+                                has_final = True
+                    except OSError:
+                        pass
+            fid = film_id_of(ent.name, c)
+            title = str(c.get("title") or ent.name)
+            updated_text = time.strftime("%m-%d %H:%M", time.localtime(ts))
+            out.append({
+                "path": os.path.abspath(cfg_path),
+                "dir": ent.name,
+                "title": title,
+                "film_id": fid,
+                "display": film_display(title, fid),
+                "label": film_label(title, fid, updated_text, done, len(segs),
+                                    has_final),
+                "search": " ".join((title, fid, ent.name, prefix)).lower(),
+                "prefix": prefix,
+                "updated": ts,
+                "updated_text": updated_text,
+                "segments": len(segs),
+                "done": done,
+                "has_final": has_final,
+            })
+        except Exception:
+            continue
+    out.sort(key=lambda x: x["updated"], reverse=True)
+    return out[:limit]
 
 
 def seg_status(cfg):
@@ -240,13 +504,24 @@ def seg_status(cfg):
             "first_frame": first if os.path.exists(first) else None,
             "last_frame": last if os.path.exists(last) else None,
             "link": sg.get("link"),
+            "head_override": sg.get("head") or "",
+            "tail_override": sg.get("tail") or "",
+            "ref_images": [{"path": p["path"], "comfy_name": p["comfy_name"],
+                            "label": p["label"], "exists": os.path.exists(p["path"])}
+                           for p in people_refs(cfg, sg)],
+            "refs_override": "ref_images" in sg,
+            "bg_plate": sg.get("bg_plate", cfg.get("bg_plate")) or "",
+            "bg_plate_path": sg.get("bg_plate_path", cfg.get("bg_plate_path")) or "",
+            "plate_override": "bg_plate" in sg,
             "mtime": os.path.getmtime(vid) if done else 0,
         })
     stale_from = None
     for i, item in enumerate(segs):
         if not item["done"]:
             continue
-        edited = cfg["segments"][i].get("updated_at", 0) > item["mtime"] + 1
+        edited = max(cfg["segments"][i].get("updated_at", 0),
+                     cfg.get("head_updated_at", 0),
+                     cfg.get("res_updated_at", 0)) > item["mtime"] + 1
         prev = segs[i-1]["last_frame"] if i > 0 else None
         # 转场模式(transition)的段首帧独立生成，上游尾帧变化不会让它失效
         lmode = (cfg["segments"][i].get("link") or {}).get("mode", "chain")
@@ -261,61 +536,156 @@ def seg_status(cfg):
     finals = []
     if os.path.isdir(FINAL_DIR):
         finals = sorted(f for f in os.listdir(FINAL_DIR) if f.lower().endswith(".mp4"))
+    folder = os.path.basename(ROOT)
+    fid = film_id_of(folder, cfg)
     return {
         "title": cfg.get("title", ""),
+        "film_id": fid,
+        "film_display": film_display(cfg.get("title"), fid),
+        "folder": folder,
         "cfg": CFG_PATH,
         "prefix": cfg.get("prefix", ""),
-        "join_mode": cfg.get("join_mode", "dissolve"),
+        "join_mode": cfg.get("join_mode", "auto"),
+        "join_updated_at": cfg.get("join_updated_at", 0),
+        "films": list_films(),
+        "megapixels": float(cfg.get("megapixels", DEFAULT_MEGAPIXELS)),
+        "aspect_ratio": cfg.get("aspect_ratio") or DEFAULT_ASPECT_RATIO,
         "chain_first_frame": bool(cfg.get("chain_first_frame")),
+        "head": cfg.get("head", ""),
+        "tail": cfg.get("tail", ""),
+        "ref_images": [{"path": p["path"], "comfy_name": p["comfy_name"],
+                        "label": p["label"], "exists": os.path.exists(p["path"])}
+                       for p in people_refs(cfg)],
+        "bg_plate_path": cfg.get("bg_plate_path") or "",
+        "bg_plate_exists": bool(cfg.get("bg_plate")
+                                and os.path.exists(cfg.get("bg_plate_path")
+                                                   or os.path.join(REF_DIR, "bg_plate.png"))),
         "segments": segs,
         "finals": finals,
     }
 
 
 def cmd_set(cfg, args):
-    """面板改 seed / 提示词 / 首帧覆盖：直接写回分镜 json，并打 updated_at 让状态判 stale。"""
-    idx = args.seg - 1
-    if not (0 <= idx < len(cfg["segments"])):
-        P.die(f"段号越界：{args.seg}（共 {len(cfg['segments'])} 段）")
-    sg = cfg["segments"][idx]
+    """面板改 seed / 提示词 / 首尾帧 / 承接 / 全局 head+tail：直接写回分镜 json。
+
+    全局字段（`--head` / `--tail` / `--megapixels` / `--aspect-ratio` / `--join`）不要求 `--seg`。
+    `--join` 只写 cfg["join_mode"]，不打 updated_at —— 拼接方式变了不需要重出画面。
+    head/tail 改动打 `head_updated_at`，分辨率改动打 `res_updated_at`；两者都会让
+    所有已完成段被判 stale —— 全局参数一变，全片画面都得重出，不能只标某一段。
+    """
     changed = []
-    if args.seed is not None:
-        sg["seed"] = int(args.seed)
-        changed.append(f"seed={sg['seed']}")
-    if args.body is not None:
-        sg["body"] = args.body
-        changed.append("body")
-    if args.first_frame is not None:
-        if args.first_frame.strip().lower() in ("", "none", "auto", "clear"):
-            sg.pop("first_frame_override", None)
-            changed.append("first_frame=自动承接上段尾帧")
+
+    def _global_text(value):
+        return "" if str(value).strip().lower() in ("", "clear", "none") else value
+
+    if args.head is not None:
+        cfg["head"] = _global_text(args.head)
+        changed.append("全局 head")
+    if args.tail is not None:
+        cfg["tail"] = _global_text(args.tail)
+        changed.append("全局 tail")
+    if args.head is not None or args.tail is not None:
+        cfg["head_updated_at"] = time.time()
+
+    if args.megapixels is not None:
+        mp = float(args.megapixels)
+        if not 0.1 <= mp <= 2.0:
+            P.die(f"megapixels 必须在 0.1~2.0 之间（8GB 显存建议 0.5 左右）：{mp}")
+        cfg["megapixels"] = round(mp, 3)
+        changed.append(f"megapixels={cfg['megapixels']}")
+    if args.aspect_ratio is not None:
+        ar = str(args.aspect_ratio).strip()
+        if ar not in ASPECT_RATIO_CHOICES:
+            P.die(f"未知画幅比例：{ar}\n    可选：" + " / ".join(ASPECT_RATIO_CHOICES))
+        cfg["aspect_ratio"] = ar
+        changed.append(f"aspect_ratio={ar}")
+    if args.megapixels is not None or args.aspect_ratio is not None:
+        cfg["res_updated_at"] = time.time()
+
+    join = getattr(args, "join", None)   # 旧调用方/单测手工构造的 Namespace 可能没这个字段
+    if join is not None:
+        if join not in ("black", "dissolve", "cut", "auto"):
+            P.die(f"未知 join：{join}（应为 black / dissolve / cut / auto）")
+        cfg["join_mode"] = join
+        changed.append(f"join_mode={join}")
+
+    if args.ref_video is not None:
+        rv = str(args.ref_video).strip()
+        if rv.lower() in ("", "none", "clear"):
+            cfg.pop("ref_video", None)
+            changed.append("ref_video=移除")
         else:
-            sg["first_frame_override"] = args.first_frame.strip()
-            changed.append(f"first_frame={sg['first_frame_override']}")
-    if args.last_frame is not None:
-        if args.last_frame.strip().lower() in ("", "none", "auto", "clear"):
-            sg.pop("last_frame_override", None)
-            changed.append("last_frame=解除锁定")
-        else:
-            sg["last_frame_override"] = args.last_frame.strip()
-            changed.append(f"last_frame={sg['last_frame_override']}（需重出本段）")
-    if args.link_mode is not None:
-        if args.link_mode not in ("chain", "transition"):
-            P.die(f"未知 link_mode：{args.link_mode}（应为 chain / transition）")
-        sg.setdefault("link", {})
-        sg["link"]["mode"] = args.link_mode
-        changed.append(f"link.mode={args.link_mode}")
-    if args.link_transition is not None:
-        if args.link_transition not in ("dissolve", "black", "cut"):
-            P.die(f"未知 link.transition：{args.link_transition}（应为 dissolve / black / cut）")
-        sg.setdefault("link", {})
-        sg["link"]["transition"] = args.link_transition
-        changed.append(f"link.transition={args.link_transition}")
+            if not os.path.isfile(rv):
+                P.die(f"ref_video 文件不存在：{rv}")
+            dst_name = f"{cfg['prefix']}_refvideo.mp4"
+            shutil.copy(rv, os.path.join(P.COMFY_INPUT, dst_name))
+            cfg["ref_video"] = dst_name
+            changed.append(f"ref_video={dst_name}（已复制进 ComfyUI input）")
+
+    idx = args.seg - 1
+    seg_args = (args.seed, args.body, args.first_frame, args.last_frame,
+                args.link_mode, args.link_transition, args.seg_head, args.seg_tail)
+    if any(v is not None for v in seg_args):
+        if not (0 <= idx < len(cfg["segments"])):
+            P.die(f"段号越界：{args.seg}（共 {len(cfg['segments'])} 段）")
+        sg = cfg["segments"][idx]
+        seg_changed = []
+        if args.seed is not None:
+            sg["seed"] = int(args.seed)
+            seg_changed.append(f"seed={sg['seed']}")
+        if args.body is not None:
+            sg["body"] = args.body
+            seg_changed.append("body")
+        if args.seg_head is not None:
+            head_text = _global_text(args.seg_head)
+            if head_text:
+                sg["head"] = head_text
+                seg_changed.append("段级 head（整段覆盖全局）")
+            else:
+                sg.pop("head", None)
+                seg_changed.append("段级 head=回落到全局")
+        if args.seg_tail is not None:
+            tail_text = _global_text(args.seg_tail)
+            if tail_text:
+                sg["tail"] = tail_text
+                seg_changed.append("段级 tail（覆盖全局画风）")
+            else:
+                sg.pop("tail", None)
+                seg_changed.append("段级 tail=回落到全局")
+        if args.first_frame is not None:
+            if args.first_frame.strip().lower() in ("", "none", "auto", "clear"):
+                sg.pop("first_frame_override", None)
+                seg_changed.append("first_frame=自动承接上段尾帧")
+            else:
+                sg["first_frame_override"] = args.first_frame.strip()
+                seg_changed.append(f"first_frame={sg['first_frame_override']}")
+        if args.last_frame is not None:
+            if args.last_frame.strip().lower() in ("", "none", "auto", "clear"):
+                sg.pop("last_frame_override", None)
+                seg_changed.append("last_frame=解除锁定")
+            else:
+                sg["last_frame_override"] = args.last_frame.strip()
+                seg_changed.append(f"last_frame={sg['last_frame_override']}（需重出本段）")
+        if args.link_mode is not None:
+            if args.link_mode not in ("chain", "transition"):
+                P.die(f"未知 link_mode：{args.link_mode}（应为 chain / transition）")
+            sg.setdefault("link", {})
+            sg["link"]["mode"] = args.link_mode
+            seg_changed.append(f"link.mode={args.link_mode}")
+        if args.link_transition is not None:
+            if args.link_transition not in ("dissolve", "black", "cut"):
+                P.die(f"未知 link.transition：{args.link_transition}（应为 dissolve / black / cut）")
+            sg.setdefault("link", {})
+            sg["link"]["transition"] = args.link_transition
+            seg_changed.append(f"link.transition={args.link_transition}")
+        if seg_changed:
+            sg["updated_at"] = time.time()
+            changed += [f"段{args.seg} {c}" for c in seg_changed]
+
     if changed:
-        sg["updated_at"] = time.time()
         with open(CFG_PATH, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
-    print(f"段 {args.seg} 已更新：{', '.join(changed) or '无改动'}", flush=True)
+    print(f"已更新：{', '.join(changed) or '无改动'}", flush=True)
 
 
 def run_seg(cfg, idx):
@@ -366,12 +736,15 @@ def run_seg(cfg, idx):
     probe(dst)
     shots(dst, seg["id"])
     extract_first_frame(dst, os.path.join(REF_DIR, f"{cfg['prefix']}_s{idx+1:02d}_first.png"))
-    # 把尾帧备给下一段：仅当下一段是「链式承接」时才需要（转场模式下游独立，无需共享）
+    # 尾帧图始终重抽：页面缩略图与验收都靠它，重跑本段必须覆盖。
+    # 以前只在「下一段是链式承接」时才抽，导致最后一段 / 后接转场的段重跑后
+    # refs 里留着上一版的尾帧，看起来像「尾帧没更新」。
+    last_name = f"{cfg['prefix']}_s{idx+1:02d}_last.png"
+    last_local = extract_last_frame(dst, os.path.join(REF_DIR, last_name))
+    # 只有下一段确实是链式承接时，才额外拷一份进 ComfyUI input 供 first_frame 使用
     if idx + 1 < len(cfg["segments"]):
         nlink = cfg["segments"][idx + 1].get("link") or {}
         if nlink.get("mode", "chain") != "transition":
-            last_name = f"{cfg['prefix']}_s{idx+1:02d}_last.png"
-            last_local = extract_last_frame(dst, os.path.join(REF_DIR, last_name))
             shutil.copy(last_local, os.path.join(P.COMFY_INPUT, last_name))
             print(f"    尾帧已备给下一段（链式）：{last_name}", flush=True)
     return dst
@@ -421,9 +794,17 @@ def has_audio(path):
     return bool(out.strip())
 
 
+# 当前段的参考视频（喂 ref_videos 软参考）：build_wf 写入，to_api 读取
+REF_VIDEO_PATH = None
+REF_VIDEO_SECONDS = None
+
+
 def to_api(wf):
     """pipeline.build_prompt 对 MiniMaxH3AudioConditioningT8 会错位（UI 里转成输入的
-    宽/高/时长仍在 widgets_values 里占位），这里单独重写该节点，其余节点按原样用。"""
+    宽/高/时长仍在 widgets_values 里占位），这里单独重写该节点，其余节点按原样用。
+
+    ref_images 槽位顺序 = 人物 0..N-1，空镜板排最后的第 N 位（见 people_refs）。
+    """
     p = P.build_prompt(wf)
     if "238" in p:
         inp = {
@@ -445,13 +826,38 @@ def to_api(wf):
             "allow_above_reference_area": True,
             "ref_images.ref_image_0": [str(N_IMAGE), 0],
         }
+        n_ppl = count_people_in_wf(wf)
+        for i in range(1, n_ppl):
+            node = person_node(i)
+            if str(node) in p:
+                inp[f"ref_images.ref_image_{i}"] = [str(node), 0]
         if str(N_PLATE) in p:
-            inp["ref_images.ref_image_1"] = [str(N_PLATE), 0]
+            inp[f"ref_images.ref_image_{n_ppl}"] = [str(N_PLATE), 0]
         if str(N_FIRST) in p:
             inp["first_frame"] = [str(N_FIRST), 0]
         if str(N_LAST) in p:
             inp["last_frame"] = [str(N_LAST), 0]
         p["238"]["inputs"] = inp
+        if REF_VIDEO_PATH:
+            vname = os.path.basename(REF_VIDEO_PATH)
+            # 帧数上限跟着截取秒数走：int(秒*24)+10，至少 200，避免把参考视频截短
+            cap = 200
+            if REF_VIDEO_SECONDS:
+                cap = max(200, int(REF_VIDEO_SECONDS * 24) + 10)
+            p["900"] = {
+                "class_type": "VHS_LoadVideo",
+                "inputs": {
+                    "video": vname,
+                    "force_rate": 24,
+                    "custom_width": 0,
+                    "custom_height": 0,
+                    "frame_load_cap": cap,
+                    "skip_first_frames": 0,
+                    "select_every_nth": 1,
+                    "format": "None",
+                },
+            }
+            p["238"]["inputs"]["ref_videos.ref_video_0"] = ["900", 0]
     return p
 
 
@@ -484,6 +890,7 @@ def submit(api, timeout=5400):
 
     t0 = time.time()
     last = -1
+    empty_q = 0
     while time.time() - t0 < timeout:
         time.sleep(5)
         try:
@@ -494,26 +901,51 @@ def submit(api, timeout=5400):
         if pid in hist:
             st = hist[pid].get("status", {})
             if st.get("status_str") == "error":
+                err = ""
                 for m in st.get("messages", []):
                     if m[0] == "execution_error":
+                        err = str(m[1].get("exception_message", ""))
                         print(json.dumps(m[1], ensure_ascii=False)[:1500], flush=True)
-                P.die("执行出错")
+                if "media tag validation failed" in err or "is not connected" in err:
+                    P.die(
+                        "执行出错：提示词里的 <Picture N> 编号与本段实际接上的媒体数对不上。\n"
+                        f"    ComfyUI 原话：{err[:300]}\n"
+                        "    这不是并行 / 显存问题，原样重跑这一段还会挂。修法二选一：\n"
+                        "      1) 在导演台补上传缺失的参考图（最常见是空镜板没传），让编号数量对上；\n"
+                        "      2) 把 head/body 里写死的 <Picture N> 改成 {pic:1} / {pic:plate} /\n"
+                        "         {pic?:first} 占位符，由 seg_prompt 按本段真实接线自动换算。")
+                P.die("执行出错" + (f"：{err[:300]}" if err else ""))
             return hist[pid].get("outputs", {})
+        # 队列状态：既给进度条用，也用来识别「任务已从队列消失」的僵尸等待
+        nr = np = -1
+        try:
+            with urllib.request.urlopen(P.API + "/queue", timeout=10) as r:
+                qd = json.load(r)
+            nr, np = len(qd["queue_running"]), len(qd["queue_pending"])
+        except Exception:
+            pass
+        if nr == 0 and np == 0:
+            empty_q += 1
+            if empty_q >= 6:
+                P.die(
+                    f"任务 {pid} 既不在执行队列、也不在 history 里（连续 {empty_q * 5} 秒）。\n"
+                    "    多半是 ComfyUI 中途重启清掉了 history，再等只会空转到 5400s 超时。\n"
+                    "    请确认桌面版 ComfyUI 在线，然后重跑这一段。")
+        else:
+            empty_q = 0
         el = int(time.time() - t0)
         if el // 30 > last:
             last = el // 30
-            q = ""
-            try:
-                with urllib.request.urlopen(P.API + "/queue", timeout=10) as r:
-                    qd = json.load(r)
-                q = f" 队列 running={len(qd['queue_running'])} pending={len(qd['queue_pending'])}"
-            except Exception:
-                pass
+            q = f" 队列 running={nr} pending={np}" if nr >= 0 else ""
             print(f"    ...渲染中 {el//60}分{el%60:02d}秒{q}", flush=True)
     P.die(f"超时 {timeout}s")
 
 
 def cmd_ref(cfg):
+    """Krea2 造「第 1 个人物」参考图。启用 ref_images 多人数组后不再适用。"""
+    if not cfg.get("ref_image") or not cfg.get("comfy_ref_name"):
+        P.die("当前 cfg 用 ref_images 数组（多人），没有 ref_image 单图字段；"
+              "请自备人物图放进 refs/ 并写进 ref_images，不要用 ref 命令。")
     os.makedirs(REF_DIR, exist_ok=True)
     out = cfg["ref_image"]
     if os.path.exists(out) and "--force" not in sys.argv:
@@ -544,14 +976,47 @@ def cmd_plate(cfg):
 
 
 def ensure_ref_in_input(cfg):
-    dst = os.path.join(P.COMFY_INPUT, cfg["comfy_ref_name"])
-    if not os.path.exists(dst) or os.path.getmtime(cfg["ref_image"]) > os.path.getmtime(dst):
-        shutil.copy(cfg["ref_image"], dst)
-    if cfg.get("bg_plate"):
-        src = cfg.get("bg_plate_path") or os.path.join(REF_DIR, "bg_plate.png")
-        dst2 = os.path.join(P.COMFY_INPUT, cfg["bg_plate"])
-        if os.path.exists(src) and (not os.path.exists(dst2)
-                                    or os.path.getmtime(src) > os.path.getmtime(dst2)):
+    """把人物参考图 + 空镜板按 comfy_name 拷进 ComfyUI input。
+
+    源文件不见了要在这里就喊出来。以前是静默跳过，等 ComfyUI 校验时抛
+    `Invalid image file: xxx.png`（400 prompt_outputs_failed_validation），
+    从那条报错完全看不出是「cfg 里有一条指向不存在路径的人物参考」。
+    段级 seg["ref_images"] 覆盖的图也一并检查/拷贝（按 comfy_name 去重）。
+    """
+    seen = {}
+    for refs in [people_refs(cfg)] + [people_refs(cfg, s)
+                                      for s in cfg.get("segments", [])]:
+        for pp in refs:
+            seen[pp["comfy_name"]] = pp
+    ppl = list(seen.values())
+    if not ppl:
+        P.die("cfg 里没有任何人物参考图。网页上「+ 添加人物」传一张，"
+              "或改 json 的 ref_images / ref_image。")
+    for pp in ppl:
+        src, dst = pp["path"], os.path.join(P.COMFY_INPUT, pp["comfy_name"])
+        if not os.path.isfile(src):
+            P.die(f"参考图不存在：{pp['label']} → {src}\n"
+                  f"    ref_images 里有这一条但文件没了。网页上重新传一张，"
+                  f"或把它从 json 的 ref_images 里删掉。")
+        if not pp.get("comfy_name"):
+            P.die(f"参考图缺 comfy_name：{src}（ref_images 每项都要有 path/comfy_name）")
+        if not os.path.exists(dst) or os.path.getmtime(src) > os.path.getmtime(dst):
+            shutil.copy(src, dst)
+    # 段级 bg_plate 覆盖：每段可以有自己的空镜板（通常仍指向同一块，避免场景漂）
+    plates = [(cfg.get("bg_plate"), cfg.get("bg_plate_path"))]
+    plates += [(s.get("bg_plate", cfg.get("bg_plate")),
+                s.get("bg_plate_path", cfg.get("bg_plate_path")))
+               for s in cfg.get("segments", [])]
+    for name, src in plates:
+        if not name:
+            continue
+        src = src or os.path.join(REF_DIR, "bg_plate.png")
+        dst2 = os.path.join(P.COMFY_INPUT, name)
+        if not os.path.isfile(src):
+            P.die(f"空镜板不存在：{src}\n"
+                  f"    写了 bg_plate={name} 但源图没了。"
+                  f"网页上重新传空镜板，或把 bg_plate / bg_plate_path 删掉（不带空镜板也能跑）。")
+        if not os.path.exists(dst2) or os.path.getmtime(src) > os.path.getmtime(dst2):
             shutil.copy(src, dst2)
 
 
@@ -576,9 +1041,13 @@ def _normalize_clip(path, w, h, fps, out_path):
     cmd = ["ffmpeg", "-y", "-v", "error", "-i", path]
     if not has_audio(path):
         cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+    # -af apad 把音轨补成无限长，-shortest 才会以「视频流结束」为准。
+    # 否则 H3 出的 mp4 音轨常比视频短一帧，-shortest 会截掉视频最后一帧：
+    # 链式段丢的正好是承接下一段的尾帧，硬切时接缝会凭空多一次跳变。
     cmd += ["-vf", f"scale={w}:{h}:flags=lanczos,fps={fps},setsar=1,format=yuv420p",
             "-c:v", "libx264", "-crf", "14", "-preset", "slow", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-shortest", out_path]
+            "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+            "-af", "apad", "-shortest", out_path]
     subprocess.run(cmd, check=True)
     return out_path
 
@@ -589,6 +1058,16 @@ def cmd_merge(cfg, join=None):
     join 非 None 时强制全片统一为该类型；否则按每个分段的 link 决定本段之前的接缝。
     xfade(acrossfade) 与 concat 必须分开构建，否则同一 filtergraph 会互相拖死。
     """
+    if join is None:                       # 命令行没给 --join 时按片配置走
+        join = cfg.get("join_mode") or "auto"
+    elif join != cfg.get("join_mode"):
+        # 面板显式选择写回片配置：换浏览器 / 换地址访问都能恢复，
+        # 命令行 merge 不带 --join 时也沿用。不打 updated_at（不影响已生成画面）。
+        cfg["join_mode"] = join
+        cfg["join_updated_at"] = time.time()
+        with open(CFG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        print(f"    拼接方式已写入片配置：join_mode={join}", flush=True)
     os.makedirs(FINAL_DIR, exist_ok=True)
     segs = [os.path.join(SEG_DIR, f"{cfg['prefix']}_{s['id']}.mp4") for s in cfg["segments"]]
     for s in segs:
@@ -868,10 +1347,14 @@ def cmd_import(a):
             item["link"] = {"mode": mode, "transition": "dissolve"}
         segments.append(item)
 
+    fid = film_id_of(os.path.basename(out_dir), {"prefix": prefix})
+    final_name = (f"{title}_{fid}_成片.mp4" if re.fullmatch(r"\d{4}_\d{6}", fid)
+                  else f"{title}_成片.mp4")
     cfg = {
         "title": title,
+        "film_id": fid,
         "prefix": prefix,
-        "final_name": f"{title}_成片.mp4",
+        "final_name": final_name,
         "workflow": a.workflow or DEFAULT_WORKFLOW,
         "ref_image": ref_path or "",
         "comfy_ref_name": (f"{prefix}_{os.path.basename(ref_path)}" if ref_path else ""),
@@ -881,7 +1364,7 @@ def cmd_import(a):
         "seconds": seconds,
         "length": int(17 * round(seconds * fps / 17) + 5),
         "fps": fps,
-        "join_mode": "dissolve",
+        "join_mode": "auto",
         "join_dissolve_seconds": 0.25,
         "chain_first_frame": True,
         "head": a.head or _auto_head(data),
@@ -910,6 +1393,10 @@ def main():
     ap.add_argument("--seg", type=int, default=0, help="set 命令的目标段号（1 起）")
     ap.add_argument("--seed", type=int, default=None, help="set：换 seed 重出用")
     ap.add_argument("--body", default=None, help="set：替换该段提示词正文")
+    ap.add_argument("--seg-head", dest="seg_head", default=None,
+                    help="set：本段 head（整段覆盖全局，不是追加）；clear=删掉、回落到全局")
+    ap.add_argument("--seg-tail", dest="seg_tail", default=None,
+                    help="set：本段 tail（覆盖全局 tail，用于单段单独调画风）；clear=删掉、回落到全局")
     ap.add_argument("--first-frame", dest="first_frame", default=None,
                     help="set：指定本段首帧图文件名；auto/clear 恢复自动承接")
     ap.add_argument("--last-frame", dest="last_frame", default=None,
@@ -935,6 +1422,12 @@ def main():
                     help="import：起始 seed（第 i 段用 base+i*37）")
     ap.add_argument("--seconds", type=float, default=None, help="import：全片每段时长（秒）")
     ap.add_argument("--workflow", default=None, help="import：base workflow 路径")
+    ap.add_argument("--ref-video", dest="ref_video", default=None,
+                    help="set：把某视频作为 ref_videos 软参考（动作/机位），自动复制到 ComfyUI input；clear/none 移除")
+    ap.add_argument("--megapixels", type=float, default=None,
+                    help="set：全局输出分辨率（百万像素，8GB 显存建议 0.5 左右）")
+    ap.add_argument("--aspect-ratio", dest="aspect_ratio", default=None,
+                    help="set：全局画幅比例（如 '16:9 (Widescreen)'）")
     a = ap.parse_args()
     if a.cmd == "import":
         cmd_import(a)
@@ -947,8 +1440,17 @@ def main():
     elif a.cmd == "plate":
         cmd_plate(cfg)
     elif a.cmd == "graph":
-        for s in cfg["segments"]:
-            check_graph(cfg, s)
+        # 链式段运行时才拿到上段尾帧（seg["first_frame"]），不模拟的话 Picture 编号
+        # 会按「没接首帧」算，和真跑差一位——校验就没意义了。这里补一个虚拟首帧。
+        for i, s in enumerate(cfg["segments"]):
+            probe = dict(s)
+            mode = (s.get("link") or {}).get("mode", "chain")
+            if (i > 0 and cfg.get("chain_first_frame") and mode == "chain"
+                    and not probe.get("first_frame")):
+                probe["first_frame"] = f"(虚拟)_{cfg['prefix']}_s{i:02d}_last.png"
+            if i > 0 and mode == "transition":
+                probe.pop("first_frame", None)
+            check_graph(cfg, probe)
     elif a.cmd == "seg":
         ensure_ref_in_input(cfg)
         run_seg(cfg, a.idx - 1)
@@ -961,9 +1463,11 @@ def main():
                 if cfg.get("chain_first_frame"):
                     ln = f"{cfg['prefix']}_s{i+1:02d}_last.png"
                     dst_in = os.path.join(P.COMFY_INPUT, ln)
-                    if not os.path.exists(dst_in):
-                        extract_last_frame(dst, os.path.join(REF_DIR, ln))
-                        shutil.copy(os.path.join(REF_DIR, ln), dst_in)
+                    dst_ref = os.path.join(REF_DIR, ln)
+                    # refs 里的那份也要在：页面缩略图读它，缺了会显示旧图或空白
+                    if not os.path.exists(dst_in) or not os.path.isfile(dst_ref):
+                        extract_last_frame(dst, dst_ref)
+                        shutil.copy(dst_ref, dst_in)
                         print(f"    补抽尾帧：{ln}", flush=True)
                 continue
             run_seg(cfg, i)
