@@ -19,6 +19,8 @@
   #filmFilter{width:132px;min-width:0;font-size:12px;padding:4px 6px}
   #filmUpdated{font-size:11px;color:var(--dim);white-space:nowrap}
   #renameBtn{font-size:12px;padding:4px 9px;white-space:nowrap}
+  #delBtn{font-size:12px;padding:4px 9px;white-space:nowrap;color:#fff;background:#c0392b;border:1px solid #922b21;border-radius:5px;cursor:pointer}
+  #delBtn:hover{background:#e74c3c}
   .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 16px;
     background:var(--panel2);border-bottom:1px solid var(--line)}
   .bar .grow{flex:1}
@@ -176,6 +178,7 @@
          title="输入片名或文件夹编号即可过滤下拉；清空显示全部（按最近改动排序）">
   <select id="filmSel" title="选择片子：片名 · #编号 · 更新时间 · 进度"></select>
   <button id="renameBtn" title="给本片起名字：片名、文件夹名、成片文件名都会带上同一个编号">改名</button>
+  <button id="delBtn" title="删除整部片：删掉它的文件夹（含分段、成片、参考图）。删除前需输入片名确认，不可恢复">删除</button>
   <span id="filmUpdated" title="本片最近改动时间"></span>
   <div class="cfg" id="cfgLabel">未选择片</div>
   <button id="manualBtn" title="打开完整使用手册（新窗口）">使用手册</button>
@@ -800,6 +803,52 @@ $("renameBtn").addEventListener("click", async () => {
     say(`已改名：${r.title} · #${r.film_id} · 文件夹 ${r.dir}`
       + (r.final_renamed ? "（成片文件同步改名）" : ""), "ok");
   } catch (e) { say("改名失败：" + e.message, "error"); }
+});
+
+/* ---------- 删除整部片：删文件夹，删除前输入片名二次确认 ---------- */
+$("delBtn").addEventListener("click", async () => {
+  if (!state.cfg) { say("先选一部片再删除", "error"); return; }
+  // 优先从下拉列表里找当前片，找不到再退回已加载的 cfg 数据
+  const f = (state.films || []).find((x) => normPath(x.path) === normPath(state.cfg))
+         || (state.data && { title: state.data.title, film_id: state.data.film_id,
+                             dir: state.data.dir })
+         || {};
+  const title = String(f.title || "").trim();
+  const fid = String(f.film_id || "");
+  const dir = String(f.dir || "");
+  const confirmText = title || fid || dir;
+  if (!confirmText) { say("找不到这部片的名字，无法确认删除", "error"); return; }
+  const typed = window.prompt(
+    "⚠ 删除后不可恢复，整部片文件夹会被直接删掉。\n\n"
+    + `片名：${title || "（无）"}\n编号：#${fid || "—"}\n文件夹：${dir || "—"}\n\n`
+    + `请输入下面的名字以确认删除：\n「${confirmText}」`,
+    "");
+  if (typed === null) return;                                   // 取消
+  if (typed.trim() !== confirmText.trim()) {
+    say("输入的名字不一致，已取消删除", "error"); return;
+  }
+  try {
+    const r = await apiJson("/h3-long-video/selflift/delete", { cfg: state.cfg });
+    const deletedPath = state.cfg;
+    // 清掉这部片的页面态，避免 pump 还指向已删目录
+    state.queue = null; state.waiting = null; state.busy = false;
+    state.cancelled = false; state.merged = false;
+    state.cardSig = null; state.filmSig = null; state.resDirty = false;
+    state.joinTouched = false; state.mediaNonce = 0;
+    state.cfg = "";
+    if (localStorage.getItem(KEY) === deletedPath) localStorage.removeItem(KEY);
+    const u = new URL(location.href);
+    u.searchParams.delete("cfg");
+    history.replaceState(null, "", u);
+    await loadFilms();
+    if (state.films.length) {
+      await selectFilm(state.films[0].path, { silent: true });
+      say(`已删除：「${r.dir}」 · 已切到 ${state.films[0].title}`, "ok");
+    } else {
+      say(`已删除：「${r.dir}」 · 没有其它片了`, "ok");
+      setTimeout(() => location.reload(), 800);
+    }
+  } catch (e) { say("删除失败：" + e.message, "error"); }
 });
 
 $("filmSel").addEventListener("change", async () => {
