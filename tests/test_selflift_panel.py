@@ -49,29 +49,278 @@ class TestSelfLiftPanel(unittest.TestCase):
         routes = FakeRoutes()
         SP.register_routes(routes, FakeWeb())
         urls = {path for _, path in routes.paths}
-        self.assertEqual(len(urls), 20, f"路由数不对：{routes.paths}")
+        self.assertEqual(len(urls), 23, f"路由数不对：{routes.paths}")
         for suffix in ("status", "set", "run", "merge", "init", "upload", "frame",
                        "media", "insert", "refimg", "import", "preview", "template",
-                       "refvideo", "rename", "films", "delete", "runall"):
+                       "refvideo", "rename", "films", "delete", "runall",
+                       "global", "apply-global", "export"):
             self.assertIn(f"/h3-long-video/selflift/{suffix}", urls)
         self.assertIn("/h3-long-video/app", urls)
 
     def test_download_template_is_importable(self):
-        """下载的模板必须是能直接导入的合法 JSON，且字段说明齐全。"""
+        """下载的模板只含内容层且能直接导入；约束层不在模板里重复。"""
         import selflift_schema as SCHEMA
         tpl = SCHEMA.build_template()
         json.dumps(tpl, ensure_ascii=False)          # 必须可序列化
         self.assertTrue(tpl["_字段说明"], "模板缺少 _字段说明")
-        for key in ("seconds", "megapixels", "head", "tail", "segments[].body",
-                    "segments[].link.mode", "segments[].link.transition"):
+        for key in ("title", "story", "ref_images", "bg_plate_path",
+                    "segments[].body", "segments[].link.mode",
+                    "segments[].link.transition"):
             self.assertIn(key, tpl["_字段说明"], f"字段说明缺 {key}")
-        data = SCHEMA.normalize(tpl)                 # 必须能被导入流程消化
+        # 分层后约束层字段不应出现在上传模板里
+        for key in ("head", "tail", "seconds", "fps", "megapixels", "quality"):
+            self.assertNotIn(key, tpl, f"上传模板不该带约束层字段 {key}")
+        self.assertIn("layering", tpl["_规则说明"], "规则说明要讲清分层")
+        data = SCHEMA.normalize(tpl, global_cfg=SCHEMA.load_global_cfg())
         self.assertEqual(len(data["segments"]), len(tpl["segments"]))
         self.assertTrue(data["segments"][1].get("link"), "模板里的 link 没被保留")
-        self.assertTrue(data["segments"][0].get("seed"), "段级 seed 没被保留")
-        # 模板改用 {pic:} 占位符后，head 只写一遍，不再要求每段都有段级 head
-        self.assertIn("{pic:", tpl["head"], "模板 head 应该用 {pic:N} 占位符")
-        self.assertIn("picture", tpl["_规则说明"])
+
+    def test_global_cfg_is_single_source_of_constraints(self):
+        """全局配置唯一：上传分镜里写 head/seconds 等同名字段应被忽略。"""
+        import selflift_schema as SCHEMA
+        g = SCHEMA.load_global_cfg()
+        self.assertIn("workflow", g)
+        self.assertIn("{pic?:first}", g["head"],
+                      "全局 head 要用可选占位符收住「严格继承尾帧」")
+        upload = {
+            "title": "测试片", "story": "短发女生，雨夜街道。",
+            "head": "想覆盖全局", "seconds": 99, "megapixels": 1.5,
+            "segments": [{"body": "第一段"}, {"body": "第二段"}],
+        }
+        d = SCHEMA.normalize(upload, global_cfg=g)
+        self.assertNotIn("想覆盖全局", d["head"])
+        self.assertIn("短发女生", d["head"], "story 要注入全局 head")
+        self.assertEqual(d["seconds"], g["seconds"])
+        self.assertEqual(d["megapixels"], g["megapixels"])
+        self.assertIn("seconds", d["_ignored"])
+        self.assertNotIn("{story}", d["head"])
+
+        # 可选占位符：首段没有 first_frame → 继承句整行消失；链式段出现并正确编号
+        import run_selflift as R
+        sys.path.insert(0, "D:/Comfy-Desktop/.workbuddy/skills/h3-long-video/scripts")
+        cfg = {"ref_images": [{"path": "a.png", "comfy_name": "a.png"}],
+               "bg_plate": "plate.png"}
+        head1 = R.expand_pic_tags(d["head"], R.pic_numbers(cfg, {}), "head")
+        head2 = R.expand_pic_tags(
+            d["head"], R.pic_numbers(cfg, {"first_frame": "s01_last.png"}), "head")
+        self.assertNotIn("真实首帧继承与时间连续性", head1)
+        self.assertNotIn("为本段首帧", head1)
+        self.assertIn("真实首帧继承与时间连续性", head2)
+        self.assertIn("<Picture 1> 为本段首帧", head2)
+        self.assertNotIn("{picblk", head1 + head2)
+
+    def test_picblk_block_is_atomic(self):
+        """多行可选段落必须整块消失/出现，不能只删带标记那一行。"""
+        import run_selflift as R
+        sys.path.insert(0, "D:/Comfy-Desktop/.workbuddy/skills/h3-long-video/scripts")
+        text = ("【固定】\n通用约束。\n\n"
+                "{picblk?:first}\n【首帧继承】\n"
+                "<Picture {pic?:first}> 为本段首帧。\n"
+                "首帧必须承接上一段真实结束状态，不得重新起步。\n{/picblk}\n\n"
+                "【收尾】禁止跳变。")
+        off = R.expand_pic_tags(text, {"1": 1}, "head")
+        on = R.expand_pic_tags(text, {"first": 1, "1": 2}, "head")
+        for label, out in (("无首帧", off), ("有首帧", on)):
+            self.assertNotIn("{pic", out, f"{label} 残留占位符")
+        self.assertNotIn("首帧继承", off)
+        self.assertNotIn("不得重新起步", off)
+        self.assertIn("【固定】", off)
+        self.assertIn("【收尾】", off)
+        self.assertIn("首帧继承", on)
+        self.assertIn("<Picture 1> 为本段首帧", on)
+        self.assertIn("不得重新起步", on)
+
+    def test_story_survives_apply_global(self):
+        """套用全局配置不能把本片设定弄丢：有 story 字段要保住，
+        老片把设定写在 head 里也要抢救回来，且 status / set 能读写它。"""
+        import asyncio
+        import json
+        import tempfile
+        from pathlib import Path
+        import selflift_schema as SCHEMA
+
+        class Req:
+            def __init__(self, p): self._p = p
+            async def json(self): return self._p
+
+        class W:
+            def json_response(self, data=None, status=200): return ("json", data, status)
+            def Response(self, **kw): return ("resp", kw)
+            def FileResponse(self, *a, **kw): return ("file", a, kw)
+
+        handlers = {}
+        class R:
+            def get(self, p):
+                def d(f): handlers[("GET", p)] = f; return f
+                return d
+            def post(self, p):
+                def d(f): handlers[("POST", p)] = f; return f
+                return d
+        SP.register_routes(R(), W())
+
+        # 纯函数：局部替换，不重置用户手改的 head
+        h = "【身份】不换人\n\n【本片设定】旧设定。\n\n【自定义】本片独有微调。"
+        out = SCHEMA.replace_story_in_head(h, "新设定")
+        self.assertIn("【自定义】本片独有微调", out)
+        self.assertIn("新设定", out)
+        self.assertNotIn("旧设定", out)
+        self.assertEqual(SCHEMA.extract_story_from_head(h), "旧设定。")
+        self.assertNotIn("【本片设定】", SCHEMA.replace_story_in_head(h, ""))
+
+        f = handlers[("POST", "/h3-long-video/selflift/apply-global")]
+        with tempfile.TemporaryDirectory(dir="D:/Comfy-Desktop/output") as td:
+            p = Path(td) / "segments.json"
+            cases = [
+                ("有 story 字段", {"title": "A", "story": "银发男生，雪夜站台。",
+                                  "head": "旧 head", "tail": "旧 tail",
+                                  "seconds": 5, "fps": 24}, "银发男生", "cfg"),
+                ("设定写在 head 里", {"title": "B", "head": "【身份】不换人\n\n"
+                                                    "【本片设定】红衣女生，雨夜便利店门口，冷调霓虹。",
+                                      "tail": "旧 tail", "seconds": 5, "fps": 24},
+                 "红衣女生", "recovered"),
+                ("完全没设定", {"title": "C", "head": "旧 head", "tail": "旧 tail",
+                                "seconds": 5, "fps": 24}, None, "none"),
+            ]
+            for label, base, expect_text, expect_src in cases:
+                p.write_text(json.dumps(base, ensure_ascii=False), encoding="utf-8")
+                _, d, _ = asyncio.run(f(Req({"cfg": str(p)})))
+                c = json.loads(p.read_text(encoding="utf-8"))
+                self.assertTrue(d["ok"], label)
+                self.assertEqual(d["story_source"], expect_src, label)
+                if expect_text:
+                    self.assertIn(expect_text, c["head"], label)
+                    self.assertIn(expect_text, c["story"], label)
+                else:
+                    self.assertNotIn("【本片设定】", c["head"], label)
+                    self.assertEqual(c["story"], "", label)
+
+            # 网页「保存全片提示词」带上 story 时，写字段 + 局部替换 head
+            orig = SP._run_async
+            async def fake_run(cfg, args, **kw): return "OK"
+            SP._run_async = fake_run
+            try:
+                base = {"title": "D", "story": "", "head": "【身份】不换人",
+                        "tail": "旧 tail", "seconds": 5, "fps": 24}
+                p.write_text(json.dumps(base, ensure_ascii=False), encoding="utf-8")
+                g = handlers[("POST", "/h3-long-video/selflift/set")]
+                asyncio.run(g(Req({"cfg": str(p), "seg": 0,
+                                   "head": "【身份】不换人",
+                                   "tail": "旧 tail",
+                                   "story": "黑衣男生，清晨码头。"})))
+                c = json.loads(p.read_text(encoding="utf-8"))
+                self.assertEqual(c["story"], "黑衣男生，清晨码头。")
+                self.assertIn("黑衣男生", c["head"])
+                self.assertIn("【身份】不换人", c["head"])
+                self.assertIn("head_updated_at", c)
+            finally:
+                SP._run_async = orig
+
+    def test_export_is_content_only(self):
+        """导出只含内容层，能无损再导入；全局约束与运行产物一律不带。"""
+        import asyncio
+        import json
+        import tempfile
+        from pathlib import Path
+        import selflift_schema as SCHEMA
+
+        class Req:
+            def __init__(self, q): self.query = q
+            async def json(self): return {}
+        class W:
+            def json_response(self, data=None, status=200): return ("json", data, status)
+            def Response(self, **kw): return ("resp", kw)
+            def FileResponse(self, *a, **kw): return ("file", a, kw)
+        handlers = {}
+        class R:
+            def get(self, p):
+                def d(f): handlers[("GET", p)] = f; return f
+                return d
+            def post(self, p):
+                def d(f): handlers[("POST", p)] = f; return f
+                return d
+        SP.register_routes(R(), W())
+
+        g = SCHEMA.load_global_cfg()
+        with tempfile.TemporaryDirectory(dir="D:/Comfy-Desktop/output") as td:
+            p = Path(td) / "segments.json"
+            cfg = dict(g)
+            cfg.update({
+                "title": "导出测试片", "story": "银发男生，雪夜站台。",
+                "ref_images": [{"path": "D:/x/a.png", "comfy_name": "a.png"}],
+                "bg_plate_path": "D:/x/p.png",
+                "film_id": "20261113", "prefix": "sl_x", "final_name": "x.mp4",
+                "length": 192, "head_updated_at": 1.0,
+                "segments": [
+                    {"id": "s01", "title": "进站", "body": "他走进站台。", "seed": 123,
+                     "updated_at": 2.0, "status": "done", "last_frame": "s01_last.png"},
+                    {"id": "s02", "title": "等车", "body": "他抬头看轨道尽头。",
+                     "link": {"mode": "chain"}, "video": "s02.mp4"},
+                ],
+            })
+            p.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+            _, out = asyncio.run(
+                handlers[("GET", "/h3-long-video/selflift/export")](Req({"cfg": str(p)})))
+            self.assertIn("attachment", out["headers"]["Content-Disposition"])
+            d = json.loads(out["text"])
+            self.assertEqual(set(d) & set(SCHEMA.GLOBAL_KEYS), set(),
+                             "导出里混进了全局约束字段")
+            for bad in ("head", "tail", "seconds", "fps", "megapixels",
+                        "film_id", "prefix", "length", "head_updated_at"):
+                self.assertNotIn(bad, d, f"导出不该带 {bad}")
+            self.assertEqual(d["story"], "银发男生，雪夜站台。")
+            self.assertEqual(len(d["segments"]), 2)
+            for seg in d["segments"]:
+                for bad in ("id", "status", "last_frame", "updated_at", "video"):
+                    self.assertNotIn(bad, seg, f"段里不该带运行产物 {bad}")
+            again = SCHEMA.normalize(d, global_cfg=g)
+            self.assertEqual(again["title"], "导出测试片")
+            self.assertIn("银发男生", again["head"])
+            self.assertEqual([s["body"] for s in again["segments"]],
+                             ["他走进站台。", "他抬头看轨道尽头。"])
+
+    def test_run_syncs_global_automatically(self):
+        """跑片前自动合并全局约束；没变化时不写文件、不标需重出。"""
+        import json
+        import tempfile
+        from pathlib import Path
+        import selflift_schema as SCHEMA
+
+        g = SCHEMA.load_global_cfg()
+        with tempfile.TemporaryDirectory(dir="D:/Comfy-Desktop/output") as td:
+            p = Path(td) / "segments.json"
+            story = "红衣女生，雨夜便利店。"
+            cfg = dict(g)
+            cfg.update({"title": "同步测试", "story": story,
+                        "head": SCHEMA.compose_head(g["head"], story),
+                        "segments": [{"id": "s01", "body": "她推门。"}]})
+            p.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+            before = p.read_bytes()
+            changed, got, _ = SP._sync_global_to_cfg(p)
+            self.assertEqual(changed, [])
+            self.assertEqual(got, story)
+            self.assertEqual(p.read_bytes(), before, "约束没变却改写了 cfg / 打了时间戳")
+
+            g2 = dict(g, tail=g["tail"] + "\n【新增约束】测试用。")
+            orig = SP._global_cfg
+            SP._global_cfg = lambda: g2
+            try:
+                changed2, story2, _ = SP._sync_global_to_cfg(p)
+            finally:
+                SP._global_cfg = orig
+            self.assertIn("tail", changed2)
+            c = json.loads(p.read_text(encoding="utf-8"))
+            self.assertIn("【新增约束】测试用。", c["tail"])
+            self.assertEqual(c["story"], story)
+            self.assertIn("head_updated_at", c)
+
+    def test_frontend_only_exposes_content_layer(self):
+        """页面上不再有公共约束的查看/编辑入口，只留内容层与导出。"""
+        html = (ROOT / "web" / "selflift_app.html").read_text(encoding="utf-8")
+        self.assertIn('id="exportBtn"', html)
+        self.assertIn('id="pbStory"', html)
+        for gone in ('id="globalBtn"', 'id="applyGlobalBtn"', 'id="globalModal"',
+                     'id="pbHead"', 'id="pbTail"', 'id="mSeconds"', 'id="mGlobal"'):
+            self.assertNotIn(gone, html, f"公共层入口 {gone} 还在页面上")
 
     def test_path_guard_rejects_traversal(self):
         for bad in ("C:/Windows/system32/config/SAM", "../../../etc/passwd", ""):

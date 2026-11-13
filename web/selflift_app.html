@@ -187,8 +187,9 @@
 
 <div class="bar">
   <button id="importBtn" class="primary">导入分镜 JSON</button>
-  <button id="tplBtn" title="下载一份带字段说明的 JSON 模板，照着改完再导入">下载模板</button>
+  <button id="tplBtn" title="下载一份只含内容层的 JSON 模板，照着改完再导入">下载模板</button>
   <button id="docBtn" title="看每个字段是什么意思">字段说明</button>
+  <button id="exportBtn" title="只导出内容层（片名 / 本片设定 / 参考图 / 分段），可直接再导入">导出内容 JSON</button>
   <span class="resctl" title="全片输出分辨率。改动后所有已完成段都会标记为需重出，一键跑全片会按新尺寸重出">
     <b>百万像素</b>
     <input type="range" id="mpRange" min="0.2" max="1.5" step="0.05" value="0.5">
@@ -231,21 +232,18 @@
 <div class="refbar" id="refbar"></div>
 <section class="promptbox" id="promptBox" hidden>
   <div class="pbbar">
-    <b>全片提示词</b>
-    <span class="dim">图片编号写 <code>{pic:1}</code> / <code>{pic:plate}</code>，只在某些段才成立的句子用
-      <code>{pic?:first}</code>（本段没接就整行去掉）——全片共用一份，不用逐段写</span>
+    <b>本片设定</b>
+    <span class="dim">只写这部片是什么：人物、地点、时间、天气、光线、情绪，写一次全片共用。
+      通用约束由全局配置在跑片时自动加入，不用你填、也不用你看</span>
     <span class="grow"></span>
     <button id="pbToggle">收起</button>
   </div>
   <div class="pbbody">
-    <label>head · 全片身份与画风锚（拼在每段正文之前）
-      <textarea id="pbHead" rows="9" spellcheck="false"></textarea></label>
-    <label>tail · 画风 / 禁止项 / 段首尾衔接锚（拼在每段正文之后）
-      <textarea id="pbTail" rows="3" spellcheck="false"></textarea></label>
+    <label>本片设定（story）
+      <textarea id="pbStory" rows="2" spellcheck="false" placeholder="例：一位短发女生穿深灰风衣，深夜下着小雨的便利店门口，湿沥青反着粉蓝霓虹，冷调、安静。"></textarea></label>
     <div class="row">
-      <button id="pbSave" class="primary">保存全片提示词</button>
+      <button id="pbSave" class="primary">保存本片设定</button>
       <span class="dim" id="pbState"></span>
-      <span class="dim" id="pbCover"></span>
     </div>
   </div>
 </section>
@@ -267,21 +265,30 @@
 
 <div class="modal hidden" id="modal">
   <div class="dialog">
-    <h2>导入分镜 JSON</h2>
-    <p>支持三种：SelfLift 的 <code>segments[].body</code>、旧 Director 分镜（<code>prompt_segment</code> / <code>shot</code>+<code>open_action</code> …）、
-       或者一整段长文本（按空行/句号自动切段）。</p>
-    <p>不知道怎么写？点工具条上的 <b>下载模板</b>，里面每个字段都带中文说明，改完直接选文件导入。
+    <h2>导入分镜 JSON（只写内容层）</h2>
+    <p><b>head / tail / 秒数 / 画质 / 接续规则等全局约束不用写</b>，全部由唯一一份
+       <code>assets/selflift.global.json</code> 统一提供，所有片共用；写了也会被忽略。
+       只写片名、本片设定（<code>story</code>，可选）、任务参考（<code>ref_images</code> / <code>bg_plate_path</code>）和每段的 <code>body</code>。</p>
+    <p>也支持旧 Director 分镜（<code>prompt_segment</code> / <code>shot</code>+<code>open_action</code> …）或一整段长文本（按空行/句号自动切段）。
        <button id="mTpl" style="padding:2px 8px;font-size:12px">下载模板</button>
        <button id="mDoc" style="padding:2px 8px;font-size:12px">字段说明</button></p>
     <div class="row">
       <label>片名 <input type="text" id="mTitle" placeholder="留空用 JSON 里的 title"></label>
-      <label>每段秒数 <input type="number" id="mSeconds" value="8" step="0.5" min="1"></label>
       <label>每段字数≈ <input type="number" id="mChars" value="130" step="10" min="40"></label>
       <input type="file" id="mFile" accept=".json,.txt,.md">
     </div>
     <textarea id="mPayload" placeholder='粘贴 JSON，例如：
-{"title":"雨夜相逢","segments":[{"title":"街角","body":"..."},{"title":"擦肩","body":"..."}]}
+{
+  "title": "雨夜相逢",
+  "story": "短发女生，白外套，雨夜街道，冷蓝调。",
+  "ref_images": [{"path": "D:/.../refs/girl.png", "label": "女生"}],
+  "segments": [
+    {"title": "街角", "body": "她推开铁门走出来。"},
+    {"title": "擦肩", "body": "她沿街缓步向前。"}
+  ]
+}
 
+不用写 head / tail / seconds / megapixels —— 那些已写死在全局配置里。
 或者直接粘一整段剧情文本，会自动切分。'></textarea>
     <div class="row">
       <span style="color:#93a0b4;font-size:12px" id="mCount">未解析</span>
@@ -296,9 +303,13 @@
 <div class="modal hidden" id="docModal">
   <div class="dialog">
     <h2>分镜 JSON 字段说明</h2>
-    <p>带 <b>*</b> 的必填，其余可留空走默认。所有 <code>_</code> 开头的字段只是注释，不读、可删。</p>
+    <p>带 <b>*</b> 的必填，其余可留空走默认。所有 <code>_</code> 开头的字段只是注释，不读、可删。
+       人物 / 画风 / 时长 / 画幅 / 过场等公用约束由后台统一提供，这里不用填、也不用改。</p>
     <div class="doc-wrap"><table class="doc" id="docTable"></table></div>
     <div id="docNotes" class="doc"></div>
+    <p style="font-size:12px;color:#93a0b4;margin-top:10px">
+       完整分镜写法见 <code>h3-long-video-repo/docs/segment编写规范.md</code>
+       （四块骨架、机位五项、连续性、多人关系、篇幅、范例）。</p>
     <div class="row">
       <span class="grow"></span>
       <button id="docTpl">下载模板</button>
@@ -667,11 +678,11 @@ function bindResControls() {
     } catch (e) { say("应用失败：" + e.message, "error"); }
   });
   updateResPreview();
-  // 事件委托：卡片里的 seed/body 与全片 head/tail 一改动就刷新未保存计数
+  // 事件委托：卡片里的 seed/body 与本片设定一改动就刷新未保存计数
   document.addEventListener("input", (ev) => {
     const t = ev.target;
     if (t && ((t.matches && t.matches("#list [data-keep]"))
-              || t.id === "pbHead" || t.id === "pbTail")) updateSaveBadge();
+              || t.id === "pbStory")) updateSaveBadge();
   });
   updateSaveBadge();
 }
@@ -1530,17 +1541,12 @@ function collectDirtyEdits() {
 /** 返回保存条数；失败返回 -1（脏标记保留，页面上改的内容不丢）。 */
 async function saveAllEdits({ silent = false } = {}) {
   const edits = collectDirtyEdits();
-  const head = pbDirty ? $("pbHead").value : null;
-  const tail = pbDirty ? $("pbTail").value : null;
+  const story = pbDirty ? $("pbStory").value : null;
   // 全篇拼接方式（右上角的「全片硬切/叠化/黑场」）属于全局配置，改动后需要显式保存落盘
   const joinCur = $("join").value;
   const joinChanged = joinCur && joinCur !== state.savedJoin;
-  const total = edits.length + (head !== null ? 1 : 0) + (joinChanged ? 1 : 0);
+  const total = edits.length + (story !== null ? 1 : 0) + (joinChanged ? 1 : 0);
   if (!total) return 0;
-  if (head !== null && /\{(?!pic[?:])/.test(head + tail)) {
-    say("提示词里有裸的 { 符号，只支持 {pic:1} / {pic:plate} / {pic?:first}", "error");
-    return -1;
-  }
   try {
     // 串行：每条 /set 都是独立子进程「读 cfg → 改 → 写回」，并发会互相覆盖
     for (const e of edits) {
@@ -1549,9 +1555,9 @@ async function saveAllEdits({ silent = false } = {}) {
       if (e.seed !== undefined) payload.seed = e.seed;
       await apiJson("/h3-long-video/selflift/set", payload);
     }
-    if (head !== null) {
+    if (story !== null) {
       await apiJson("/h3-long-video/selflift/set",
-        { cfg: state.cfg, seg: 0, head, tail });
+        { cfg: state.cfg, seg: 0, story });
     }
     if (joinChanged) {
       await apiJson("/h3-long-video/selflift/set", { cfg: state.cfg, join: joinCur });
@@ -1565,7 +1571,7 @@ async function saveAllEdits({ silent = false } = {}) {
     updateSaveBadge();
     if (!silent) {
       let msg = "已保存 " + edits.length + " 段的提示词/seed"
-        + (head !== null ? " + 全片 head/tail" : "");
+        + (story !== null ? " + 本片设定" : "");
       if (joinChanged) msg += " + 全篇拼接方式(" + $("join").selectedOptions[0].textContent + ")";
       msg += "，受影响段已标需重出";
       say(msg, "ok");
@@ -1863,28 +1869,19 @@ function renderRefs(data) {
   box.replaceChildren(...nodes);
 }
 
-/* ---------- 全片提示词（head / tail 只存一份） ---------- */
+/* ---------- 本片设定（内容层，只存一份；公共约束不在这里） ---------- */
 let pbDirty = false;
 
 function renderPromptBox(data) {
   $("promptBox").hidden = false;
   if (!pbDirty) {
     // 轮询每 3 秒来一次，不能覆盖用户正在敲的内容
-    if ($("pbHead").value !== (data.head || "")) $("pbHead").value = data.head || "";
-    if ($("pbTail").value !== (data.tail || "")) $("pbTail").value = data.tail || "";
+    if ($("pbStory").value !== (data.story || "")) $("pbStory").value = data.story || "";
   }
   $("pbState").textContent = pbDirty ? "有未保存修改" : "";
-  // 有独立提示词的段不读这一栏（seg_prompt: seg.get("head") or cfg.get("head")），
-  // 不说明的话用户改完发现画面没变，会以为「保存没生效」。
-  const segs = data.segments || [];
-  const over = segs.filter((s) => (s.head_override || "").trim()
-    || (s.tail_override || "").trim()).map((s) => s.id);
-  $("pbCover").textContent = over.length
-    ? "⚠ " + over.join(" / ") + " 有自己的提示词，这一栏的修改对它们不生效"
-    : "";
 }
 
-for (const id of ["pbHead", "pbTail"]) {
+for (const id of ["pbStory"]) {
   $(id).addEventListener("input", () => {
     pbDirty = true;
     $("pbState").textContent = "有未保存修改";
@@ -1898,16 +1895,12 @@ $("pbToggle").addEventListener("click", () => {
 
 $("pbSave").addEventListener("click", async () => {
   if (!state.cfg) { say("先导入分镜 JSON", "error"); return; }
-  const head = $("pbHead").value;
-  const tail = $("pbTail").value;
-  if (/\{(?!pic[?:])/.test(head + tail)) {
-    say("提示词里有裸的 { 符号，只支持 {pic:1} / {pic:plate} / {pic?:first} 这几种占位符", "error");
-    return;
-  }
+  const story = $("pbStory").value;
   try {
-    await apiJson("/h3-long-video/selflift/set", { cfg: state.cfg, seg: 0, head, tail });
+    // 只提交内容层 story；head / tail 由全局配置在跑片时自动合并，页面不再写回快照
+    await apiJson("/h3-long-video/selflift/set", { cfg: state.cfg, seg: 0, story });
     pbDirty = false;
-    say("全片提示词已保存。head/tail 改了全片画面都会变，已有段会标成「需重出」", "ok");
+    say("本片设定已保存；改动会让全片标成「需重出」", "ok");
     await reload();
   } catch (e) { say("保存失败：" + e.message, "error"); }
 });
@@ -2012,7 +2005,9 @@ const TPL_URL = "/h3-long-video/selflift/template";
 const esc = (s) => String(s).replace(/[&<>]/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 const NOTE_TITLE = {
-  picture: "参考图编号（最容易踩的坑）",
+  layering: "内容与约束分层（先看这条）",
+  body_shape: "一段 body 怎么写（骨架）",
+  picture: "body 里怎么指人物",
   multi_person: "多人镜头怎么给参考图",
   length: "逐段时长",
   transition_switch: "转场改回链式",
@@ -2061,6 +2056,19 @@ $("docBtn").addEventListener("click", openDoc);
 $("mDoc").addEventListener("click", openDoc);
 $("docClose").addEventListener("click", () => $("docModal").classList.add("hidden"));
 
+/* ---------- 导出内容层 JSON（公共约束不导出） ---------- */
+$("exportBtn").addEventListener("click", () => {
+  if (!state.cfg) { say("先选择一部片，再导出内容", "error"); return; }
+  const url = "/h3-long-video/selflift/export?cfg=" + encodeURIComponent(state.cfg);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "selflift_content.json";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  say("已导出内容层 JSON（不含任何公用约束）", "ok");
+});
+
 /* ---------- 导入 JSON ---------- */
 $("importBtn").addEventListener("click", () => {
   $("modal").classList.remove("hidden");
@@ -2085,7 +2093,6 @@ $("mPreview").addEventListener("click", async () => {
     const payload = parsePayload();
     const data = await apiJson("/h3-long-video/selflift/preview", {
       payload, title: $("mTitle").value || null,
-      seconds: Number($("mSeconds").value) || null,
       target_chars: Number($("mChars").value) || 130,
     });
     $("mCount").textContent = "将切成 " + data.segments.length + " 段：" +
@@ -2097,7 +2104,6 @@ $("mOk").addEventListener("click", async () => {
     const payload = parsePayload();
     const data = await apiJson("/h3-long-video/selflift/import", {
       payload, title: $("mTitle").value || null,
-      seconds: Number($("mSeconds").value) || null,
       target_chars: Number($("mChars").value) || 130,
     });
     state.cfg = data.cfg;
@@ -2106,7 +2112,9 @@ $("mOk").addEventListener("click", async () => {
     $("cfgLabel").textContent = data.cfg;
     $("modal").classList.add("hidden");
     $("mPayload").value = "";
-    say(`已建片：${data.title} · ${data.segments} 段 × ${data.seconds}s。接下来传参考图（不传会跑失败），然后「一键跑全片」。`, "ok");
+    const ig = (data.ignored || []);
+    const igNote = ig.length ? `；分镜里的 ${ig.join("/")} 已忽略（约束由全局配置统一管）` : "";
+    say(`已建片：${data.title} · ${data.segments} 段 × ${data.seconds}s${igNote}。接下来传参考图（不传会跑失败），然后「一键跑全片」。`, "ok");
     await reload();
   } catch (e) { $("mCount").textContent = "建片失败：" + e.message; }
 });
