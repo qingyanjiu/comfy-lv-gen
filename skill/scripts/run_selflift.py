@@ -728,6 +728,90 @@ def cmd_set(cfg, args):
     print(f"已更新：{', '.join(changed) or '无改动'}", flush=True)
 
 
+# ----------------------------------------------------------------
+# 提示词规范自检（对应 h3-long-video-repo/docs/视频生成提示词规范.md 第八章）
+# 非阻断：只打印告警，不阻止生成。跑 seg / all 时自动触发；也可 `check` 单独跑。
+# ----------------------------------------------------------------
+EYE_SPEC_DOC = "h3-long-video-repo/docs/视频生成提示词规范.md（第八章 眼神/表情规范）"
+
+
+def _eye_findings(text):
+    """针对单段/全局提示词的眼神检查，返回 (warnings, ok)。"""
+    warnings = []
+    t = text or ""
+    low = t.lower()
+    has_blink = "眨" in t
+    has_catch = ("眼神光" in t) or ("catchlight" in low)
+    has_gaze = any(k in t for k in ("视线", "目光", "看向", "盯着", "望向", "低垂", "聚焦", "落点"))
+    has_droop = any(k in t for k in ("眼神下垂", "眼神空洞", "木然", "呆滞"))
+    has_glare = ("瞪" in t) or ("直勾勾" in t)
+    if has_droop:
+        if not has_catch:
+            warnings.append("写了「眼神下垂/空洞」但缺眼神光(catchlight)，易空洞死板 → 加「瞳孔带细微反光点(catchlight)」")
+        if not has_blink:
+            warnings.append("缺自然眨眼动态 → 加「眼睛自然地眨动」")
+        if not has_gaze:
+            warnings.append("视线缺落点 → 给明确视线方向（微微低垂 / 聚焦前方 / 落在身前）")
+    elif any(k in t for k in ("眼神", "眼睛", "目光", "表情")):
+        # 提到眼睛/表情却三件套不齐 → 软提示（不强制，避免误报）
+        miss = []
+        if not has_catch:
+            miss.append("眼神光(catchlight)")
+        if not has_blink:
+            miss.append("自然眨眼")
+        if miss:
+            warnings.append("建议补「" + " / ".join(miss) + "」让眼睛更有神（参考规范第八章 8.2）")
+    if has_glare:
+        # 排除否定语境：不夸张瞪眼 / 禁止瞪 / 避免直勾勾 等不是违规
+        neg = ("不", "勿", "禁", "避", "莫", "拒绝")
+        glare_pos = [t.find("瞪")] + ([t.find("直勾勾")] if "直勾勾" in t else [])
+        real_glare = False
+        for p in glare_pos:
+            if p < 0:
+                continue
+            pre = t[max(0, p - 4):p]
+            if not any(n in pre for n in neg):
+                real_glare = True
+                break
+        if real_glare:
+            warnings.append("避免「瞪视/直勾勾」，改「视线聚焦但柔和」更自然（规范 8.2）")
+    return warnings, (not warnings)
+
+
+def audit_prompts(cfg, idx=None):
+    """按提示词规范自检 head/tail/每段 body，打印告警。返回告警条数。"""
+    print("\n----- 提示词规范自检（参考 %s）-----" % EYE_SPEC_DOC, flush=True)
+    total = 0
+    if idx is None or idx == 0:
+        for name, key in (("全局 head", "head"), ("全局 tail", "tail")):
+            w, _ = _eye_findings(cfg.get(key, ""))
+            if w:
+                total += len(w)
+                print("  [%s]" % name, flush=True)
+                for x in w:
+                    print("    ⚠ %s" % x, flush=True)
+    segs = cfg.get("segments", [])
+    targets = segs if idx is None else (segs[idx:idx + 1] if 0 <= idx < len(segs) else [])
+    for s in targets:
+        w_all = []
+        wb, _ = _eye_findings(s.get("body", ""))
+        w_all += ["body: %s" % x for x in wb]
+        if s.get("head"):
+            wh, _ = _eye_findings(s["head"])
+            w_all += ["段级 head: %s" % x for x in wh]
+        if w_all:
+            total += len(w_all)
+            print("  [段 %s %s]" % (s.get("id"), s.get("title", "")), flush=True)
+            for x in w_all:
+                print("    ⚠ %s" % x, flush=True)
+    if total == 0:
+        print("  ✓ 未发现明显违反规范的提示词（眼神三件套齐 / 无空洞下垂 / 无瞪视）", flush=True)
+    else:
+        print("  → 共 %d 条提示建议，可按上方修改后重跑；不影响本次生成。" % total, flush=True)
+    print("----- 自检结束 -----\n", flush=True)
+    return total
+
+
 def run_seg(cfg, idx):
     os.makedirs(SEG_DIR, exist_ok=True)
     os.makedirs(REF_DIR, exist_ok=True)
@@ -747,6 +831,7 @@ def run_seg(cfg, idx):
     elif idx > 0 and lmode == "transition":
         print(f"    转场模式：本段独立生成（不承接上段尾帧）", flush=True)
     print(f"\n===== 段 {idx+1}/{len(cfg['segments'])}  {seg['id']} {seg['title']}  seed={seg['seed']} =====", flush=True)
+    audit_prompts(cfg, idx)
     api = check_graph(cfg, seg)
     if seg.get("last_frame_override"):
         print(f"    [实验] 尾帧锁定：{seg['last_frame_override']} "
@@ -1437,7 +1522,7 @@ def cmd_import(a):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["ref", "plate", "seg", "all", "merge", "probe",
-                                    "graph", "status", "set", "insert", "import"])
+                                    "graph", "status", "set", "insert", "import", "check"])
     ap.add_argument("idx", nargs="?", type=int, default=0)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--seg", type=int, default=0, help="set 命令的目标段号（1 起）")
@@ -1526,6 +1611,8 @@ def main():
             run_seg(cfg, i)
     elif a.cmd == "status":
         print(json.dumps(seg_status(cfg), ensure_ascii=False), flush=True)
+    elif a.cmd == "check":
+        audit_prompts(cfg)
     elif a.cmd == "insert":
         cmd_insert(cfg, a.after)
     elif a.cmd == "set":
