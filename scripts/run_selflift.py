@@ -44,6 +44,32 @@ DEFAULT_CFG = "D:/Comfy-Desktop/output/rooftop-dusk/segments.json"
 DEFAULT_WORKFLOW = (
     "D:/Comfy-Desktop/.workbuddy/skills/h3-long-video/assets/H3-SelfLift_单图参考.base.json"
 )
+# 唯一一份全局约束配置（约束层）。CLI import 与网页建片读的是同一个文件。
+GLOBAL_CFG_PATH = (
+    "D:/Comfy-Desktop/.workbuddy/skills/h3-long-video/assets/selflift.global.json"
+)
+
+
+def load_global_cfg():
+    """读全局约束；repo 运行时副本找不到时回退到本脚本旁的 assets。"""
+    path = GLOBAL_CFG_PATH
+    if not os.path.isfile(path):
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "assets", "selflift.global.json")
+    if not os.path.isfile(path):
+        P.die(f"找不到全局约束配置：{GLOBAL_CFG_PATH}\n"
+              f"    约束层只有这一份，别在分镜 json 里另写一份。")
+    with open(path, encoding="utf-8") as f:
+        g = json.load(f)
+    return {k: v for k, v in g.items() if not k.startswith("_")}
+
+
+def compose_head(global_head, story=None):
+    """把本片 story 注入全局 head 的 {story} 槽；没写就删掉整块。"""
+    text = re.sub(r"\s+", " ", str(story or "").strip())
+    if text:
+        return global_head.replace("{story}", text)
+    return "\n\n".join(b for b in global_head.split("\n\n") if "{story}" not in b)
 
 
 def set_root(cfg_path):
@@ -205,6 +231,11 @@ def normalize(wf):
 
 PIC_TOKEN = re.compile(r"\{pic:([A-Za-z]+|\d+)\}")
 PIC_OPT_TOKEN = re.compile(r"\{pic\?:([A-Za-z]+|\d+)\}")
+# 块级可选：{picblk?:key} ... {/picblk}。整块随媒体有无出现/消失，
+# 用于「首帧继承」这类由标题 + 多句组成的多行段落（行级 ?: 只会删带标记那一行，
+# 首段会残留「承接上一段」的孤立标题和句子，反而误导模型）。
+PIC_BLK_TOKEN = re.compile(
+    r"\{picblk\?:([A-Za-z]+|\d+)\}\s*(.*?)\s*\{/picblk\}", re.S)
 
 
 def pic_numbers(cfg, seg):
@@ -241,11 +272,19 @@ def expand_pic_tags(text, mapping, where="提示词"):
     全局 head 里写「<Picture {pic?:first}> 是本段首帧…」这种句子时，第 1 段（无首帧）
     就不会留下半句空话，链式段才出现。
 
+    多行段落要用**块级**写法 `{picblk?:first} ... {/picblk}`：整块一起保留或删除。
+    行级 `?:` 只作用于单行，多行段落用了会留下标题和后续句子。
+
     引用了本段没接、又没打问号的媒体会直接报错，而不是留个错编号给 strict_prompt_tags
     去炸（或静默把身份锚换成别的图）。
     """
     if not text or "{pic" not in text:
         return text
+
+    # 块级可选先做，避免块内残留的 {pic?:} 行被行级逻辑单独处理
+    text = PIC_BLK_TOKEN.sub(
+        lambda mo: mo.group(2) if mo.group(1) in mapping else "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
 
     if "{pic?:" in text:
         kept = []
@@ -729,14 +768,23 @@ def cmd_set(cfg, args):
 
 
 # ----------------------------------------------------------------
-# 提示词规范自检（对应 h3-long-video-repo/docs/视频生成提示词规范.md 第八章）
+# 提示词规范自检
+#   body  → docs/segment编写规范.md（只查禁止项）
+#   head/tail → docs/视频生成提示词规范.md（约束层，眼神三件套）
 # 非阻断：只打印告警，不阻止生成。跑 seg / all 时自动触发；也可 `check` 单独跑。
 # ----------------------------------------------------------------
-EYE_SPEC_DOC = "h3-long-video-repo/docs/视频生成提示词规范.md（第八章 眼神/表情规范）"
+BODY_SPEC_DOC = "h3-long-video-repo/docs/segment编写规范.md"
+EYE_SPEC_DOC = "h3-long-video-repo/docs/视频生成提示词规范.md（head / tail 约束层）"
 
 
-def _eye_findings(text):
-    """针对单段/全局提示词的眼神检查，返回 (warnings, ok)。"""
+def _eye_findings(text, ban_only=False):
+    """眼神/表情检查，返回 (warnings, ok)。
+
+    ban_only=True 用于每段 body：只报禁止项（空洞/木然/呆滞/瞪视）。
+    眼神光(catchlight)与眨眼频率是全片统一约束、写在全局 head 里，
+    body 重复写会稀释权重，所以不在 body 上要求这两项——否则自检会反过来
+    逼作者逐段抄公用约束，和分层规则打架。
+    """
     warnings = []
     t = text or ""
     low = t.lower()
@@ -746,13 +794,17 @@ def _eye_findings(text):
     has_droop = any(k in t for k in ("眼神下垂", "眼神空洞", "木然", "呆滞"))
     has_glare = ("瞪" in t) or ("直勾勾" in t)
     if has_droop:
-        if not has_catch:
-            warnings.append("写了「眼神下垂/空洞」但缺眼神光(catchlight)，易空洞死板 → 加「瞳孔带细微反光点(catchlight)」")
-        if not has_blink:
-            warnings.append("缺自然眨眼动态 → 加「眼睛自然地眨动」")
-        if not has_gaze:
-            warnings.append("视线缺落点 → 给明确视线方向（微微低垂 / 聚焦前方 / 落在身前）")
-    elif any(k in t for k in ("眼神", "眼睛", "目光", "表情")):
+        if ban_only:
+            warnings.append("body 里别写「眼神空洞/木然/呆滞」这类静态词 → 改成这一段明确的视线落点"
+                            "（看哪里、怎么变）；catchlight 和眨眼频率由全局 head 统一，不用在这里补")
+        else:
+            if not has_catch:
+                warnings.append("写了「眼神下垂/空洞」但缺眼神光(catchlight)，易空洞死板 → 加「瞳孔带细微反光点(catchlight)」")
+            if not has_blink:
+                warnings.append("缺自然眨眼动态 → 加「眼睛自然地眨动」")
+            if not has_gaze:
+                warnings.append("视线缺落点 → 给明确视线方向（微微低垂 / 聚焦前方 / 落在身前）")
+    elif (not ban_only) and any(k in t for k in ("眼神", "眼睛", "目光", "表情")):
         # 提到眼睛/表情却三件套不齐 → 软提示（不强制，避免误报）
         miss = []
         if not has_catch:
@@ -760,7 +812,7 @@ def _eye_findings(text):
         if not has_blink:
             miss.append("自然眨眼")
         if miss:
-            warnings.append("建议补「" + " / ".join(miss) + "」让眼睛更有神（参考规范第八章 8.2）")
+            warnings.append("建议补「" + " / ".join(miss) + "」让眼睛更有神（参考 head 约束）")
     if has_glare:
         # 排除否定语境：不夸张瞪眼 / 禁止瞪 / 避免直勾勾 等不是违规
         neg = ("不", "勿", "禁", "避", "莫", "拒绝")
@@ -774,13 +826,14 @@ def _eye_findings(text):
                 real_glare = True
                 break
         if real_glare:
-            warnings.append("避免「瞪视/直勾勾」，改「视线聚焦但柔和」更自然（规范 8.2）")
+            warnings.append("避免「瞪视/直勾勾」，改「视线聚焦但柔和」更自然")
     return warnings, (not warnings)
 
 
 def audit_prompts(cfg, idx=None):
-    """按提示词规范自检 head/tail/每段 body，打印告警。返回告警条数。"""
-    print("\n----- 提示词规范自检（参考 %s）-----" % EYE_SPEC_DOC, flush=True)
+    """自检：body 只查禁止项；head/tail/段级 head 查眼神三件套。返回告警条数。"""
+    print("\n----- 提示词规范自检 -----", flush=True)
+    print("  body 参考 %s；head/tail 参考 %s" % (BODY_SPEC_DOC, EYE_SPEC_DOC), flush=True)
     total = 0
     if idx is None or idx == 0:
         for name, key in (("全局 head", "head"), ("全局 tail", "tail")):
@@ -794,7 +847,7 @@ def audit_prompts(cfg, idx=None):
     targets = segs if idx is None else (segs[idx:idx + 1] if 0 <= idx < len(segs) else [])
     for s in targets:
         w_all = []
-        wb, _ = _eye_findings(s.get("body", ""))
+        wb, _ = _eye_findings(s.get("body", ""), ban_only=True)
         w_all += ["body: %s" % x for x in wb]
         if s.get("head"):
             wh, _ = _eye_findings(s["head"])
@@ -805,7 +858,7 @@ def audit_prompts(cfg, idx=None):
             for x in w_all:
                 print("    ⚠ %s" % x, flush=True)
     if total == 0:
-        print("  ✓ 未发现明显违反规范的提示词（眼神三件套齐 / 无空洞下垂 / 无瞪视）", flush=True)
+        print("  ✓ 未发现明显问题（body 无空洞/木然/瞪视；head/tail 眼神三件套齐）", flush=True)
     else:
         print("  → 共 %d 条提示建议，可按上方修改后重跑；不影响本次生成。" % total, flush=True)
     print("----- 自检结束 -----\n", flush=True)
@@ -1444,14 +1497,18 @@ def cmd_import(a):
             P.die(f"{out} 已存在；加 --force 覆盖（会先留一份 .bak）")
         shutil.copyfile(out, out + ".bak")
 
+    # 约束层只认全局配置；--seconds / --head / --tail / --workflow 等是维护者的
+    # 显式覆盖口，不覆盖时源分镜里写的 seconds/fps/head/tail 一律不生效。
+    g = load_global_cfg()
     prefix = str(data.get("prefix") or os.path.splitext(os.path.basename(src))[0] or "selflift")
     title = str(data.get("title") or prefix)
-    fps = int(data.get("fps") or 24)
+    fps = int(g.get("fps") or 24)
+    seconds = float(a.seconds or g.get("seconds") or 8.0)
     secs = [float(s["seconds"]) for s in segs_in if s.get("seconds")]
-    seconds = float(a.seconds or (secs[0] if secs else data.get("seconds_per_segment") or 5.0))
     if len(set(secs)) > 1:
-        print(f"[警告] 源分镜每段时长不同 {sorted(set(secs))}；SelfLift 全片统一，已取 {seconds}s",
+        print(f"[警告] 源分镜每段时长不同 {sorted(set(secs))}；全片统一为全局配置的 {seconds}s",
               flush=True)
+    story = str(data.get("story") or "").strip()
 
     refs_dirs = [out_dir, os.path.join(out_dir, "refs"), P.COMFY_INPUT]
     ref_name = a.ref or (data.get("reference_images") or [None])[0]
@@ -1490,21 +1547,20 @@ def cmd_import(a):
         "film_id": fid,
         "prefix": prefix,
         "final_name": final_name,
-        "workflow": a.workflow or DEFAULT_WORKFLOW,
+        # 约束层整份照抄全局配置，再叠加本片内容层；显式 --* 参数才允许覆盖。
+        **{k: v for k, v in g.items() if k not in ("head", "tail", "story")},
+        "workflow": a.workflow or g.get("workflow") or DEFAULT_WORKFLOW,
         "ref_image": ref_path or "",
         "comfy_ref_name": (f"{prefix}_{os.path.basename(ref_path)}" if ref_path else ""),
         "bg_plate": (f"{prefix}_{os.path.basename(plate_path)}" if plate_path else ""),
         "bg_plate_path": plate_path or "",
-        "megapixels": float(data.get("megapixels") or DEFAULT_MEGAPIXELS),
+        "megapixels": float(a.megapixels or g.get("megapixels") or DEFAULT_MEGAPIXELS),
         "seconds": seconds,
         "length": int(17 * round(seconds * fps / 17) + 5),
         "fps": fps,
-        "join_mode": "auto",
-        "join_dissolve_seconds": 0.25,
-        "chain_first_frame": True,
-        "head": a.head or _auto_head(data),
-        "tail": a.tail or ("写实电影摄影，画面中只有剧情里的人物，不出现文字、水印、字幕。\n\n"
-                           "[衔接] 段首约 0.5 秒保持动作与镜头稳定，段尾约 0.5 秒动作收住。"),
+        "head": a.head or compose_head(g["head"], story),
+        "tail": a.tail or g["tail"],
+        "story": story,
         "segments": segments,
     }
     with open(out, "w", encoding="utf-8") as f:
