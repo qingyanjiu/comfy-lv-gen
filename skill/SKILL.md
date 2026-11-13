@@ -121,6 +121,12 @@ agent   ：跑工序 · 读质检 · 按失败码修参数重跑
 改完活跃版必须跑 `python scripts/sync_repo.py --apply`，再 `--check` 应为 `ALL SYNCED`。
 `--cfg <分镜json>` 开新片：分镜在哪，`segments/ refs/ final/ qa/` 就写到哪。
 
+### 提示词编写规范与自动自检
+
+写 `head` / `tail` / 每段 `body` 时默认遵循 **`h3-long-video-repo/docs/视频生成提示词规范.md`**（人物方向、镜头轴线、动作连续性、眼神/表情三件套、JSON 配置格式都在里面）。
+
+`run_selflift.py` 在跑 `seg` / `all` 时会**自动按该规范自检提示词**：重点查每段 `head`/`tail`/`body` 的眼神写法——发现「纯眼神下垂/空洞无眼神光」「缺自然眨眼」「瞪视/直勾勾」等不合理、不真实的写法会打印 `⚠` 告警并给出改法；`check` 子命令可单独跑一遍（不生成）。告警不阻断生成，按提示改完再重跑即可。
+
 ### 工作流与参数档位
 
 `H3-SelfLift_单图参考.json` = MiniMax H3 **ref2va 直出**（视频模型自己演动作和运镜），
