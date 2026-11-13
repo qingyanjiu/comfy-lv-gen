@@ -35,6 +35,65 @@ DRIVER = Path(os.environ.get(
 TEMPLATE = Path(
     "D:/Comfy-Desktop/.workbuddy/skills/h3-long-video/assets/segments.selflift.example.json"
 )
+# 2026-11-13 分层：约束层唯一来源是 selflift.global.json，不再用片例模板当底座。
+# 老 TEMPLATE 只保留给「CLI import 兼容回退」，网页建片一律走全局配置。
+def _global_cfg():
+    return _schema_module().load_global_cfg()
+
+
+def _sync_global_to_cfg(cfg_path, story_override=None, force=False):
+    """把唯一全局约束合并进片目录 cfg，返回 (changed, story, story_source)。
+
+    - 跑片前由 run / runall 自动调用（force=False）：只有约束层真的变了才写、
+      才打 head/res/quality 时间戳；没变就一个字节都不动，避免每次跑片都标需重出。
+    - 手动「套用全局配置」用 force=True：无条件刷新并标需重出。
+    - story 属内容层，单独存字段；老片把它写在 head 里时从【本片设定】块抢救回来，
+      绝不会被整块替换的 head 带走。
+    """
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    g = _global_cfg()
+    schema = _schema_module()
+    old_head = str(cfg.get("head") or "")
+
+    story = str(story_override or "").strip()
+    source = "request" if story else ""
+    if not story:
+        story = str(cfg.get("story") or "").strip()
+        source = "cfg" if story else ""
+    if not story:
+        story = schema.extract_story_from_head(old_head)
+        source = "recovered" if story else "none"
+
+    desired_head = schema.compose_head(g["head"], story)
+    # g["head"] 是带 {story} 占位符的原文，不能拿它跟已注入的本片 head 直接比
+    constraint_diff = (any(cfg.get(k) != g[k] for k in g if k != "head")
+                       or cfg.get("head") != desired_head)
+    if not constraint_diff and not force:
+        # 只是补记 story 字段（老片迁移）：写字段但不打时间戳、不标需重出
+        if cfg.get("story") != story:
+            cfg["story"] = story
+            cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
+                                encoding="utf-8")
+        return [], story, source
+
+    old = {k: cfg.get(k) for k in
+           ("head", "tail", "seconds", "fps", "megapixels", "quality")}
+    for k, v in g.items():
+        cfg[k] = v
+    cfg["story"] = story
+    cfg["head"] = desired_head
+    cfg["length"] = int(17 * round(float(cfg["seconds"]) *
+                                   int(cfg["fps"]) / 17) + 5)
+    now = time.time()
+    # 分辨率/画质/head 任一变化都要全片重出，打全三个戳最稳
+    cfg["head_updated_at"] = now
+    cfg["res_updated_at"] = now
+    cfg["quality_updated_at"] = now
+    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+    return [k for k in old if old[k] != cfg.get(k)], story, source
+
+
 OUTPUT_ROOT = Path("D:/Comfy-Desktop/output")
 INPUT_ROOT = Path("D:/Comfy-Desktop/ComfyUI-Shared/input")
 
@@ -48,20 +107,30 @@ CANCELLED = set()
 COMFY_API = os.environ.get("H3_COMFY_API", "http://127.0.0.1:8188").rstrip("/")
 LOCK = threading.Lock()
 _SCHEMA = None
+_SCHEMA_MTIME = None
 
 
 def _schema_module():
-    """按文件路径加载 selflift_schema.py，避免依赖 custom_nodes 的 sys.path。"""
-    global _SCHEMA
-    if _SCHEMA is not None:
+    """按文件路径加载 selflift_schema.py，避免依赖 custom_nodes 的 sys.path。
+
+    按 mtime 缓存：改 schema 里的提示词/字段说明（FIELD_DOC、模板文案）后
+    不用重启服务，下一次请求自动重新加载。schema 是纯函数模块、无状态，重载安全。
+    """
+    global _SCHEMA, _SCHEMA_MTIME
+    path = Path(__file__).with_name("selflift_schema.py")
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = None
+    if _SCHEMA is not None and mtime is not None and _SCHEMA_MTIME == mtime:
         return _SCHEMA
     import importlib.util
 
-    path = Path(__file__).with_name("selflift_schema.py")
     spec = importlib.util.spec_from_file_location("h3_selflift_schema", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     _SCHEMA = module
+    _SCHEMA_MTIME = mtime
     return module
 
 
@@ -645,7 +714,14 @@ def register_routes(routes, web):
     async def selflift_status(request):
         try:
             cfg = _safe(request.query.get("cfg"))
-            return web.json_response(await _status_async(cfg))
+            data = await _status_async(cfg)
+            # story 是内容层字段，驱动 status 不带它；网页「本片设定」框要靠它回填
+            try:
+                data["story"] = str(
+                    json.loads(cfg.read_text(encoding="utf-8")).get("story") or "")
+            except Exception:  # noqa: BLE001
+                data.setdefault("story", "")
+            return web.json_response(data)
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
@@ -696,7 +772,25 @@ def register_routes(routes, web):
                 args += ["--join", str(p["join"])]
             if p.get("quality") is not None:
                 args += ["--quality", str(p["quality"])]
-            return web.json_response({"ok": True, "log": await _run_async(cfg, args)})
+            # 只改 story 时不必起一个空的驱动子进程（纯内容层，panel 直接写）
+            log = await _run_async(cfg, args) if len(args) > 3 else ""
+            if p.get("story") is not None:
+                # story 是内容层，单独存字段；只替换 head 的【本片设定】块，
+                # 别把用户可能在 head 里做过的本片微调重置掉（驱动刚写完 head/tail）。
+                s = str(p["story"]).strip()
+                if s.lower() in ("clear", "none"):
+                    s = ""
+                with LOCK:
+                    cur = json.loads(Path(cfg).read_text(encoding="utf-8"))
+                    cur["story"] = s
+                    if cur.get("head") is not None:
+                        cur["head"] = _schema_module().replace_story_in_head(
+                            cur["head"], s)
+                    cur["head_updated_at"] = time.time()
+                    Path(cfg).write_text(
+                        json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
+                log += f"\n已更新：本片设定（story）{'清空' if not s else s[:24]}"
+            return web.json_response({"ok": True, "log": log})
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
@@ -753,6 +847,8 @@ def register_routes(routes, web):
         try:
             p = await request.json()
             cfg = _safe(p.get("cfg"))
+            # 跑片时自动合并最新全局约束（没变就不写、不标需重出）
+            _sync_global_to_cfg(cfg)
             seg = int(p.get("seg") or 1)
             if p.get("seed") is not None:
                 await _run_async(cfg, ["set", "--seg", str(seg), "--seed", str(int(p["seed"]))])
@@ -801,6 +897,8 @@ def register_routes(routes, web):
             if op != "start":
                 raise ValueError(f"未知操作：{op}")
 
+            # 跑全片前自动合并最新全局约束，用户不需要手动「套用」
+            _sync_global_to_cfg(cfg)
             with LOCK:
                 st = RUNALL.get(key)
                 if st and st.get("active"):
@@ -874,13 +972,86 @@ def register_routes(routes, web):
 
     @routes.get("/h3-long-video/selflift/template")
     async def selflift_template(request):
-        """下载可直接照着改的分镜模板（合法 JSON，字段含义写在 _字段说明 里）。"""
+        """下载可直接照着改的【内容层】分镜模板（字段含义写在 _字段说明 里）。"""
         data = _schema_module().build_template()
         text = json.dumps(data, ensure_ascii=False, indent=2)
         return web.Response(
             text=text, content_type="application/json", charset="utf-8",
             headers={"Content-Disposition":
                      'attachment; filename="segments-template.json"'})
+
+    @routes.get("/h3-long-video/selflift/export")
+    async def selflift_export(request):
+        """只导出【内容层】JSON：可直接再导入，不含任何全局约束与运行产物。"""
+        try:
+            cfg_path = _safe(request.query.get("cfg"))
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            schema = _schema_module()
+            content = {k: cfg[k] for k in schema.CONTENT_KEYS if k in cfg}
+            # 段里只留内容字段；id / 帧路径 / 状态 / 时间戳 / head 覆盖标记等
+            # 都是跑片产物，导出它们反而会让再导入的片带上脏状态。
+            keep = set(schema.SEG_PASSTHROUGH_KEYS) | {"title", "body"}
+            content["segments"] = [
+                {k: v for k, v in (seg or {}).items()
+                 if k in keep and v not in (None, "", {}, [])}
+                for seg in cfg.get("segments", [])
+            ]
+            name = re.sub(r"[\\/:*?\"<>|]", "_", str(cfg.get("title") or "内容"))
+            text = json.dumps(content, ensure_ascii=False, indent=2)
+            return web.Response(
+                text=text, content_type="application/json", charset="utf-8",
+                headers={"Content-Disposition":
+                         'attachment; filename="selflift_content.json"; '
+                         f"filename*=UTF-8''{quote(name + '_内容.json')}"})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.get("/h3-long-video/selflift/global")
+    async def selflift_global_get(request):
+        """查看唯一一份全局约束配置（head/tail 全文 + 参数），网页只读展示。"""
+        try:
+            cfg = _global_cfg()
+            return web.json_response({
+                "ok": True,
+                "path": str(_schema_module().GLOBAL_CFG_PATH),
+                "params": {k: v for k, v in cfg.items()
+                           if k not in ("head", "tail", "workflow")},
+                "workflow": cfg.get("workflow", ""),
+                "head": cfg["head"], "tail": cfg["tail"],
+            })
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.post("/h3-long-video/selflift/apply-global")
+    async def selflift_apply_global(request):
+        """把最新全局约束刷进已有片，只覆盖约束层，保留内容层。
+
+        改了 selflift.global.json 后不必重新建片：点一下这里即可。
+        会重算 length、重注入 story，并给 head/res/quality 打时间戳 → 全片标需重出。
+        """
+        try:
+            p = await request.json()
+            cfg_path = _safe(p.get("cfg"))
+            with LOCK:
+                key = str(cfg_path)
+                if TASKS.get(key, {}).get("running") or key in PROCS:
+                    raise RuntimeError("本片正在跑任务，跑完再套用全局配置")
+            changed, story, source = _sync_global_to_cfg(
+                cfg_path, story_override=p.get("story"), force=True)
+            hint = {
+                "recovered": "（旧 head 里的本片设定已抢救到 story 字段，没丢）",
+                "none": "（本片没填本片设定，可在「本片设定」框里补）",
+            }.get(source, "")
+            return web.json_response({
+                "ok": True, "changed": changed or ["（内容未变，已刷新时间戳标需重出）"],
+                "story": story, "story_source": source,
+                "note": "全局约束已套用到本片；全片标记为需重出，点「一键跑全片」按新约束重跑。" + hint,
+            })
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
 
     @routes.post("/h3-long-video/selflift/preview")
     async def selflift_preview(request):
@@ -899,6 +1070,7 @@ def register_routes(routes, web):
                 seconds=body.get("seconds"),
                 target_chars=int(body.get("target_chars") or 130),
                 max_segments=int(body.get("max_segments") or 16),
+                global_cfg=_global_cfg(),
             )
             return web.json_response({
                 "ok": True, "title": data["title"], "seconds": data["seconds"],
@@ -925,12 +1097,15 @@ def register_routes(routes, web):
                 raise ValueError("缺少 payload")
 
             schema = _schema_module()
+            # 分层模式：约束层全部来自唯一一份全局配置，上传分镜只贡献内容层。
+            # 上传里若写了 head/tail/seconds 等同名值会被忽略，记进 _ignored 供提示。
             data = schema.normalize(
                 payload,
                 title=(str(body.get("title") or "").strip() or None),
                 seconds=body.get("seconds"),
                 target_chars=int(body.get("target_chars") or 130),
                 max_segments=int(body.get("max_segments") or 16),
+                global_cfg=_global_cfg(),
             )
             if not data["segments"]:
                 raise ValueError("切分后没有任何段")
@@ -957,8 +1132,12 @@ def register_routes(routes, web):
                 (out_dir / sub).mkdir(parents=True, exist_ok=True)
             prefix = f"sl_{stamp}"
 
-            cfg = json.loads(TEMPLATE.read_text(encoding="utf-8"))
-            cfg.pop("_template_note", None)
+            # 底座 = 唯一全局约束配置（不是片例模板）；只叠加本片的内容层字段。
+            # data 里的约束层字段已经被 normalize 换成全局值，所以直接用 data 起底，
+            # 再删掉诊断用的 _ignored / segments（segments 后面按本片规则重建）。
+            cfg = {k: v for k, v in data.items()
+                   if not k.startswith("_") and k not in ("segments", "ref_images")}
+            # ref_images 只由下面「文件真实存在」的 kept 决定，绝不继承上传里的占位路径。
             ref_path = str(data.get("ref_image") or "").strip()
             plate_path = str(data.get("bg_plate_path") or "").strip()
             has_ref = bool(ref_path and Path(ref_path).is_file())
@@ -968,21 +1147,13 @@ def register_routes(routes, web):
                 "film_id": stamp,
                 "prefix": prefix,
                 "final_name": _film_final_name(data["title"], stamp),
-                "seconds": data["seconds"],
-                "fps": data["fps"],
-                "megapixels": data["megapixels"],
                 "length": int(17 * round(data["seconds"] * data["fps"] / 17) + 5),
-                "head": data["head"],
-                "tail": data["tail"],
                 # 没有参考图就留空，别写一个「看起来合法但不存在」的占位路径——
                 # 那种路径会被误当成真实人物，跑片时 ComfyUI 报 Invalid image file。
                 "ref_image": ref_path if has_ref else "",
                 "bg_plate_path": plate_path if has_plate else "",
                 "comfy_ref_name": f"{prefix}_girl_ref.png" if has_ref else "",
                 "bg_plate": Path(plate_path).name if has_plate else "",
-                "join_mode": "dissolve",
-                "join_dissolve_seconds": 0.25,
-                "chain_first_frame": True,
             })
             # 模板里填好的人物参考图（多人）：保住顺序，comfy_name 换成新 prefix 下的唯一名。
             # 文件不存在的项直接跳过（避免建片后跑片报「找不到参考图」）。
@@ -1027,10 +1198,14 @@ def register_routes(routes, web):
             cfg_path = out_dir / "segments.json"
             cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
                                 encoding="utf-8")
+            ignored = data.get("_ignored") or []
+            note = "已建片；约束层来自唯一全局配置；传参考图后点「一键跑全片」"
+            if ignored:
+                note += "（上传分镜里的 " + "/".join(ignored) + " 已忽略，改约束请改全局配置）"
             return web.json_response({
                 "ok": True, "cfg": str(cfg_path), "title": cfg["title"],
                 "segments": len(segments), "seconds": cfg["seconds"],
-                "note": "已建片；传参考图后点「一键跑全片」",
+                "ignored": ignored, "note": note,
             })
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
@@ -1114,19 +1289,23 @@ def register_routes(routes, web):
                                      else f"{slug}_{stamp}")
             for sub in ("refs", "segments", "qa", "final"):
                 (out_dir / sub).mkdir(parents=True, exist_ok=True)
-            cfg = json.loads(TEMPLATE.read_text(encoding="utf-8"))
+            cfg = _global_cfg()
             prefix = f"sl_{stamp}"
+            seconds = float(cfg.get("seconds") or 8.0)
+            fps = int(cfg.get("fps") or 24)
             cfg.update({
                 "title": title,
                 "film_id": stamp,
                 "prefix": prefix,
                 "final_name": _film_final_name(title, stamp),
+                "length": int(17 * round(seconds * fps / 17) + 5),
+                # init 走「先建片再 ref/plate 造图」流程，这几个是输出目标路径，
+                # 不是「引用一张还不存在的图」，保留给 CLI cmd_ref/cmd_plate 用。
                 "ref_image": str(out_dir / "refs" / "girl_ref.png"),
                 "bg_plate_path": str(out_dir / "refs" / "bg_plate.png"),
                 "comfy_ref_name": f"{prefix}_girl_ref.png",
                 "bg_plate": f"{prefix}_bg_plate.png",
             })
-            cfg.pop("_template_note", None)
             cfg_path = out_dir / "segments.json"
             cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
                                 encoding="utf-8")

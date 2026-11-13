@@ -115,17 +115,30 @@ agent   ：跑工序 · 读质检 · 按失败码修参数重跑
 |---|---|
 | 驱动（唯一实现） | `.workbuddy/skills/h3-long-video/scripts/run_selflift.py` |
 | 工作流副本（已设 0.5MP / nvfp4 CLIP） | `assets/H3-SelfLift_单图参考.base.json` |
-| 分镜模板 | `assets/segments.selflift.example.json` |
-| 兼容薄壳（别在这改逻辑） | `tools/h3_selflift/run_selflift.py` |
+| **分镜编写规范（用户只看这份）** | `h3-long-video-repo/docs/segment编写规范.md` |
+| 约束层规范（head/tail，维护者用） | `h3-long-video-repo/docs/视频生成提示词规范.md` |
+| 内容层上传模板（网页「下载模板」同源） | `selflift_schema.build_template()` |
+| 运行产物种子（`init` 的复制源，**勿当上传模板**） | `assets/segments.selflift.example.json` |
 
 改完活跃版必须跑 `python scripts/sync_repo.py --apply`，再 `--check` 应为 `ALL SYNCED`。
 `--cfg <分镜json>` 开新片：分镜在哪，`segments/ refs/ final/ qa/` 就写到哪。
 
-### 提示词编写规范与自动自检
+### 分镜编写规范与自动自检
 
-写 `head` / `tail` / 每段 `body` 时默认遵循 **`h3-long-video-repo/docs/视频生成提示词规范.md`**（人物方向、镜头轴线、动作连续性、眼神/表情三件套、JSON 配置格式都在里面）。
+**写分镜只看 `h3-long-video-repo/docs/segment编写规范.md`**：它只讲每段 `body` 怎么写——
+四块骨架（动作 / 机位 / 光线 / 场景）、动作与连续性、机位五项、本段眼神落点、多人关系、
+篇幅（8 秒 100–160 字）、不要写什么、自查清单、三段范例。公用约束一条都不用写。
 
-`run_selflift.py` 在跑 `seg` / `all` 时会**自动按该规范自检提示词**：重点查每段 `head`/`tail`/`body` 的眼神写法——发现「纯眼神下垂/空洞无眼神光」「缺自然眨眼」「瞪视/直勾勾」等不合理、不真实的写法会打印 `⚠` 告警并给出改法；`check` 子命令可单独跑一遍（不生成）。告警不阻断生成，按提示改完再重跑即可。
+`head` / `tail` 属**约束层**，见 `h3-long-video-repo/docs/视频生成提示词规范.md`（维护者用）：
+里面是 head 现有块清单、占位符规则、段级 head 覆盖的坑、改约束的流程。分镜作者不需要看。
+
+`run_selflift.py` 跑 `seg` / `all` 时自动按规范自检并打印 `⚠`（`check` 可单独跑一遍，不生成）：
+
+- **`body` 只查禁止项**：眼神空洞/木然/呆滞、瞪视/直勾勾。**不要求** catchlight 与眨眼频率——
+  那是全局 head 的职责，body 重复写会稀释权重，也不该让自检反过来逼作者重复。
+- **`head` / `tail` / 段级 head** 仍按眼神三件套查，给维护者看。
+
+告警不阻断生成，按提示改完再重跑即可。
 
 ### 工作流与参数档位
 
@@ -156,6 +169,40 @@ agent   ：跑工序 · 读质检 · 按失败码修参数重跑
 人物图是 `ref_images.ref_image_0..N-1`（第 1 张用 LoadImage 150，第 2/3… 张自动挂
 **160/161/…**），顺序 = Picture 编号顺序。多人写法见下面「多人镜头：一人一张，绝不拼图」。
 `strict_prompt_tags=true` 时标签数要和本段参考图数对得上，3 张就写满 `<Picture 1..3>`。
+
+### 内容与约束分层（2026-11-13 定，先读这一节）
+
+**约束层只有一份**：`assets/selflift.global.json`。含 `workflow` / `clip_name` / `fps` /
+`seconds` / `megapixels` / `aspect_ratio` / `quality` / `join_*` / `chain_first_frame` /
+`head` / `tail`，由维护者统一优化，所有片共用。
+
+**上传的分镜 JSON 只写内容层**：`title`、`story`（可选，本片人物/场景/光线/情绪设定）、
+任务参考（`ref_images` / `ref_image` / `bg_plate_path`）、`segments[].body`（+ 可选 title/seed/link）。
+上传里若写了 `head` / `tail` / `seconds` 等同名全局字段，**一律忽略**，避免约束出现第二份。
+
+- 建片 = 全局配置快照 + 该片内容层 → 片目录下 `segments.json`（**运行产物，不是配置**，别手改当配置）。
+- 全局 `head` 用 `{pic:}` / `{pic?:}` 占位符写一遍，全片每段自动换算编号；
+  `{story}` 槽位由上传的 `story` 在建片时注入，没写就整块删掉。
+- **「严格继承上一段真实尾帧」已收进全局 head 里用 `{picblk?:first} … {/picblk}` 包住的多行段落**：
+  第 1 段没接首帧 → 整块消失；链式段接了首帧 → 整块出现并换成正确编号。
+  多行段落**必须**用块级写法：行级 `{pic?:}` 只删带标记那一行，
+  会留下「【真实首帧继承】」标题和「承接上一段」的孤立句子，反而误导首段。
+  所以 `body` 里绝不要逐段再抄这一句，也不要写「不换人 / 不融脸 / 段尾收住」这类通用约束。
+- 改了全局配置：**跑片时自动合并，用户不需要看、不需要改、不需要手动套用**。
+  `run` / `runall` 启动前调 `_sync_global_to_cfg(cfg)`：约束层有差异才刷入并打
+  `head/res/quality_updated_at`（全片标需重出）；完全一致就一个字节都不写、不标需重出。
+  `POST /selflift/apply-global`（force=True）保留作维护者强制刷新口，`GET /selflift/global`
+  只读接口保留，**网页不再暴露**这两个入口。
+- **自动合并会整块替换 head，但不会丢 `story`**：优先 `cfg["story"]`；老片没有该字段时
+  从旧 head 的【本片设定】块抢救回填（`extract_story_from_head`），返回 `story_source`
+  （request / cfg / recovered / none）。
+- **网页只暴露内容层**：工具条「导出内容 JSON」→ `GET /selflift/export?cfg=...`，
+  只返回 title / story / 参考图 / 空镜板 / segments 内容字段（剔除全局约束与 id/状态/帧路径等
+  运行产物），可无损再导入；「本片设定」框保存走 `set` 的 `story` → 写字段 +
+  只替换 head 的【本片设定】块（`replace_story_in_head`）。
+  head/tail 编辑框、全局配置弹窗、套用按钮、导入弹窗只读秒数框**全部移除**。
+- 两条建片路径都走同一份全局配置：网页 `import` / `init`、CLI `import`。
+  段级 `head` 仍可覆盖，但**整段覆盖而非追加**，一般不要写。
 
 ### 分镜 cfg 字段（`--cfg` 读的就是它）
 
@@ -218,9 +265,14 @@ tail 里写「画面中只有这两个人，不出现第三个人」。
 | `{pic:first}` | 本段首帧（上段尾帧） |
 | `{pic:last}` | 本段锁定的尾帧（`last_frame_override`） |
 | `{pic?:first}` | **可选版**：本段没接这个媒体时，**整行自动删掉** |
+| `{picblk?:first} … {/picblk}` | **块级可选**：整段（标题+多句）随媒体有无一起保留/删除 |
 
-`{pic?:first}` 是为了「<Picture {pic?:first}> 是本段首帧…」这类只在链式段才成立的句子——
+`{pic?:first}` 是为了「<Picture {pic?:first}> 是本段首帧…」这类只在链式段才成立的**单行**句子——
 第 1 段没接首帧，那行连同 `<Picture 0>` 一起消失，不会留半句空话。
+
+多行段落用 `{picblk?:key} … {/picblk}` 包起来，块内仍可继续用 `{pic?:key}` 引用编号。
+典型就是全局 head 的【真实首帧继承与时间连续性】：标题行 + 首帧说明行 + 段首承接行三行，
+用行级写法首段会残留标题和第三句（「首帧必须承接上一段真实结束状态」），块级写法才干净。
 
 实测（`segments-template_1111_211515`，2 人 4 段，一份 head 全覆盖）：
 
@@ -299,9 +351,13 @@ $PY $RUN import --src D:/Comfy-Desktop/output/couple-walk/sb_cw10.json \
 | `segments[].prompt_segment`（其次 `prompt_video` / `body` / `prompt`） | 段 `body`；都没有就用 `shot`+`camera`+`light`+`open_action`+`motion`+`end_action` 拼 |
 | `segments[].name` / `title` | 段标题 |
 | `segments[].chain` | 第 2 段起 `link.mode`：true/缺省 → `chain`，false → `transition` |
-| `segments[].seconds` | 全片统一取第一段（SelfLift 是统一时长；不一致会警告） |
+| `segments[].seconds` | **已忽略**；全片时长由 `selflift.global.json` 的 `seconds` 决定（不一致会警告） |
+| `story` | 注入全局 head 的 `{story}` 槽；不写则该块整块删掉 |
 | `reference_images[0]` / `bg_ref` | 在片目录、`refs/`、ComfyUI input 里找同名文件 → `ref_image` / `bg_plate_path` |
-| 无 head | 自动拼一句「P1=人物参考、P2=场景空镜」+ 服装锁定；可用 `--head` 覆盖 |
+| `head` / `tail` / `fps` / `megapixels` | **已忽略**；一律取全局配置。`--head` / `--tail` / `--seconds` 等 CLI 参数是维护者的显式覆盖口 |
+
+`import` 同样以 `selflift.global.json` 为底座，不再拼默认 head/tail，也不再从源分镜读
+`seconds` / `fps` / `megapixels` / `quality`。
 
 **注意**：图找不到只会**警告**、不会中断（cfg 里 `ref_image` 留空）。把图放进 `<片目录>/refs/`
 再跑一次 `import --force`（或直接改 cfg 的 `ref_image` / `comfy_ref_name`）即可。
@@ -442,7 +498,8 @@ http://127.0.0.1:8188/h3-long-video/app
 
 之前网页只能改每段的 body / seed / 首尾帧 / 承接方式，**全局 head + tail 只能手改 json**。
 现在参考图条带下面多一块「全片提示词」：head / tail 两个等宽文本框 + 「保存全片提示词」，
-占位符 `{pic:1}` / `{pic:plate}` / `{pic?:first}` 直接写在里面，**全片共用一份**。
+占位符 `{pic:1}` / `{pic:plate}` / `{pic?:first}` 直接写在里面，多行段落用
+`{picblk?:key} … {/picblk}` 整块可选，**全片共用一份**。
 
 配套改动：
 
@@ -1843,7 +1900,8 @@ $PY $RUN merge  --cfg <片>/segments.json     # 0.25s 短叠化接续 + 拼接 +
 $PY $RUN merge  --cfg <片>/segments.json --join black    # 可选：切回 0.8s 纯黑硬切
 ```
 
-分镜模板 `assets/segments.selflift.example.json`；`--force` 全片重跑。
+分镜示例（运行产物种子，`init` 的复制源，勿当上传模板）`assets/segments.selflift.example.json`；
+上传用的内容层模板见 `build_template()` / 网页「下载模板」；`--force` 全片重跑。
 
 状态存在 `storyboard.json` 同目录的 `<name>.state.json`，中断可续。
 
