@@ -47,7 +47,7 @@ def _global_cfg():
 # 之前是无条件 `for k, v in g.items(): cfg[k] = v`，于是点一次「一键跑全片」，
 # 用户刚选好的 9:16 / 高画质就被冲回全局的 16:9 / 省时画质。
 # 语义定成「全局是缺省值，不是强制值」：本片有值就保留，缺了才从全局补。
-LOCAL_PARAM_KEYS = ("aspect_ratio", "megapixels", "quality", "seconds")
+LOCAL_PARAM_KEYS = ("aspect_ratio", "megapixels", "quality", "seconds", "audio")
 
 
 def _has_local(v):
@@ -1022,6 +1022,8 @@ def register_routes(routes, web):
                 args += ["--join", str(p["join"])]
             if p.get("quality") is not None:
                 args += ["--quality", str(p["quality"])]
+            if p.get("audio") is not None:
+                args += ["--audio", str(p["audio"])]
             # 只改 story 时不必起一个空的驱动子进程（纯内容层，panel 直接写）
             log = await _run_async(cfg, args) if len(args) > 3 else ""
             if p.get("story") is not None:

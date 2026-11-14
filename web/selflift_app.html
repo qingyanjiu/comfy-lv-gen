@@ -226,6 +226,10 @@
     <option value="standard">标准画质</option>
     <option value="high">高画质（推荐）</option>
   </select>
+  <select id="audioSel" title="声音模式：默认静音（产物无音轨）；「保留原声」会保留 H3 联合生成的原音轨。改动后已出片段没有音轨，需重出全片">
+    <option value="off">静音</option>
+    <option value="native">保留原声</option>
+  </select>
   <button id="runAll" class="primary">一键跑全片</button>
   <select id="join" title="段间接续方式：只影响拼接，不改变画面内容"> 
     <option value="auto">按每段转场</option>
@@ -1329,6 +1333,34 @@ $("quality").addEventListener("change", async () => {
   }
 });
 
+/* ---------- 声音模式：默认静音（产物不封装音轨）；native=保留 H3 原声 ---------- */
+function syncAudio(data) {
+  state.savedAudio = data.audio || "off";
+  if (state.audioTouched) return;
+  const v = state.savedAudio;
+  if ([...$("audioSel").options].some((o) => o.value === v)) $("audioSel").value = v;
+}
+$("audioSel").addEventListener("change", async () => {
+  if (!state.cfg) { say("先选一部片", "error"); syncAudio(state.data || {}); return; }
+  const v = $("audioSel").value;
+  if (v === state.savedAudio) return;
+  state.audioTouched = true;
+  try {
+    await apiJson("/h3-long-video/selflift/set", { cfg: state.cfg, audio: v });
+    state.savedAudio = v;   // 立刻认，别等 3 秒轮询
+    say(v === "native"
+      ? "已切换为「保留原声」，全片标记需重出（已出片段没有音轨，点「一键跑全片」重跑才带声音）。"
+      : "已切换为「静音」，全片标记需重出。", "ok");
+    await reload();
+  } catch (e) {
+    say("切换声音模式失败：" + e.message + "，仍是 "
+        + (state.savedAudio === "native" ? "保留原声" : "静音") + "，可再点一次重试。", "error");
+    syncAudio(state.data || {});
+  } finally {
+    state.audioTouched = false;
+  }
+});
+
 /* ---------- 使用手册：内容内嵌在页面，用 Blob 打开独立窗口，零后端路由 ---------- */
 $("manualBtn").addEventListener("click", () => {
   const raw = $("manualDoc")?.textContent || "";
@@ -1398,6 +1430,7 @@ function render(data) {
   renderFilms(data);
   syncJoin(data);
   syncQuality(data);
+  syncAudio(data);
   const task = data.task || {};
   if (state.cancelled) {
     say("已取消全片：当前段已中断、ComfyUI 队列已清空。要继续请重新点「一键跑全片」", "info");

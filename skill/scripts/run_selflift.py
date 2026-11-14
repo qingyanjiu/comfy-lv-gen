@@ -586,7 +586,8 @@ def seg_status(cfg):
         edited = max(cfg["segments"][i].get("updated_at", 0),
                      cfg.get("head_updated_at", 0),
                      cfg.get("res_updated_at", 0),
-                     cfg.get("quality_updated_at", 0)) > item["mtime"] + 1
+                     cfg.get("quality_updated_at", 0),
+                     cfg.get("audio_updated_at", 0)) > item["mtime"] + 1
         prev = segs[i-1]["last_frame"] if i > 0 else None
         # 转场模式(transition)的段首帧独立生成，上游尾帧变化不会让它失效
         lmode = (cfg["segments"][i].get("link") or {}).get("mode", "chain")
@@ -617,6 +618,8 @@ def seg_status(cfg):
         "aspect_ratio": cfg.get("aspect_ratio") or DEFAULT_ASPECT_RATIO,
         "quality": cfg.get("quality") or DEFAULT_QUALITY,
         "quality_updated_at": cfg.get("quality_updated_at", 0),
+        "audio": cfg.get("audio") or "off",
+        "audio_updated_at": cfg.get("audio_updated_at", 0),
         "quality_presets": {k: {"lowres_scale": v[0], "rho": v[1]}
                             for k, v in QUALITY_PRESETS.items()},
         "chain_first_frame": bool(cfg.get("chain_first_frame")),
@@ -687,6 +690,16 @@ def cmd_set(cfg, args):
         # 换档位 = 换采样轨迹，同 seed 也出不同画面 → 全片必须重出
         cfg["quality_updated_at"] = time.time()
         changed.append(f"quality={quality}（lowres_scale={lowres} rho={rho}）")
+
+    audio = getattr(args, "audio", None)     # 同上：老调用方可能没这个字段
+    if audio is not None:
+        audio = str(audio).strip().lower()
+        if audio not in ("native", "off"):
+            P.die(f"未知 audio：{audio}（应为 native=保留模型原声 / off=静音）")
+        cfg["audio"] = audio
+        # 换音频模式 = 已出片段没有/多了音轨，全片必须重出
+        cfg["audio_updated_at"] = time.time()
+        changed.append(f"audio={audio}")
 
     if args.ref_video is not None:
         rv = str(args.ref_video).strip()
@@ -1599,6 +1612,9 @@ def main():
     ap.add_argument("--quality", choices=list(QUALITY_PRESETS), default=None,
                     help="画质档位：fast=最快(默认) / standard=折中 / high=细节最好但慢约 36%%。"
                          "换档位会改变采样轨迹，同 seed 也会出不同画面，全片需重出")
+    ap.add_argument("--audio", choices=["native", "off"], default=None,
+                    help="set：声音模式 native=保留模型原声 / off=静音（默认）。"
+                         "改动后全片需重出（已出片段没有音轨）")
     ap.add_argument("--link-mode", dest="link_mode", default=None,
                     choices=["chain", "transition"],
                     help="set：本段承接上一段的方式 chain=像素承接 / transition=独立+转场")
