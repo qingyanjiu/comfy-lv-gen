@@ -49,6 +49,10 @@ def _global_cfg():
 # 语义定成「全局是缺省值，不是强制值」：本片有值就保留，缺了才从全局补。
 LOCAL_PARAM_KEYS = ("aspect_ratio", "megapixels", "quality", "seconds", "audio")
 
+# 改了路由/参数（比如新增 --cast）就把这个标记一起改掉，并且**重启出片服务**。
+# 前端 web/selflift_app.html 里的 UI_BUILD 必须写成同一个值，否则页面会提示进程是旧版。
+_PANEL_BUILD = "2026-11-15a-cast"
+
 
 def _has_local(v):
     """字段是否「本片真的定过」：None / 空串不算。"""
@@ -1481,6 +1485,15 @@ def register_routes(routes, web):
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.get("/h3-long-video/selflift/build")
+    async def selflift_build(request):
+        """后端构建标记：前端拿它跟自己的 UI_BUILD 比对，识别「进程还是旧版」。
+
+        Python 路由只在进程启动时注册，改完 selflift_panel.py 不重启就等于没改；
+        之前多次出现「页面上点了没反应」，都是旧进程在跑。这里让它自己暴露出来。
+        """
+        return web.json_response({"ok": True, "build": _PANEL_BUILD})
 
     @routes.get("/h3-long-video/selflift/global-cfg")
     async def selflift_global_cfg_get(request):

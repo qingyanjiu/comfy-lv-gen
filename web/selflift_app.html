@@ -2775,6 +2775,22 @@ $("mOk").addEventListener("click", async () => {
     await reload();
   } catch (e) { $("mCount").textContent = "建片失败：" + e.message; }
 });
+
+/* 版本对齐：Python 路由改了不重启就等于没改，这里让旧进程自己暴露出来 */
+const UI_BUILD = "2026-11-15a-cast";
+(async function checkBackendBuild() {
+  try {
+    const r = await getJSON("/h3-long-video/selflift/build");
+    if (!r || !r.ok) throw new Error("no_build_route");
+    if (r.build !== UI_BUILD) {
+      hint("⚠ 出片服务是旧版进程（build=" + r.build + "，页面期望 " + UI_BUILD
+           + "）：新加的功能（如本段人物）不会生效。请重启桌面版（内嵌 8188）或出片服务（:8900）。");
+    }
+  } catch (_) {
+    hint("⚠ 出片服务缺少版本接口，应该是旧进程：新加的功能不会生效。"
+         + "请重启桌面版（内嵌 8188）或出片服务（:8900）。");
+  }
+})();
 </script>
 </body>
 </html>
