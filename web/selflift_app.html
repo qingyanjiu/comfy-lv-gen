@@ -755,9 +755,10 @@ function optSegMode(seg) {
   if ((seg.ref_images && seg.ref_images.length) || seg.first_frame || seg.last_frame) return "Ref2VA";
   return "T2VA";
 }
-async function optimizePrompt({ text, kind, mode, references, duration, api_base, model, story, title, aspect_ratio, resolution }) {
+async function optimizePrompt({ text, kind, mode, references, duration, api_base, model, story, title, aspect_ratio, resolution, cast }) {
   const body = { text, kind, mode, references: references || [], duration: duration || 5.0 };
   if (story) body.story = story;
+  if (cast) body.cast = cast;
   if (title) body.title = title;
   if (aspect_ratio) body.aspect_ratio = aspect_ratio;
   if (resolution) body.resolution = resolution;
@@ -1587,7 +1588,7 @@ function cardSignature(data) {
     data.title,
     data.segments.map((s) => [
       s.index, s.id, s.seed, s.done, s.stale, s.running, s.mtime,
-      s.first_url, s.last_url, s.video_url, s.body, s.optimized_body, s.optimized_at,
+      s.first_url, s.last_url, s.video_url, s.body, s.cast, s.optimized_body, s.optimized_at,
       s.link?.mode, s.link?.transition,
       s.first_frame_override, s.last_frame_override,
       s.ref_video_url, s.ref_video_seconds,
@@ -1803,10 +1804,22 @@ function card(seg, total) {
     row.append(play, dl, delSeg);
   }
 
+  // 本段出场人物（逐段可不同）：跑片时拼在 head 之后、body 之前
+  const castLabel = document.createElement("div");
+  castLabel.className = "dim";
+  castLabel.style.cssText = "font-size:12px;margin-top:8px";
+  castLabel.textContent = "本段人物（可选，只影响这一段；留空 = 只靠通用绑定）";
+  const cast = document.createElement("textarea");
+  cast.value = seg.cast || "";
+  cast.rows = 2;
+  cast.dataset.seg = seg.id; cast.dataset.keep = "cast";
+  cast.placeholder = "例：本段出场：<Picture {pic:1}> 是吕布，紫金战甲、持方天画戟，位于画面右侧；<Picture {pic:2}> 是张飞，黑甲、持丈八蛇矛，位于左侧。本段只有这两人。";
+  cast.addEventListener("input", () => { cast.dataset.dirty = "1"; });
+
   const body = document.createElement("textarea");
   body.value = seg.body || "";
   body.dataset.seg = seg.id; body.dataset.keep = "body";
-  body.placeholder = "只写这一段的动作 / 机位 / 光线 / 场景。人物长相与服装、画风、禁止项写在「共用提示词」和「本片设定」里——写在这里会被它们盖掉。";
+  body.placeholder = "只写这一段的动作 / 机位 / 光线 / 场景。人物是谁、穿什么 → 写上面的「本段人物」；全片通用约束 → 共用模板。";
   body.addEventListener("input", () => { body.dataset.dirty = "1"; });
 
   // 优化后提示词：独立字段，跑片时优先于原提示词使用；留空则回退原提示词
@@ -1864,6 +1877,7 @@ function card(seg, total) {
         text: raw, kind: "body", mode: optSegMode(seg),
         references: optBuildRefs(seg),
         duration: (state.data && state.data.seconds) || 5,
+        cast: ((document.querySelector('#list [data-seg="' + seg.id + '"][data-keep="cast"]') || {}).value) || "",
         ...optContext(),
         api_base: LM_CFG.api_base || undefined,
         model: LM_CFG.model || undefined,
@@ -2118,7 +2132,7 @@ function card(seg, total) {
   }
   srBox.append(bpHead, bpItems);
 
-  el.append(head, thumbs, row, body, optLabel, optWrap, editRow, rvRow, srBox);
+  el.append(head, thumbs, row, castLabel, cast, body, optLabel, optWrap, editRow, rvRow, srBox);
   if (linkRow.childNodes.length) el.append(linkRow);
   return el;
 }
@@ -2170,13 +2184,14 @@ function collectDirtyEdits() {
     if (!s) return;
     const e = bySeg[s.index] || (bySeg[s.index] = { seg: s.index });
     if (el.dataset.keep === "body") e.body = el.value;
+    if (el.dataset.keep === "cast") e.cast = el.value;
     if (el.dataset.keep === "optimized_body") e.optimized_body = el.value;
     if (el.dataset.keep === "seed") {
       const v = String(el.value).trim();
       if (v !== "" && Number.isFinite(Number(v))) e.seed = Number(v);
     }
   });
-  return Object.values(bySeg).filter((e) => e.body !== undefined || e.seed !== undefined || e.optimized_body !== undefined);
+  return Object.values(bySeg).filter((e) => e.body !== undefined || e.cast !== undefined || e.seed !== undefined || e.optimized_body !== undefined);
 }
 /** 返回保存条数；失败返回 -1（脏标记保留，页面上改的内容不丢）。 */
 async function saveAllEdits({ silent = false } = {}) {
@@ -2192,6 +2207,7 @@ async function saveAllEdits({ silent = false } = {}) {
     for (const e of edits) {
       const payload = { cfg: state.cfg, seg: e.seg };
       if (e.body !== undefined) payload.body = e.body;
+      if (e.cast !== undefined) payload.cast = e.cast;
       if (e.optimized_body !== undefined) payload.optimized_body = e.optimized_body;
       if (e.seed !== undefined) payload.seed = e.seed;
       await apiJson("/h3-long-video/selflift/set", payload);

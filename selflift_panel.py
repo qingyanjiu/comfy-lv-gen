@@ -247,7 +247,7 @@ _KIND_HINT = {
 
 async def _optimize_prompt(text, kind, mode, references, duration, api_base, model,
                             max_tokens=4096, story=None, film_title=None,
-                            aspect_ratio=None, resolution=None):
+                            aspect_ratio=None, resolution=None, cast=None):
     """异步打 LM Studio 的 /v1/chat/completions，返回 (优化后文本, finish_reason)。
 
     finish_reason == "length" 表示输出被 max_tokens 截断，调用方据此提示用户。
@@ -283,6 +283,11 @@ async def _optimize_prompt(text, kind, mode, references, duration, api_base, mod
     if references:
         user_lines.append("references: " + "; ".join(
             f"{r.get('label')}={r.get('role')}" for r in references if r.get("label")))
+    # 本段出场人物：只作约束参考（谁在场、谁是几号图），body 里按它称呼角色，
+    # 不重复复述外观，也不要把没出场的人写进来。
+    if cast:
+        user_lines.append("segment_cast (本段在场人物，body 用它称呼角色，别复述外观、别加人): "
+                          + re.sub(r"\s+", " ", str(cast)).strip()[:300])
     user_lines.append("")
     user_lines.append("Rewrite the following into an H3-optimized prompt:")
     user_lines.append(str(text))
@@ -1047,6 +1052,8 @@ def register_routes(routes, web):
                 args += ["--body", str(p["body"])]
             if "optimized_body" in p:
                 args += ["--optimized-body", str(p["optimized_body"])]
+            if "cast" in p:
+                args += ["--cast", str(p["cast"])]
             if p.get("head") is not None:
                 args += ["--head", str(p["head"])]
             if p.get("tail") is not None:
@@ -1171,6 +1178,7 @@ def register_routes(routes, web):
             film_title = p.get("title") or p.get("film_title") or ""
             aspect_ratio = p.get("aspect_ratio") or ""
             resolution = p.get("resolution") or ""
+            cast = p.get("cast") or ""
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
@@ -1192,7 +1200,7 @@ def register_routes(routes, web):
                 references=references, duration=duration,
                 api_base=api_base, model=model, max_tokens=max_tokens,
                 story=story, film_title=film_title,
-                aspect_ratio=aspect_ratio, resolution=resolution)
+                aspect_ratio=aspect_ratio, resolution=resolution, cast=cast)
             truncated = (finish == "length")
             return web.json_response({"ok": True, "optimized": optimized,
                                       "fallback": False,
@@ -1410,7 +1418,8 @@ def register_routes(routes, web):
             content = {k: cfg[k] for k in schema.CONTENT_KEYS if k in cfg}
             # 段里只留内容字段；id / 帧路径 / 状态 / 时间戳 / head 覆盖标记等
             # 都是跑片产物，导出它们反而会让再导入的片带上脏状态。
-            keep = set(schema.SEG_PASSTHROUGH_KEYS) | {"title", "body", "optimized_body", "optimized_at"}
+            keep = set(schema.SEG_PASSTHROUGH_KEYS) | {"title", "body", "cast",
+                                                       "optimized_body", "optimized_at"}
             content["segments"] = [
                 {k: v for k, v in (seg or {}).items()
                  if k in keep and v not in (None, "", {}, [])}

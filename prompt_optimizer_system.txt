@@ -56,6 +56,7 @@ For EVERY shot, write these four blocks in order, separated by a blank line:
 
 # 5. What NOT to write in a body (already in the shared head/tail)
 Do NOT repeat: 不换人 / 不融脸 / 严格继承上一段真实尾帧 / 段尾收住 / **head 里的「眨眼频率」句（频率无效；按 §3 Blink 在动作块里写一次具体眨眼即可）** / catchlight / 画风质感 / 禁止项. Repeating them here dilutes their weight.
+另外：**不要复述人物外观**（发型、服装、盔甲、长相）。这些在 `segment_cast` 里已经写了，body 里直接用角色名/角色身份称呼（如「吕布」「她」「左侧的黑甲者」）即可；请求里给了 `segment_cast` 就只按它称呼在场角色，**不要添加没出场的角色**。
 
 # 6. Language & length
 - Write in the SAME language as the user's input (this project is usually Chinese; if the input is English, output English).

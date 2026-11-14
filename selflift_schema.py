@@ -27,7 +27,7 @@ SEG_TITLE_KEYS = ("title", "name", "shot_name", "label")
 COMPOSE_KEYS = ("shot", "camera", "light", "open_action", "motion", "end_action", "frame")
 SEGMENT_LIST_KEYS = ("segments", "scenes", "shots", "clips", "items", "parts")
 # 段级字段原样透传（seed / 接缝 / 段级 head / 首尾帧锁定）
-SEG_PASSTHROUGH_KEYS = ("seed", "link", "head",
+SEG_PASSTHROUGH_KEYS = ("seed", "link", "head", "cast",
                         "first_frame_override", "last_frame_override")
 
 # ---------------------------------------------------------------- 分层配置
@@ -355,6 +355,15 @@ FIELD_NOTE = {
         "画风质感 / 禁止项——body 里一条都不要重复。\n"
         "· 工具条「导出内容 JSON」只导出内容层（片名 / 本片设定 / 参考图 / 分段），"
         "不含任何公用约束，可直接再导入建片。"
+    ),
+    "cast": (
+        "每段自己的「出场人物」说明（可选，逐段可不同）：写清本段出现谁、谁对应哪张参考图、"
+        "本段的外观状态（换了衣服 / 淋湿 / 受伤 / 戴盔），以及本段明确**不出场**的人。\n"
+        "跑片时拼在 head 之后、body 之前。head 里只有「第几号图 = 第几位人物」的通用绑定，"
+        "具体是谁、本段什么状态都写在这里，**不要写进 head**（head 是全片共用的，写了会污染所有段）。\n"
+        "例：「本段出场：<Picture {pic:1}> 是吕布，紫金冠、紫金战甲、持方天画戟，位于画面右侧；"
+        "<Picture {pic:2}> 是张飞，黑甲、持丈八蛇矛，位于画面左侧。关羽本段不出场。」\n"
+        "同一段里谁都没提到的人不要写，避免模型把没接线的角色也画进来。"
     ),
     "body_shape": (
         "一段 body 的推荐骨架，四块之间空一行：\n"
