@@ -1455,6 +1455,79 @@ def register_routes(routes, web):
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
 
+    @routes.get("/h3-long-video/selflift/global-cfg")
+    async def selflift_global_cfg_get(request):
+        """读「共用提示词」原件：selflift.global.json 里的 head / tail。
+
+        与 `/global?cfg=` 的区别：那个返回的是本片已注入 {story} 之后的 head；
+        这里返回**模板原件**（带 {story} 槽），所以在网页上编辑保存时，不会把
+        某一部片的人物设定烧进所有片共用的模板里。
+        """
+        try:
+            gpath = Path(_schema_module().GLOBAL_CFG_PATH)
+            raw = json.loads(gpath.read_text(encoding="utf-8"))
+            head = str(raw.get("head") or "")
+            return web.json_response({
+                "ok": True, "path": str(gpath),
+                "head": head, "tail": str(raw.get("tail") or ""),
+                "has_story_slot": "{story}" in head,
+            })
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.post("/h3-long-video/selflift/global-cfg")
+    async def selflift_global_cfg_save(request):
+        """保存「共用提示词」→ 写回 selflift.global.json（所有片共用）。
+
+        - 原文件先备份为 selflift.global.json.bak（只留最近一份）
+        - 只改 head / tail，其它字段（workflow / 画幅 / 秒数 / 画质…）原样保留
+        - apply=true 时顺手把新约束刷进当前片（等同 /apply-global，全片标需重出）
+        """
+        try:
+            p = await request.json()
+            head = str(p.get("head") or "")
+            tail = str(p.get("tail") or "")
+            if not head.strip():
+                raise ValueError("head 不能为空（人物身份与场景锚都靠它）")
+            if not tail.strip():
+                raise ValueError("tail 不能为空（画风与全片禁止项都靠它）")
+            gpath = Path(_schema_module().GLOBAL_CFG_PATH)
+            raw = json.loads(gpath.read_text(encoding="utf-8"))
+            same = (str(raw.get("head") or ""), str(raw.get("tail") or "")) == (head, tail)
+            out = {"ok": True, "changed": not same, "path": str(gpath),
+                   "has_story_slot": "{story}" in head, "applied": []}
+            if not same:
+                bak = gpath.parent / (gpath.name + ".bak")
+                bak.write_text(json.dumps(raw, ensure_ascii=False, indent=2),
+                               encoding="utf-8")
+                raw["head"] = head
+                raw["tail"] = tail
+                gpath.write_text(json.dumps(raw, ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
+                out["backup"] = str(bak)
+                out["note"] = "共用提示词已保存；已点过「套用全局」的片和新片都会用新版本。"
+                if "{story}" not in head:
+                    out["note"] += " ⚠ head 里已没有 {story} 槽，「本片设定」将不再注入。"
+            else:
+                out["note"] = "内容与现有共用提示词一致，没写文件。"
+            if p.get("apply"):
+                # 内容没变也要能套用：用户可能只改了本片参数，想让本片吃最新约束
+                cfg_path = _safe(p.get("cfg"))
+                with LOCK:
+                    key = str(cfg_path)
+                    if TASKS.get(key, {}).get("running") or key in PROCS:
+                        raise RuntimeError("本片正在跑任务，跑完再套用共用提示词")
+                changed_keys, _story, _src = _sync_global_to_cfg(cfg_path, force=True)
+                out["applied"] = changed_keys or ["（已刷新，全片标需重出）"]
+                out["note"] = ("共用提示词已套用到本片；全片标记为需重出，"
+                               "点「一键跑全片」按新约束重跑。"
+                               + ("" if not same else "（提示词内容没变，只重刷了本片约束）"))
+            return web.json_response(out)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
     @routes.post("/h3-long-video/selflift/preview")
     async def selflift_preview(request):
         """只做切分预览，不建目录（网页导入弹窗用）。"""

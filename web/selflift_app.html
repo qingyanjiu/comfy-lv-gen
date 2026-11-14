@@ -220,7 +220,7 @@
   <button id="refreshMedia" title="强制重新拉取所有首帧/尾帧/视频缩略图（缓存兜底）">刷新预览</button>
   <button id="optOpen" title="把一段提示词发给 LM Studio，改写成更贴 H3 的结构（保留 {pic:N} 占位符）">提示词优化器</button>
   <button id="lmCfgOpen" title="查看/修改全局优化器配置（LM Studio 地址与模型名，全项目通用）">优化器配置</button>
-  <button id="htPreviewOpen" title="预览本片全局 head / tail 约束（跑片时自动合并进每段）">预览全局提示词</button>
+  <button id="htPreviewOpen" title="编辑所有片共用的 head / tail 约束（保存后写回 selflift.global.json，自动备份 .bak）">共用提示词</button>
   <select id="quality" title="画质档位（决定采样前几步在低分辨率跑）：省时=细节偏软；标准=折中；高画质=细节明显更好（实测 4 秒段几乎不增加耗时）。换档位等于换采样轨迹，同 seed 也会出不同画面，所以会让全片标记「需重出」">
     <option value="fast">省时画质</option>
     <option value="standard">标准画质</option>
@@ -248,7 +248,7 @@
   <div class="pbbar">
     <b>本片设定</b>
     <span class="dim">只写这部片是什么：人物、地点、时间、天气、光线、情绪，写一次全片共用。
-      通用约束由全局配置在跑片时自动加入，不用你填、也不用你看</span>
+      通用约束在工具条的「共用提示词」里改（所有片共用）</span>
     <span class="grow"></span>
     <button id="pbToggle">收起</button>
   </div>
@@ -409,30 +409,33 @@
   </div>
 </div>
 
-<!-- 预览本片全局 head / tail（字段可编辑，但仅本地，不写回模板） -->
+<!-- 共用提示词（全局约束层）：可直接编辑并保存，所有片共用 -->
 <div class="modal hidden" id="htPreviewModal">
-  <div class="dialog" style="max-width:720px">
-    <h2>本片全局提示词 <span class="dim" style="font-size:12px">· head / tail</span></h2>
-    <label class="dim" style="font-size:12px">全局 head（身份 / 场景锚，所有段共用；{pic:N} 占位符按本段接线换算）</label>
-    <textarea id="htHead" rows="9" spellcheck="false"
-      placeholder="（空：本片未单独设置，跑片时使用全局默认约束）"></textarea>
+  <div class="dialog" style="max-width:760px">
+    <h2>共用提示词 <span class="dim" style="font-size:12px">· head / tail（全部片共用）</span></h2>
+    <div class="dim" id="htPath" style="font-size:11px;margin-bottom:6px"></div>
+    <label class="dim" style="font-size:12px">head（人物身份 / 场景锚 / 表情与生理约束；<code>{pic:N}</code> 按本段接线换算，<code>{story}</code> 是本片设定的注入槽）</label>
+    <textarea id="htHead" rows="12" spellcheck="false"></textarea>
     <div class="row" style="margin-top:4px">
       <button id="htCopyHead" class="dim" style="font-size:12px">复制 head</button>
       <span class="grow"></span>
     </div>
-    <label class="dim" style="font-size:12px;margin-top:8px;display:block">全局 tail（画风 / 衔接规则）</label>
-    <textarea id="htTail" rows="6" spellcheck="false"
-      placeholder="（空：本片未单独设置，跑片时使用全局默认约束）"></textarea>
+    <label class="dim" style="font-size:12px;margin-top:8px;display:block">tail（画风 / 段尾衔接 / 全片禁止项）</label>
+    <textarea id="htTail" rows="8" spellcheck="false"></textarea>
     <div class="row" style="margin-top:4px">
       <button id="htCopyTail" class="dim" style="font-size:12px">复制 tail</button>
       <span class="grow"></span>
     </div>
     <div class="row" style="margin-top:10px">
-      <span id="htState" class="dim" style="font-size:12px"></span>
-      <span class="grow"></span>
-      <button id="htPreviewClose" class="primary">关闭</button>
+      <button id="htSaveGlobal" class="primary">保存到共用提示词</button>
+      <button id="htSaveApply">保存并套用到本片</button>
+      <button id="htPreviewClose">关闭</button>
     </div>
-    <div class="tip" style="margin-top:8px">此处可编辑，但<b>不会写回</b>本片 head / tail 模板（重新打开会还原为已保存内容）。仅供查看、微调后复制使用。</div>
+    <div id="htState" class="dim" style="font-size:12px;margin-top:6px"></div>
+    <div class="tip" style="margin-top:8px">
+      这里改的是<b>所有片共用</b>的约束层（<code>selflift.global.json</code>），保存前自动备份 <code>.bak</code>。
+      <br>只想改这一部片 → 用上面的「本片设定」（注入 head 末尾的 <code>{story}</code> 槽）；只想改某一段 → 写该段的 body。
+    </div>
   </div>
 </div>
 
@@ -930,7 +933,7 @@ function optContext() {
   });
 })();
 
-/* ---------- 预览本片全局 head / tail ---------- */
+/* ---------- 共用提示词（全局约束层 head / tail，可改可存） ---------- */
 (function setupHtPreview() {
   const $ = (id) => document.getElementById(id);
   const modal = $("htPreviewModal");
@@ -938,17 +941,15 @@ function optContext() {
     modal.classList.remove("hidden");
     $("htHead").value = ""; $("htTail").value = "";
     $("htState").textContent = "读取中…";
-    if (!state.cfg) { $("htState").textContent = "先选一部片"; return; }
     try {
-      const r = await getJSON("/h3-long-video/selflift/global?cfg=" + encodeURIComponent(state.cfg));
-      if (r.ok) {
-        $("htHead").value = r.head || "";
-        $("htTail").value = r.tail || "";
-        const empty = !r.head && !r.tail;
-        $("htState").textContent = empty
-          ? "本片未单独设置 head / tail，跑片时使用全局默认约束"
-          : "已显示本片全局 head / tail（所有段共用，跑片时自动合并）";
-      } else $("htState").textContent = "读取失败：" + (r.error || "");
+      // 读模板原件（带 {story} 槽），不是本片已注入 story 的 head
+      const r = await getJSON("/h3-long-video/selflift/global-cfg");
+      if (!r.ok) { $("htState").textContent = "读取失败：" + (r.error || ""); return; }
+      $("htHead").value = r.head || "";
+      $("htTail").value = r.tail || "";
+      $("htPath").textContent = "文件：" + (r.path || "") +
+        (r.has_story_slot ? "" : " ｜ ⚠ 没有 {story} 槽，本片设定不会注入");
+      $("htState").textContent = "已载入共用提示词（改完点下面按钮保存）";
     } catch (e) { $("htState").textContent = "读取失败：" + e.message; }
   }
   function copyText(txt, label) {
@@ -965,8 +966,29 @@ function optContext() {
       navigator.clipboard.writeText(txt).then(done).catch(fallback);
     } else fallback();
   }
+  async function saveHt(apply) {
+    const head = $("htHead").value, tail = $("htTail").value;
+    if (!head.trim() || !tail.trim()) {
+      $("htState").textContent = "head / tail 都不能为空（清空会把所有片弄坏）"; return;
+    }
+    if (apply && !state.cfg) { $("htState").textContent = "先在上面选一部片，再点「保存并套用到本片」"; return; }
+    $("htState").textContent = apply ? "保存并套用中…" : "保存中…";
+    try {
+      const payload = { head, tail, apply: !!apply };
+      if (apply) payload.cfg = state.cfg;
+      const r = await apiJson("/h3-long-video/selflift/global-cfg", payload);
+      if (!r.ok) { $("htState").textContent = "保存失败：" + (r.error || ""); return; }
+      $("htState").textContent = (r.changed === false
+        ? "内容没变，未写入。"
+        : (apply ? "已保存并套用到本片。" : "已保存到共用提示词。") + " 原文件已备份 .bak。")
+        + (r.note ? " " + r.note : "");
+      if (apply && r.changed !== false) await reload();
+    } catch (e) { $("htState").textContent = "保存失败：" + e.message; }
+  }
   $("htCopyHead").addEventListener("click", () => copyText($("htHead").value, "head"));
   $("htCopyTail").addEventListener("click", () => copyText($("htTail").value, "tail"));
+  $("htSaveGlobal").addEventListener("click", () => saveHt(false));
+  $("htSaveApply").addEventListener("click", () => saveHt(true));
   $("htPreviewOpen").addEventListener("click", openHtPreview);
   $("htPreviewClose").addEventListener("click", () => modal.classList.add("hidden"));
   modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
@@ -1696,6 +1718,7 @@ function card(seg, total) {
   const body = document.createElement("textarea");
   body.value = seg.body || "";
   body.dataset.seg = seg.id; body.dataset.keep = "body";
+  body.placeholder = "只写这一段的动作 / 机位 / 光线 / 场景。人物长相与服装、画风、禁止项写在「共用提示词」和「本片设定」里——写在这里会被它们盖掉。";
   body.addEventListener("input", () => { body.dataset.dirty = "1"; });
 
   // 优化后提示词：独立字段，跑片时优先于原提示词使用；留空则回退原提示词
