@@ -1477,7 +1477,7 @@ function cardSignature(data) {
     data.title,
     data.segments.map((s) => [
       s.index, s.id, s.seed, s.done, s.stale, s.running, s.mtime,
-      s.first_url, s.last_url, s.video_url, s.body, s.optimized_body,
+      s.first_url, s.last_url, s.video_url, s.body, s.optimized_body, s.optimized_at,
       s.link?.mode, s.link?.transition,
       s.first_frame_override, s.last_frame_override,
       s.ref_video_url, s.ref_video_seconds,
@@ -1590,6 +1590,15 @@ function thumb(seg, side, label) {
   return box;
 }
 
+/** 秒级时间戳 → "MM-DD HH:mm"；没有/非法返回空串。 */
+function fmtTime(ts) {
+  if (!ts) return "";
+  const d = new Date(Number(ts) * 1000);
+  if (isNaN(d.getTime())) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return (d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+
 function card(seg, total) {
   const el = document.createElement("div");
   el.className = "card";
@@ -1606,6 +1615,15 @@ function card(seg, total) {
   const badge = document.createElement("span");
   badge.className = "badge"; badge.textContent = badgeFor(seg);
   head.append(idx, title, badge);
+  if (seg.optimized_body) {
+    const optTag = document.createElement("span");
+    optTag.className = "badge";
+    optTag.textContent = "✓ 已优化";
+    optTag.title = "本段已使用优化后提示词（跑片优先使用）"
+      + (seg.optimized_at ? "，优化于 " + fmtTime(seg.optimized_at) : "");
+    optTag.style.cssText = "background:#1f6f43;color:#d7ffe9;border:1px solid #2e9e63";
+    head.append(optTag);
+  }
 
   const thumbs = document.createElement("div");
   thumbs.className = "thumbs";
@@ -1685,12 +1703,25 @@ function card(seg, total) {
   optLabel.className = "dim";
   optLabel.style.cssText = "font-size:12px;margin-top:6px";
   optLabel.textContent = "优化后（跑片优先使用，留空则用上面的原提示词）：";
+  const optWrap = document.createElement("div");
+  optWrap.style.cssText = "position:relative";
   const optBody = document.createElement("textarea");
   optBody.value = seg.optimized_body || "";
   optBody.dataset.seg = seg.id; optBody.dataset.keep = "optimized_body";
   optBody.placeholder = "点「优化」生成，也可手动微调；留空 = 跑片用原提示词。";
   optBody.style.cssText = "margin-top:2px";
   optBody.addEventListener("input", () => { optBody.dataset.dirty = "1"; });
+  optWrap.append(optBody);
+  if (seg.optimized_body) {
+    // 优化时间贴在框的右上角（压在边框上，不挡正文）
+    const optStamp = document.createElement("span");
+    optStamp.textContent = "✓ 已优化 · " + (fmtTime(seg.optimized_at) || "已保存");
+    optStamp.style.cssText =
+      "position:absolute;top:-9px;right:8px;font-size:11px;line-height:1.4;"
+      + "color:#7fe0a8;background:#12181f;border:1px solid #2e9e63;"
+      + "border-radius:5px;padding:0 6px;pointer-events:none;white-space:nowrap";
+    optWrap.append(optStamp);
+  }
 
   const editRow = document.createElement("div");
   editRow.className = "row";
@@ -1737,6 +1768,7 @@ function card(seg, total) {
             { cfg: state.cfg, seg: seg.index, body: body.value, optimized_body: optBody.value });
           optBody.dataset.dirty = "";
           say("第 " + seg.index + " 段已优化并保存（跑片将使用优化后内容）" + note, "ok");
+          await reload();   // 立刻刷新卡片：贴出「✓ 已优化 · 时间」
         } catch (e) {
           optBody.dataset.dirty = "1";
           say("优化成功但未保存：" + e.message + "（手动点「保存提示词」生效）" + note, "error");
@@ -1757,6 +1789,7 @@ function card(seg, total) {
         { cfg: state.cfg, seg: seg.index, body: body.value, optimized_body: optBody.value });
       optBody.dataset.dirty = "";
       say("已清除并保存优化后内容，跑片将用原提示词", "ok");
+      await reload();   // 去掉「✓ 已优化」标签
     } catch (e) {
       optBody.dataset.dirty = "1";
       say("清除未保存：" + e.message + "（手动点「保存提示词」生效）", "error");
@@ -1974,7 +2007,7 @@ function card(seg, total) {
   }
   srBox.append(bpHead, bpItems);
 
-  el.append(head, thumbs, row, body, optLabel, optBody, editRow, rvRow, srBox);
+  el.append(head, thumbs, row, body, optLabel, optWrap, editRow, rvRow, srBox);
   if (linkRow.childNodes.length) el.append(linkRow);
   return el;
 }
