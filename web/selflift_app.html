@@ -220,7 +220,7 @@
   <button id="refreshMedia" title="强制重新拉取所有首帧/尾帧/视频缩略图（缓存兜底）">刷新预览</button>
   <button id="optOpen" title="把一段提示词发给 LM Studio，改写成更贴 H3 的结构（保留 {pic:N} 占位符）">提示词优化器</button>
   <button id="lmCfgOpen" title="查看/修改全局优化器配置（LM Studio 地址与模型名，全项目通用）">优化器配置</button>
-  <button id="htPreviewOpen" title="编辑 head / tail 提示词：可改「所有片共用」的版本，也可只改当前这一部片（覆盖共用）">提示词约束</button>
+  <button id="htPreviewOpen" title="编辑 head / tail：「更新模板」改所有片，「更新本篇」只改当前这部片（不动模板）">提示词约束</button>
   <select id="quality" title="画质档位（决定采样前几步在低分辨率跑）：省时=细节偏软；标准=折中；高画质=细节明显更好（实测 4 秒段几乎不增加耗时）。换档位等于换采样轨迹，同 seed 也会出不同画面，所以会让全片标记「需重出」">
     <option value="fast">省时画质</option>
     <option value="standard">标准画质</option>
@@ -414,10 +414,10 @@
   <div class="dialog" style="max-width:760px">
     <h2>提示词约束 <span class="dim" style="font-size:12px">· head / tail</span></h2>
     <div class="row" style="margin-bottom:6px">
-      <label class="dim" style="font-size:12px">作用范围
+      <label class="dim" style="font-size:12px">载入
         <select id="htScope">
-          <option value="global">共用（所有片）</option>
-          <option value="film">只当前这部片（覆盖共用）</option>
+          <option value="global">共用模板（所有片）</option>
+          <option value="film">本片当前内容</option>
         </select>
       </label>
       <span class="grow"></span>
@@ -438,8 +438,8 @@
       <span class="grow"></span>
     </div>
     <div class="row" style="margin-top:10px">
-      <button id="htSave" class="primary">保存到共用提示词</button>
-      <button id="htSaveApply">保存到共用并套用本片</button>
+      <button id="htSave" class="primary">更新模板（所有片）</button>
+      <button id="htSaveApply">更新本篇（只这一片，不动模板）</button>
       <button id="htClearOverride" hidden>清除本片覆盖</button>
       <button id="htPreviewClose">关闭</button>
     </div>
@@ -942,56 +942,55 @@ function optContext() {
   });
 })();
 
-/* ---------- 提示词约束：共用（所有片）/ 本片覆盖（只当前这部片） ---------- */
+/* ---------- 提示词约束：一个弹窗，两个出口（更新模板 / 更新本篇） ---------- */
 (function setupHtPreview() {
   const $ = (id) => document.getElementById(id);
   const modal = $("htPreviewModal");
+  const enc = encodeURIComponent;
   const TIPS = {
-    global: "改这里 = <b>所有片</b>一起变（写 <code>selflift.global.json</code>，保存前自动备份 <code>.bak</code>）。"
-          + "<br>只想改这一部片 → 作用范围切到「只当前这部片」。",
-    film: "只改<b>当前这部片</b>：内容存进本片配置，<b>不动</b>共用模板，换片不受影响。"
-        + "<br>head / tail 留空 = 跟随共用；随时可用「清除本片覆盖」回退。",
+    global: "正在编辑 <b>共用模板</b>：点「更新模板」后<b>所有片</b>都跟着变"
+          + "（写 <code>selflift.global.json</code>，保存前自动备份 <code>.bak</code>）。",
+    film: "正在编辑 <b>本片自己那份</b>：点「更新本篇」只写进这部片，<b>不动模板</b>，换片不受影响。"
+        + "留空 = 跟随模板；想回退点「清除本片覆盖」。",
   };
+  let cache = { g: null, f: null };   // g = 模板原件（带 {story} 槽），f = 本片覆盖信息
   const scope = () => $("htScope").value;
 
-  function applyScopeUi() {
+  function fill() {
     const film = scope() === "film";
-    $("htSave").textContent = film ? "保存本片覆盖" : "保存到共用提示词";
-    $("htSaveApply").hidden = film;
-    $("htClearOverride").hidden = !film;
-    $("htPreload").hidden = !film;
+    const g = cache.g || { head: "", tail: "" };
+    const f = cache.f || {};
+    if (film) {
+      $("htHead").value = f.head_override || "";
+      $("htTail").value = f.tail_override || "";
+      $("htScopeHint").textContent = f.has_override ? "本片有自己的提示词" : "本片跟随模板";
+    } else {
+      $("htHead").value = g.head || "";
+      $("htTail").value = g.tail || "";
+      $("htScopeHint").textContent = "共用模板（所有片）";
+    }
+    $("htClearOverride").hidden = !f.has_override;
+    $("htPreload").hidden = !(film && !f.has_override);
     $("htTip").innerHTML = TIPS[film ? "film" : "global"];
   }
 
   async function load() {
-    const film = scope() === "film";
     $("htState").textContent = "读取中…";
-    $("htHead").value = ""; $("htTail").value = ""; $("htPath").textContent = "";
+    cache = { g: null, f: null };
     try {
-      if (!film) {
-        const r = await getJSON("/h3-long-video/selflift/global-cfg");
-        if (!r.ok) { $("htState").textContent = "读取失败：" + (r.error || ""); return; }
-        $("htHead").value = r.head || ""; $("htTail").value = r.tail || "";
-        $("htPath").textContent = "文件：" + (r.path || "") +
-          (r.has_story_slot ? "" : " ｜ ⚠ 没有 {story} 槽，「本片设定」不会注入");
-        $("htScopeHint").textContent = "当前：共用模板（所有片）";
-        $("htState").textContent = "已载入共用提示词（改完点下面按钮保存）";
-        return;
+      const g = await getJSON("/h3-long-video/selflift/global-cfg");
+      if (!g.ok) { $("htState").textContent = "读取失败：" + (g.error || ""); return; }
+      cache.g = g;
+      if (state.cfg) {
+        const f = await getJSON("/h3-long-video/selflift/film-override?cfg=" + enc(state.cfg));
+        if (f.ok) cache.f = f;
       }
-      if (!state.cfg) { $("htState").textContent = "先在上面选一部片"; return; }
-      const r = await getJSON("/h3-long-video/selflift/film-override?cfg="
-                              + encodeURIComponent(state.cfg));
-      if (!r.ok) { $("htState").textContent = "读取失败：" + (r.error || ""); return; }
-      $("htHead").value = r.head_override || "";
-      $("htTail").value = r.tail_override || "";
-      $("htPath").textContent = "本片配置：" + (r.path || "");
-      $("htScopeHint").textContent = r.has_override
-        ? "当前：本片有自己的提示词" : "当前：跟随共用提示词";
-      $("htState").textContent = r.has_override
-        ? "已载入本片覆盖（保存后只影响这部片）"
-        : "本片没单独设置，留空 = 跟随共用；要改就点「以共用内容为底稿」";
-      $("htPreload").dataset.baseHead = r.base_head || "";
-      $("htPreload").dataset.baseTail = r.base_tail || "";
+      $("htPath").textContent = "模板文件：" + (g.path || "") +
+        (g.has_story_slot ? "" : " ｜ ⚠ 模板里没有 {story} 槽，「本片设定」不会被注入");
+      fill();
+      $("htState").textContent = (cache.f && cache.f.has_override)
+        ? "本片有独立提示词；点「清除本片覆盖」可回退到模板"
+        : "本片跟随模板";
     } catch (e) { $("htState").textContent = "读取失败：" + e.message; }
   }
 
@@ -1010,76 +1009,79 @@ function optContext() {
     } else fallback();
   }
 
-  async function saveGlobal(apply) {
+  // 出口一：写共用模板（所有片）
+  async function saveTemplate() {
     const head = $("htHead").value, tail = $("htTail").value;
     if (!head.trim() || !tail.trim()) {
-      $("htState").textContent = "head / tail 都不能为空（清空会把所有片弄坏）"; return;
+      $("htState").textContent = "更新模板时 head / tail 都不能为空（清空会把所有片弄坏）"; return;
     }
-    if (apply && !state.cfg) { $("htState").textContent = "先选一部片，再点「保存到共用并套用本片」"; return; }
-    $("htState").textContent = apply ? "保存并套用中…" : "保存中…";
+    $("htState").textContent = "写入模板中…";
     try {
-      const payload = { head, tail, apply: !!apply };
-      if (apply) payload.cfg = state.cfg;
-      const r = await apiJson("/h3-long-video/selflift/global-cfg", payload);
-      if (!r.ok) { $("htState").textContent = "保存失败：" + (r.error || ""); return; }
+      const r = await apiJson("/h3-long-video/selflift/global-cfg", { head, tail });
+      if (!r.ok) { $("htState").textContent = "更新失败：" + (r.error || ""); return; }
+      const cur = scope();
+      await load();
+      $("htScope").value = cur; fill();
       $("htState").textContent = (r.changed === false
-        ? "内容没变。"
-        : (apply ? "已保存到共用并套用本片。" : "已保存到共用提示词。") + " 原文件已备份 .bak。")
+        ? "模板内容没变，没写文件。"
+        : "模板已更新，所有片下次跑片生效（原文件已备份 .bak）。")
         + (r.note ? " " + r.note : "");
-      if (apply && r.changed !== false) await reload();
-    } catch (e) { $("htState").textContent = "保存失败：" + e.message; }
+      await reload();
+    } catch (e) { $("htState").textContent = "更新失败：" + e.message; }
   }
 
+  // 出口二：只写本片，不动模板
   async function saveFilm() {
-    if (!state.cfg) { $("htState").textContent = "先选一部片"; return; }
+    if (!state.cfg) { $("htState").textContent = "先在页面上选一部片"; return; }
     const head = $("htHead").value, tail = $("htTail").value;
     if (!head.trim() && !tail.trim()) {
-      $("htState").textContent = "两项都空 = 等于清除覆盖；要清除请点「清除本片覆盖」"; return;
+      $("htState").textContent = "两项都空 = 等于清除覆盖；要回退请点「清除本片覆盖」"; return;
     }
-    $("htState").textContent = "保存中…";
+    $("htState").textContent = "写入本片中…";
     try {
       const r = await apiJson("/h3-long-video/selflift/film-override",
                               { cfg: state.cfg, head, tail });
-      if (!r.ok) { $("htState").textContent = "保存失败：" + (r.error || ""); return; }
-      $("htState").textContent = "已保存到本片。" + (r.note ? " " + r.note : "");
-      await reload();
+      if (!r.ok) { $("htState").textContent = "更新失败：" + (r.error || ""); return; }
       await load();
-    } catch (e) { $("htState").textContent = "保存失败：" + e.message; }
+      $("htScope").value = "film"; fill();
+      $("htState").textContent = "已更新本篇，模板未改动。" + (r.note ? " " + r.note : "");
+      await reload();
+    } catch (e) { $("htState").textContent = "更新失败：" + e.message; }
   }
 
-  async function clearFilmOverride() {
-    if (!state.cfg) { $("htState").textContent = "先选一部片"; return; }
+  async function clearFilm() {
+    if (!state.cfg) { $("htState").textContent = "先在页面上选一部片"; return; }
     $("htState").textContent = "清除中…";
     try {
       const r = await apiJson("/h3-long-video/selflift/film-override",
                               { cfg: state.cfg, head: "", tail: "" });
       if (!r.ok) { $("htState").textContent = "清除失败：" + (r.error || ""); return; }
-      $("htState").textContent = "已清除本片覆盖。" + (r.note ? " " + r.note : "");
-      await reload();
       await load();
+      $("htScope").value = "film"; fill();
+      $("htState").textContent = "已清除本片覆盖，回到模板。" + (r.note ? " " + r.note : "");
+      await reload();
     } catch (e) { $("htState").textContent = "清除失败：" + e.message; }
   }
 
   $("htCopyHead").addEventListener("click", () => copyText($("htHead").value, "head"));
   $("htCopyTail").addEventListener("click", () => copyText($("htTail").value, "tail"));
   $("htPreload").addEventListener("click", () => {
-    $("htHead").value = $("htPreload").dataset.baseHead || "";
-    $("htTail").value = $("htPreload").dataset.baseTail || "";
-    $("htState").textContent = "已用共用内容填充，改完点「保存本片覆盖」";
+    const g = cache.g || {};
+    $("htHead").value = g.head || "";
+    $("htTail").value = g.tail || "";
+    $("htState").textContent = "已用模板填充（含 {story} 槽，本片设定仍会注入），改完点「更新本篇」";
   });
-  $("htScope").addEventListener("change", () => { applyScopeUi(); load(); });
-  $("htSave").addEventListener("click", () => (scope() === "film" ? saveFilm() : saveGlobal(false)));
-  $("htSaveApply").addEventListener("click", () => saveGlobal(true));
-  $("htClearOverride").addEventListener("click", clearFilmOverride);
+  $("htScope").addEventListener("change", fill);
+  $("htSave").addEventListener("click", saveTemplate);
+  $("htSaveApply").addEventListener("click", saveFilm);
+  $("htClearOverride").addEventListener("click", clearFilm);
   $("htPreviewOpen").addEventListener("click", () => {
     modal.classList.remove("hidden");
-    applyScopeUi();
     load();
   });
   $("htPreviewClose").addEventListener("click", () => modal.classList.add("hidden"));
   modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
 })();
-
 
 /* ---------- 全局分辨率：百万像素 + 画幅比例 ---------- */
 // 必须与 ComfyUI 的 ResolutionSelector 节点算法逐位一致（comfy_extras/nodes_resolution.py）：
