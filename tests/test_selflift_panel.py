@@ -49,11 +49,12 @@ class TestSelfLiftPanel(unittest.TestCase):
         routes = FakeRoutes()
         SP.register_routes(routes, FakeWeb())
         urls = {path for _, path in routes.paths}
-        self.assertEqual(len(urls), 23, f"路由数不对：{routes.paths}")
+        self.assertEqual(len(urls), 26, f"路由数不对：{routes.paths}")
         for suffix in ("status", "set", "run", "merge", "init", "upload", "frame",
                        "media", "insert", "refimg", "import", "preview", "template",
-                       "refvideo", "rename", "films", "delete", "runall",
-                       "global", "apply-global", "export"):
+                       "refvideo", "rename", "films", "delete", "delete-seg", "runall",
+                       "global", "apply-global", "export", "prompt-lm-config",
+                       "optimize-prompt"):
             self.assertIn(f"/h3-long-video/selflift/{suffix}", urls)
         self.assertIn("/h3-long-video/app", urls)
 
@@ -312,6 +313,143 @@ class TestSelfLiftPanel(unittest.TestCase):
             self.assertIn("【新增约束】测试用。", c["tail"])
             self.assertEqual(c["story"], story)
             self.assertIn("head_updated_at", c)
+
+    def test_run_keeps_local_visual_params(self):
+        """跑片自动合并全局时，本片自己定的画幅/分辨率/画质/秒数不能被覆盖。
+
+        回归：以前是无条件 `for k, v in g.items(): cfg[k] = v`，点一次「一键跑全片」
+        就把 9:16 / 高画质冲回全局的 16:9 / 省时画质；而且本片与全局不一致这件事
+        本身还会被判成「约束漂移」，反过来触发一次全量覆盖。
+        """
+        import json
+        import tempfile
+        from pathlib import Path
+        import selflift_schema as SCHEMA
+
+        g = SCHEMA.load_global_cfg()
+        story = "黑衣男生，深夜站台。"
+        local = {"aspect_ratio": "9:16 (Portrait Widescreen)",
+                 "megapixels": 0.8, "quality": "high", "seconds": 5.0}
+        # 前提：全局值与本片值必须真的不同，否则测不出覆盖
+        for k, v in local.items():
+            self.assertNotEqual(g.get(k), v, f"全局配置的 {k} 与测试值相同，测不出覆盖")
+
+        with tempfile.TemporaryDirectory(dir="D:/Comfy-Desktop/output") as td:
+            p = Path(td) / "segments.json"
+            cfg = dict(g)
+            cfg.update(local)
+            cfg.update({"title": "本片参数", "story": story,
+                        "head": SCHEMA.compose_head(g["head"], story),
+                        "segments": [{"id": "s01", "body": "他抬头。"}]})
+            p.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+
+            # 1) 全局约束没变：连文件都不该动
+            SP._sync_global_to_cfg(p)
+            c = json.loads(p.read_text(encoding="utf-8"))
+            for k, v in local.items():
+                self.assertEqual(c[k], v, f"约束未变时 {k} 被改了")
+
+            # 2) 全局约束变了（head 改写）：本片参数仍要保留
+            g2 = dict(g, tail=g["tail"] + "\n【新增】测试。")
+            orig = SP._global_cfg
+            SP._global_cfg = lambda: g2
+            try:
+                SP._sync_global_to_cfg(p)
+            finally:
+                SP._global_cfg = orig
+            c = json.loads(p.read_text(encoding="utf-8"))
+            self.assertIn("【新增】测试。", c["tail"], "全局约束没合并进来")
+            for k, v in local.items():
+                self.assertEqual(c[k], v, f"合并全局约束后 {k} 被覆盖了")
+
+            # 3) 本片字段缺失时，才用全局缺省补
+            for k in local:
+                c.pop(k, None)
+            p.write_text(json.dumps(c, ensure_ascii=False), encoding="utf-8")
+            SP._sync_global_to_cfg(p, force=True)
+            c = json.loads(p.read_text(encoding="utf-8"))
+            for k in local:
+                self.assertEqual(c[k], g[k], f"本片缺 {k} 时没有补上全局缺省")
+
+    def test_delete_seg_removes_only_that_segment(self):
+        """段卡片的「删除视频」只删这一段：mp4 + 本段首尾帧，片目录/其它段/配置都留着。
+
+        回归：以前这个按钮调的是整片删除接口，按钮名和行为对不上，
+        每段都要弹一段「它删的是整部片文件夹」的解释。
+        """
+        import asyncio
+        import json
+        import tempfile
+        from pathlib import Path
+
+        class Req:
+            def __init__(self, p): self._p = p
+            async def json(self): return self._p
+
+        class W:
+            def json_response(self, data=None, status=200): return ("json", data, status)
+            def Response(self, **kw): return ("resp", kw)
+            def FileResponse(self, *a, **kw): return ("file", a, kw)
+
+        handlers = {}
+        class R:
+            def get(self, p):
+                def d(f): handlers[("GET", p)] = f; return f
+                return d
+            def post(self, p):
+                def d(f): handlers[("POST", p)] = f; return f
+                return d
+        SP.register_routes(R(), W())
+        handler = handlers[("POST", "/h3-long-video/selflift/delete-seg")]
+
+        with tempfile.TemporaryDirectory(dir="D:/Comfy-Desktop/output") as td:
+            film = Path(td) / "删段测试_0101_000000"
+            (film / "segments").mkdir(parents=True)
+            (film / "refs").mkdir()
+            cfg = film / "segments.json"
+            cfg.write_text(json.dumps({
+                "title": "删段测试", "prefix": "deltest",
+                "segments": [{"id": "s01", "body": "第一段"},
+                             {"id": "s02", "body": "第二段"}],
+            }, ensure_ascii=False), encoding="utf-8")
+
+            s01 = film / "segments" / "deltest_s01.mp4"; s01.write_bytes(b"v1")
+            s02 = film / "segments" / "deltest_s02.mp4"; s02.write_bytes(b"v2")
+            f01 = film / "refs" / "deltest_s01_first.png"; f01.write_bytes(b"p")
+            l01 = film / "refs" / "deltest_s01_last.png"; l01.write_bytes(b"p")
+
+            fake = {"prefix": "deltest", "finals": [],
+                    "segments": [
+                        {"index": 1, "id": "s01", "done": True, "video": str(s01),
+                         "first_frame": str(f01), "last_frame": str(l01)},
+                        {"index": 2, "id": "s02", "done": True, "video": str(s02),
+                         "first_frame": "", "last_frame": "",
+                         "link": {"mode": "chain"}},
+                    ]}
+
+            orig = SP._status_async
+            async def fake_status(_cfg): return fake
+            SP._status_async = fake_status
+            try:
+                _, data, status = asyncio.run(handler(Req({"cfg": str(cfg), "seg": 1})))
+            finally:
+                SP._status_async = orig
+
+            self.assertEqual(status, 200, data)
+            self.assertTrue(data["ok"], data)
+            self.assertFalse(s01.exists(), "第 1 段的视频没被删")
+            self.assertFalse(f01.exists(), "第 1 段首帧没被删")
+            self.assertFalse(l01.exists(), "第 1 段尾帧没被删")
+            self.assertTrue(s02.exists(), "误删了第 2 段的视频")
+            self.assertTrue(cfg.exists(), "把整部片的 cfg 删了")
+            self.assertTrue(film.is_dir(), "把整部片的文件夹删了")
+            # 下游是链式承接，提示里要点出来需要一起重出
+            self.assertIn("第 2 段", data["note"])
+
+            # 段号越界要报错，不能静默删东西
+            _, err, st2 = asyncio.run(handler(Req({"cfg": str(cfg), "seg": 9})))
+            self.assertEqual(st2, 400)
+            self.assertFalse(err["ok"])
 
     def test_frontend_only_exposes_content_layer(self):
         """页面上不再有公共约束的查看/编辑入口，只留内容层与导出。"""

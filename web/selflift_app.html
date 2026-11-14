@@ -11,8 +11,13 @@
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);
     font:13px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  /* 顶部控制区整体吸顶：header + 工具条两层一起固定，滚动页面时控件不跑掉。
+     用外层 sticky 而不是分别给 header/.bar 设 top，是因为 .bar 会换行、高度不固定，
+     写死 top 偏移在窄屏/多按钮时会错位。 */
+  .topwrap{position:sticky;top:0;z-index:40;
+    background:var(--panel);box-shadow:0 6px 16px rgba(0,0,0,.32)}
   header{display:flex;align-items:center;gap:12px;padding:10px 16px;
-    background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
+    background:var(--panel);border-bottom:1px solid var(--line)}
   header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.5px}
   header .cfg{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
   #filmSel{max-width:360px;font-size:12px;padding:4px 6px}
@@ -172,6 +177,7 @@
 </style>
 </head>
 <body>
+<div class="topwrap">
 <header>
   <h1>SelfLift 出片台</h1>
   <input id="filmFilter" type="text" placeholder="搜片名 / 编号" autocomplete="off"
@@ -212,6 +218,9 @@
   <button id="randSeeds" title="给全片每一段各换一个新随机 seed，写入配置并标记需重出（不会自动开始跑片）">🎲 随机所有 seed</button>
   <button id="saveAll" title="把页面上所有改过的提示词、seed、全片 head/tail 一次性写回分镜 JSON">保存所有修改</button>
   <button id="refreshMedia" title="强制重新拉取所有首帧/尾帧/视频缩略图（缓存兜底）">刷新预览</button>
+  <button id="optOpen" title="把一段提示词发给 LM Studio，改写成更贴 H3 的结构（保留 {pic:N} 占位符）">提示词优化器</button>
+  <button id="lmCfgOpen" title="查看/修改全局优化器配置（LM Studio 地址与模型名，全项目通用）">优化器配置</button>
+  <button id="htPreviewOpen" title="预览本片全局 head / tail 约束（跑片时自动合并进每段）">预览全局提示词</button>
   <select id="quality" title="画质档位（决定采样前几步在低分辨率跑）：省时=细节偏软；标准=折中；高画质=细节明显更好（实测 4 秒段几乎不增加耗时）。换档位等于换采样轨迹，同 seed 也会出不同画面，所以会让全片标记「需重出」">
     <option value="fast">省时画质</option>
     <option value="standard">标准画质</option>
@@ -225,6 +234,7 @@
     <option value="black">全片黑场</option>
   </select>
   <button id="merge">拼接成片</button>
+</div>
 </div>
 
 <div class="status" id="status" data-k="info">未选择片</div>
@@ -319,6 +329,108 @@
 </div>
 
 <div id="lightbox"><img id="lbImg" alt="" style="display:none"><video id="lbVid" controls style="display:none"></video></div>
+
+<!-- 提示词优化器：调 LM Studio（OpenAI 兼容）改写 H3 提示词 -->
+<div class="modal hidden" id="optModal">
+  <div class="dialog" style="max-width:760px">
+    <h2>提示词优化器 <span class="dim" style="font-size:12px">· LM Studio</span></h2>
+    <div class="row" style="flex-wrap:wrap;gap:8px">
+      <label class="dim" style="font-size:12px">LM Studio 地址
+        <input type="text" id="optApiBase" placeholder="http://IP:1234/v1" style="min-width:240px"></label>
+      <label class="dim" style="font-size:12px">模型名(可选)
+        <input type="text" id="optModel" placeholder="留空=用 LM Studio 当前加载的模型" style="min-width:200px"></label>
+      <button id="optTest">测试连接</button>
+      <span id="optTestState" class="dim" style="font-size:12px"></span>
+      <button id="optSaveCfg" style="margin-left:auto">保存连接配置</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <label class="dim" style="font-size:12px">类型
+        <select id="optKind">
+          <option value="body">单段 body（镜头描述）</option>
+          <option value="head">全局 head（身份/场景锚）</option>
+          <option value="tail">全局 tail（画风/衔接）</option>
+          <option value="full">完整提示词（按模式出结构）</option>
+        </select></label>
+      <label class="dim" style="font-size:12px">模式
+        <select id="optMode">
+          <option value="T2VA">T2VA 纯文本</option>
+          <option value="I2VA">I2VA 首帧</option>
+          <option value="FL2VA">FL2VA 首尾帧</option>
+          <option value="L2VA">L2VA 尾帧</option>
+          <option value="Ref2VA">Ref2VA 多参考</option>
+        </select></label>
+      <label class="dim" style="font-size:12px">时长(秒)
+        <input type="number" id="optDur" value="5" min="1" max="60" step="1" style="width:64px"></label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="optLoadHead" class="dim" style="font-size:12px">载入本片全局 head</button>
+      <button id="optLoadTail" class="dim" style="font-size:12px">载入本片全局 tail</button>
+    </div>
+    <textarea id="optInput" rows="9" spellcheck="false"
+      placeholder="把要优化的提示词粘到这里（head/tail/body 都行）。{pic:N} 占位符会自动保留。"></textarea>
+    <div class="row" style="margin-top:6px">
+      <button id="optRun" class="primary">优化</button>
+      <button id="optClear" class="dim" style="font-size:12px">清空</button>
+      <span id="optState" class="dim" style="font-size:12px"></span>
+    </div>
+    <textarea id="optResult" rows="9" spellcheck="false" readonly
+      placeholder="优化结果会显示在这里，可一键复制。"></textarea>
+    <div class="row" style="margin-top:6px">
+      <button id="optCopy" class="dim" style="font-size:12px">复制结果</button>
+      <span class="grow"></span>
+      <button id="optClose" class="primary">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 全局优化器配置：LM Studio 地址 + 模型名（全项目通用，一处修改所有片/段生效） -->
+<div class="modal hidden" id="lmCfgModal">
+  <div class="dialog" style="max-width:560px">
+    <h2>全局优化器配置 <span class="dim" style="font-size:12px">· LM Studio</span></h2>
+    <div class="row" style="flex-wrap:wrap;gap:8px">
+      <label class="dim" style="font-size:12px">LM Studio 地址
+        <input type="text" id="lmCfgApiBase" placeholder="http://IP:1234/v1" style="min-width:260px"></label>
+      <label class="dim" style="font-size:12px">模型名(可选)
+        <input type="text" id="lmCfgModel" placeholder="留空=用 LM Studio 当前加载的模型" style="min-width:220px"></label>
+      <label class="dim" style="font-size:12px">max_tokens(输出长度上限)
+        <input type="number" id="lmCfgMaxTokens" min="256" max="32768" step="256" value="4096" style="width:110px"></label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="lmCfgTest">测试连接</button>
+      <span id="lmCfgTestState" class="dim" style="font-size:12px"></span>
+      <span class="grow"></span>
+      <button id="lmCfgSave" class="primary">保存</button>
+      <button id="lmCfgClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 预览本片全局 head / tail（字段可编辑，但仅本地，不写回模板） -->
+<div class="modal hidden" id="htPreviewModal">
+  <div class="dialog" style="max-width:720px">
+    <h2>本片全局提示词 <span class="dim" style="font-size:12px">· head / tail</span></h2>
+    <label class="dim" style="font-size:12px">全局 head（身份 / 场景锚，所有段共用；{pic:N} 占位符按本段接线换算）</label>
+    <textarea id="htHead" rows="9" spellcheck="false"
+      placeholder="（空：本片未单独设置，跑片时使用全局默认约束）"></textarea>
+    <div class="row" style="margin-top:4px">
+      <button id="htCopyHead" class="dim" style="font-size:12px">复制 head</button>
+      <span class="grow"></span>
+    </div>
+    <label class="dim" style="font-size:12px;margin-top:8px;display:block">全局 tail（画风 / 衔接规则）</label>
+    <textarea id="htTail" rows="6" spellcheck="false"
+      placeholder="（空：本片未单独设置，跑片时使用全局默认约束）"></textarea>
+    <div class="row" style="margin-top:4px">
+      <button id="htCopyTail" class="dim" style="font-size:12px">复制 tail</button>
+      <span class="grow"></span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <span id="htState" class="dim" style="font-size:12px"></span>
+      <span class="grow"></span>
+      <button id="htPreviewClose" class="primary">关闭</button>
+    </div>
+    <div class="tip" style="margin-top:8px">此处可编辑，但<b>不会写回</b>本片 head / tail 模板（重新打开会还原为已保存内容）。仅供查看、微调后复制使用。</div>
+  </div>
+</div>
 
 <!-- MANUAL_DOC_BEGIN -->
 <script id="manualDoc" type="text/plain">
@@ -599,6 +711,12 @@ async function apiForm(path, form) {
   if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
   return data;
 }
+async function getJSON(path) {
+  const res = await fetch(path, { cache: "no-store" });
+  return await res.json().catch(() => ({}));
+}
+// 全局优化器配置（地址+模型名）。每段「优化」都读这一份，保证全片/全项目通用，不按片存。
+let LM_CFG = { api_base: "", model: "" };
 async function status() {
   if (!state.cfg) return null;
   const res = await fetch("/h3-long-video/selflift/status?cfg=" + encodeURIComponent(state.cfg),
@@ -607,6 +725,249 @@ async function status() {
   if (!res.ok || !data.ok) throw new Error(data.error || ("HTTP " + res.status));
   return data;
 }
+
+/* ---------- 提示词优化器：调 LM Studio（OpenAI 兼容） ---------- */
+function optBuildRefs(seg) {
+  const refs = [];
+  (seg.ref_images || []).forEach((r, i) =>
+    refs.push({ label: "{pic:" + (i + 1) + "}", role: (r.label || ("参考图" + (i + 1))) }));
+  if (seg.bg_plate || seg.bg_plate_url) refs.push({ label: "{pic:plate}", role: "无人背景板" });
+  if (seg.first_frame || seg.first_frame_override) refs.push({ label: "{pic:first}", role: "首帧" });
+  return refs;
+}
+function optSegMode(seg) {
+  if ((seg.ref_images && seg.ref_images.length) || seg.first_frame || seg.last_frame) return "Ref2VA";
+  return "T2VA";
+}
+async function optimizePrompt({ text, kind, mode, references, duration, api_base, model, story, title, aspect_ratio, resolution }) {
+  const body = { text, kind, mode, references: references || [], duration: duration || 5.0 };
+  if (story) body.story = story;
+  if (title) body.title = title;
+  if (aspect_ratio) body.aspect_ratio = aspect_ratio;
+  if (resolution) body.resolution = resolution;
+  if (api_base) body.api_base = api_base;
+  if (model) body.model = model;
+  return await apiJson("/h3-long-video/selflift/optimize-prompt", body);
+}
+/* 当前这部片的故事梗概 / 画幅 / 分辨率，给优化器当参考（拿不到就空） */
+function optContext() {
+  const d = state.data || {};
+  const ar = d.aspect_ratio || "";
+  let res = "";
+  try {
+    if (d.megapixels != null && ar) {
+      const [w, h] = resSize(Number(d.megapixels), ar);
+      if (w && h) res = w + "x" + h;
+    }
+  } catch (_) {}
+  return { story: d.story || "", title: d.title || "", aspect_ratio: ar, resolution: res };
+}
+
+(function setupOptimizer() {
+  const $ = (id) => document.getElementById(id);
+  const modal = $("optModal");
+  async function openOpt() {
+    modal.classList.remove("hidden");
+    try {
+      const r = await getJSON("/h3-long-video/selflift/prompt-lm-config");
+      if (r.ok) {
+        $("optApiBase").value = r.api_base || ""; $("optModel").value = r.model || "";
+        LM_CFG.api_base = r.api_base || ""; LM_CFG.model = r.model || "";
+        LM_CFG.max_tokens = r.max_tokens || 4096;
+      }
+    } catch (_) {}
+    $("optDur").value = (state.data && state.data.seconds) || 5;
+  }
+  function closeOpt() { modal.classList.add("hidden"); }
+
+  $("optOpen").addEventListener("click", openOpt);
+  $("optClose").addEventListener("click", closeOpt);
+  modal.addEventListener("click", (e) => { if (e.target === modal) closeOpt(); });
+
+  $("optSaveCfg").addEventListener("click", async () => {
+    try {
+      const r = await apiJson("/h3-long-video/selflift/prompt-lm-config",
+        { api_base: $("optApiBase").value.trim(), model: $("optModel").value.trim(),
+          max_tokens: LM_CFG.max_tokens || 4096 });
+      if (r.ok) { LM_CFG.api_base = r.api_base || ""; LM_CFG.model = r.model || ""; }
+      $("optTestState").textContent = r.ok ? "已保存连接配置（全项目通用）" : ("保存失败：" + (r.error || ""));
+    } catch (e) { $("optTestState").textContent = "保存失败：" + e.message; }
+  });
+
+  $("optTest").addEventListener("click", async () => {
+    const base = $("optApiBase").value.trim().replace(/\/$/, "");
+    if (!base) { $("optTestState").textContent = "先填 LM Studio 地址"; return; }
+    $("optTestState").textContent = "连接中…";
+    try {
+      const res = await fetch(base + "/models", { cache: "no-store" });
+      const d = await res.json().catch(() => ({}));
+      const models = d.data || [];
+      if (res.ok) {
+        if (!$("optModel").value.trim() && models.length) $("optModel").value = models[0].id || "";
+        $("optTestState").textContent = "✓ 已连通，加载了 " + models.length + " 个模型"
+          + ($("optModel").value ? ("（已填入：" + $("optModel").value + "）") : "");
+      } else {
+        $("optTestState").textContent = "✗ HTTP " + res.status;
+      }
+    } catch (e) { $("optTestState").textContent = "✗ 连不上：" + e.message; }
+  });
+
+  async function loadGlobal(which) {
+    if (!state.cfg) { say("先选一部片", "error"); return; }
+    try {
+      const r = await getJSON("/h3-long-video/selflift/global?cfg=" + encodeURIComponent(state.cfg));
+      if (r.ok) {
+        $("optInput").value = (which === "head" ? r.head : r.tail) || "";
+        $("optState").textContent = "已载入本片全局 " + which;
+      } else {
+        $("optState").textContent = "载入失败：" + (r.error || "未知错误");
+      }
+    } catch (e) { $("optState").textContent = "载入失败：" + e.message; }
+  }
+  $("optLoadHead").addEventListener("click", () => loadGlobal("head"));
+  $("optLoadTail").addEventListener("click", () => loadGlobal("tail"));
+
+  $("optClear").addEventListener("click", () => {
+    $("optInput").value = ""; $("optResult").value = ""; $("optState").textContent = "";
+  });
+  $("optCopy").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText($("optResult").value);
+      $("optState").textContent = "结果已复制";
+    } catch (_) {
+      $("optResult").select(); document.execCommand("copy"); $("optState").textContent = "结果已复制";
+    }
+  });
+
+  $("optRun").addEventListener("click", async () => {
+    const raw = $("optInput").value.trim();
+    if (!raw) { $("optState").textContent = "先粘贴要优化的提示词"; return; }
+    const btn = $("optRun"); btn.disabled = true; btn.textContent = "优化中…"; $("optState").textContent = "";
+    try {
+      const r = await optimizePrompt({
+        text: raw, kind: $("optKind").value, mode: $("optMode").value,
+        duration: parseFloat($("optDur").value) || 5,
+        ...optContext(),
+        api_base: $("optApiBase").value.trim(), model: $("optModel").value.trim(),
+      });
+      if (r.ok) {
+        $("optResult").value = r.optimized;
+        if (r.fallback) {
+          $("optState").textContent = r.reason === "no_lm_config"
+            ? "⚠ 未配置 LM，已用本地模板生成"
+            : "⚠ 模型连不通，已用本地模板兜底生成";
+        } else if (r.truncated) {
+          $("optState").textContent = "✓ 优化完成，但输出被 max_tokens 截断（请在「优化器配置」调大 max_tokens；若模型带思考请关掉 LM Studio 的 Enable Thinking）";
+        } else {
+          $("optState").textContent = "✓ 优化完成（模型：" + ($("optModel").value.trim() || "LM 默认") + "）";
+        }
+      } else $("optState").textContent = "✗ " + r.error;
+    } catch (e) { $("optState").textContent = "✗ " + e.message; }
+    finally { btn.disabled = false; btn.textContent = "优化"; }
+  });
+})();
+
+/* ---------- 全局优化器配置弹窗（地址 + 模型名，全项目通用） ---------- */
+(function setupLmCfg() {
+  const $ = (id) => document.getElementById(id);
+  const modal = $("lmCfgModal");
+  async function openLmCfg() {
+    modal.classList.remove("hidden");
+    try {
+      const r = await getJSON("/h3-long-video/selflift/prompt-lm-config");
+      if (r.ok) {
+        $("lmCfgApiBase").value = r.api_base || ""; $("lmCfgModel").value = r.model || "";
+        $("lmCfgMaxTokens").value = r.max_tokens || 4096;
+        LM_CFG.api_base = r.api_base || ""; LM_CFG.model = r.model || "";
+        LM_CFG.max_tokens = r.max_tokens || 4096;
+      }
+    } catch (_) {}
+    $("lmCfgTestState").textContent = LM_CFG.api_base
+      ? ("当前：" + LM_CFG.api_base + (LM_CFG.model ? (" / " + LM_CFG.model) : " / LM 默认模型")
+        + " · max_tokens=" + (LM_CFG.max_tokens || 4096))
+      : "当前未配置（每段「优化」将用本地模板兜底）";
+  }
+  function closeLmCfg() { modal.classList.add("hidden"); }
+
+  $("lmCfgOpen").addEventListener("click", openLmCfg);
+  $("lmCfgClose").addEventListener("click", closeLmCfg);
+  modal.addEventListener("click", (e) => { if (e.target === modal) closeLmCfg(); });
+
+  $("lmCfgTest").addEventListener("click", async () => {
+    const base = $("lmCfgApiBase").value.trim().replace(/\/$/, "");
+    if (!base) { $("lmCfgTestState").textContent = "先填 LM Studio 地址"; return; }
+    $("lmCfgTestState").textContent = "连接中…";
+    try {
+      const res = await fetch(base + "/models", { cache: "no-store" });
+      const d = await res.json().catch(() => ({}));
+      const models = d.data || [];
+      if (!res.ok) { $("lmCfgTestState").textContent = "✗ HTTP " + res.status; return; }
+      if (!models.length) { $("lmCfgTestState").textContent = "✓ 连上了，但没有可用模型（先在 LM Studio 里 Load Model）"; return; }
+      if (!$("lmCfgModel").value.trim()) $("lmCfgModel").value = models[0].id || "";
+      $("lmCfgTestState").textContent = "✓ 连上了，检测到 " + models.length + " 个模型"
+        + ($("lmCfgModel").value ? ("（已填入：" + $("lmCfgModel").value + "）") : "");
+    } catch (e) { $("lmCfgTestState").textContent = "✗ 连不上：" + e.message; }
+  });
+
+  $("lmCfgSave").addEventListener("click", async () => {
+    try {
+      const mt = Math.max(256, parseInt($("lmCfgMaxTokens").value, 10) || 4096);
+      const r = await apiJson("/h3-long-video/selflift/prompt-lm-config",
+        { api_base: $("lmCfgApiBase").value.trim(), model: $("lmCfgModel").value.trim(),
+          max_tokens: mt });
+      if (r.ok) {
+        LM_CFG.api_base = r.api_base || ""; LM_CFG.model = r.model || "";
+        LM_CFG.max_tokens = r.max_tokens || mt;
+        $("lmCfgTestState").textContent = "已保存（全项目通用） · 当前：" + (r.api_base || "（空）")
+          + (r.model ? (" / " + r.model) : " / LM 默认模型")
+          + " · max_tokens=" + (r.max_tokens || mt);
+      } else $("lmCfgTestState").textContent = "保存失败：" + (r.error || "");
+    } catch (e) { $("lmCfgTestState").textContent = "保存失败：" + e.message; }
+  });
+})();
+
+/* ---------- 预览本片全局 head / tail ---------- */
+(function setupHtPreview() {
+  const $ = (id) => document.getElementById(id);
+  const modal = $("htPreviewModal");
+  async function openHtPreview() {
+    modal.classList.remove("hidden");
+    $("htHead").value = ""; $("htTail").value = "";
+    $("htState").textContent = "读取中…";
+    if (!state.cfg) { $("htState").textContent = "先选一部片"; return; }
+    try {
+      const r = await getJSON("/h3-long-video/selflift/global?cfg=" + encodeURIComponent(state.cfg));
+      if (r.ok) {
+        $("htHead").value = r.head || "";
+        $("htTail").value = r.tail || "";
+        const empty = !r.head && !r.tail;
+        $("htState").textContent = empty
+          ? "本片未单独设置 head / tail，跑片时使用全局默认约束"
+          : "已显示本片全局 head / tail（所有段共用，跑片时自动合并）";
+      } else $("htState").textContent = "读取失败：" + (r.error || "");
+    } catch (e) { $("htState").textContent = "读取失败：" + e.message; }
+  }
+  function copyText(txt, label) {
+    if (!txt.trim()) { $("htState").textContent = label + " 为空，没啥可复制"; return; }
+    const done = () => { $("htState").textContent = "已复制 " + label; };
+    const fallback = () => {
+      const ta = document.createElement("textarea");
+      ta.value = txt; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); }
+      catch (_) { $("htState").textContent = "复制失败，请手动选中 " + label; }
+      document.body.removeChild(ta);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(done).catch(fallback);
+    } else fallback();
+  }
+  $("htCopyHead").addEventListener("click", () => copyText($("htHead").value, "head"));
+  $("htCopyTail").addEventListener("click", () => copyText($("htTail").value, "tail"));
+  $("htPreviewOpen").addEventListener("click", openHtPreview);
+  $("htPreviewClose").addEventListener("click", () => modal.classList.add("hidden"));
+  modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
+})();
+
 
 /* ---------- 全局分辨率：百万像素 + 画幅比例 ---------- */
 // 必须与 ComfyUI 的 ResolutionSelector 节点算法逐位一致（comfy_extras/nodes_resolution.py）：
@@ -835,27 +1196,30 @@ $("renameBtn").addEventListener("click", async () => {
   } catch (e) { say("改名失败：" + e.message, "error"); }
 });
 
-/* ---------- 删除整部片：删文件夹，删除前输入片名二次确认 ---------- */
-$("delBtn").addEventListener("click", async () => {
-  if (!state.cfg) { say("先选一部片再删除", "error"); return; }
+/* ---------- 删除整部片：删文件夹，删除前输入片名二次确认 ----------
+   只给工具条的「删除」用。段卡片上的「删除视频」走 deleteSeg()，只删这一段。 */
+async function deleteFilm() {
+  if (!state.cfg) { say("先选一部片再删除", "error"); return false; }
   // 优先从下拉列表里找当前片，找不到再退回已加载的 cfg 数据
   const f = (state.films || []).find((x) => normPath(x.path) === normPath(state.cfg))
          || (state.data && { title: state.data.title, film_id: state.data.film_id,
-                             dir: state.data.dir })
+                             // status 里这个字段叫 folder，不是 dir
+                             dir: state.data.folder })
          || {};
   const title = String(f.title || "").trim();
   const fid = String(f.film_id || "");
   const dir = String(f.dir || "");
   const confirmText = title || fid || dir;
-  if (!confirmText) { say("找不到这部片的名字，无法确认删除", "error"); return; }
+  if (!confirmText) { say("找不到这部片的名字，无法确认删除", "error"); return false; }
   const typed = window.prompt(
-    "⚠ 删除后不可恢复，整部片文件夹会被直接删掉。\n\n"
+    "⚠ 这会删掉整部片，不可恢复。\n\n"
     + `片名：${title || "（无）"}\n编号：#${fid || "—"}\n文件夹：${dir || "—"}\n\n`
-    + `请输入下面的名字以确认删除：\n「${confirmText}」`,
+    + `要删整部片，请输入它的名字确认：\n「${confirmText}」\n\n`
+    + "（只想删某一段的视频：关掉这个框，点那一行右侧的「删除视频」）",
     "");
-  if (typed === null) return;                                   // 取消
+  if (typed === null) return false;                              // 取消
   if (typed.trim() !== confirmText.trim()) {
-    say("输入的名字不一致，已取消删除", "error"); return;
+    say("输入的名字不一致，已取消删除", "error"); return false;
   }
   try {
     const r = await apiJson("/h3-long-video/selflift/delete", { cfg: state.cfg });
@@ -878,8 +1242,29 @@ $("delBtn").addEventListener("click", async () => {
       say(`已删除：「${r.dir}」 · 没有其它片了`, "ok");
       setTimeout(() => location.reload(), 800);
     }
-  } catch (e) { say("删除失败：" + e.message, "error"); }
-});
+    return true;
+  } catch (e) { say("删除失败：" + e.message, "error"); return false; }
+}
+$("delBtn").addEventListener("click", () => deleteFilm());
+
+/* ---------- 删除单段视频：只删这一段的产物，片和段配置都留着 ----------
+   删 mp4 + 本段首尾帧图 + ComfyUI input 里的尾帧副本；body / title / seed 不动，
+   所以删完直接点这一段的「跑」就能按原配置重出。 */
+async function deleteSeg(idx) {
+  if (!state.cfg) { say("先选一部片", "error"); return; }
+  const seg = ((state.data && state.data.segments) || []).find((s) => s.index === idx);
+  const name = seg ? `第 ${idx} 段「${seg.title || seg.id}」` : `第 ${idx} 段`;
+  if (!confirm(`删除 ${name} 的视频？\n\n`
+      + "只删这一段的视频文件和它的首尾帧图；段本身、提示词、seed、承接方式都保留，"
+      + "之后可以单独重跑这一段。整部片和其它段不受影响。")) return;
+  try {
+    const d = await apiJson("/h3-long-video/selflift/delete-seg",
+                            { cfg: state.cfg, seg: idx });
+    say(d.note + (d.removed.length ? " 已删：" + d.removed.join("、") : ""), "ok");
+    state.cardSig = null;   // 视频没了，卡片必须整体重画
+    await reload();
+  } catch (e) { say("删除第 " + idx + " 段视频失败：" + e.message, "error"); }
+}
 
 $("filmSel").addEventListener("change", async () => {
   await selectFilm($("filmSel").value);
@@ -923,20 +1308,21 @@ $("quality").addEventListener("change", async () => {
   const v = $("quality").value;
   const label = $("quality").selectedOptions[0].textContent.trim();
   if (v === state.savedQuality) return;
-  if (!confirm("把画质换成「" + label + "」？\n\n"
-      + "这改的是采样本身，不是后处理：同一个 seed 也会生成不同的画面（服装、发丝、背景都会变）。\n"
-      + "所以全片会被标记「需重出」，已经跑好的段也要重跑。\n\n"
-      + "省时 = 细节偏软；标准 = 折中；高画质 = 细节明显更好（实测 4 秒段几乎不增加耗时）。")) {
-    syncQuality(state.data || {});
-    return;
-  }
+  // 这里**不要**弹 confirm：切档位只是写一个字段，拦一道没有实际保护作用，
+  // 而连续切几次之后 Chrome 会抑制页面对话框（confirm 直接返回 false），
+  // 表现就是「选了高画质永远存不进去」——下拉框弹回去、也不报错。
+  // 结果统一用状态栏说清楚，失败时说清当前仍是哪个档位。
   state.qualityTouched = true;
   try {
     await apiJson("/h3-long-video/selflift/set", { cfg: state.cfg, quality: v });
-    say("画质已切换为「" + label + "」，全片标记需重出（点「一键跑全片」按新档位重跑）", "ok");
+    state.savedQuality = v;   // 立刻认，别等轮询（否则这 3 秒内再切一次会误判成「没变化」）
+    say("画质已切换为「" + label + "」，全片标记需重出（点「一键跑全片」按新档位重跑）。"
+        + "换档位等于换采样轨迹，同 seed 画面也会变。", "ok");
     await reload();
   } catch (e) {
-    say("切换画质失败：" + e.message, "error");
+    say("切换画质失败：" + e.message + "。画质仍停留在 "
+        + ({ fast: "省时", standard: "标准", high: "高画质" }[state.savedQuality] || state.savedQuality)
+        + "，可再点一次重试。", "error");
     syncQuality(state.data || {});
   } finally {
     state.qualityTouched = false;
@@ -1058,7 +1444,7 @@ function cardSignature(data) {
     data.title,
     data.segments.map((s) => [
       s.index, s.id, s.seed, s.done, s.stale, s.running, s.mtime,
-      s.first_url, s.last_url, s.video_url, s.body,
+      s.first_url, s.last_url, s.video_url, s.body, s.optimized_body,
       s.link?.mode, s.link?.transition,
       s.first_frame_override, s.last_frame_override,
       s.ref_video_url, s.ref_video_seconds,
@@ -1246,13 +1632,32 @@ function card(seg, total) {
     play.addEventListener("click", () => lightbox(bust(seg.video_url, seg.mtime), "video"));
     const dl = dlButton(seg.video_url, "下载");
     dl.style.marginLeft = "6px";
-    row.append(play, dl);
+    // 只删这一段的视频：mp4 + 首尾帧图，段配置保留，可单独重跑
+    const delSeg = document.createElement("button");
+    delSeg.textContent = "删除视频";
+    delSeg.title = "只删掉这一段的视频和它的首尾帧图；提示词、seed、整部片都保留，可单独重跑";
+    delSeg.style.cssText = "margin-left:6px;color:#fff;background:#c0392b;"
+                         + "border:1px solid #922b21;border-radius:5px";
+    delSeg.addEventListener("click", () => deleteSeg(seg.index));
+    row.append(play, dl, delSeg);
   }
 
   const body = document.createElement("textarea");
   body.value = seg.body || "";
   body.dataset.seg = seg.id; body.dataset.keep = "body";
   body.addEventListener("input", () => { body.dataset.dirty = "1"; });
+
+  // 优化后提示词：独立字段，跑片时优先于原提示词使用；留空则回退原提示词
+  const optLabel = document.createElement("div");
+  optLabel.className = "dim";
+  optLabel.style.cssText = "font-size:12px;margin-top:6px";
+  optLabel.textContent = "优化后（跑片优先使用，留空则用上面的原提示词）：";
+  const optBody = document.createElement("textarea");
+  optBody.value = seg.optimized_body || "";
+  optBody.dataset.seg = seg.id; optBody.dataset.keep = "optimized_body";
+  optBody.placeholder = "点「优化」生成，也可手动微调；留空 = 跑片用原提示词。";
+  optBody.style.cssText = "margin-top:2px";
+  optBody.addEventListener("input", () => { optBody.dataset.dirty = "1"; });
 
   const editRow = document.createElement("div");
   editRow.className = "row";
@@ -1261,11 +1666,68 @@ function card(seg, total) {
   saveBody.addEventListener("click", async () => {
     try {
       await apiJson("/h3-long-video/selflift/set",
-        { cfg: state.cfg, seg: seg.index, body: body.value });
-      body.dataset.dirty = "";
+        { cfg: state.cfg, seg: seg.index, body: body.value, optimized_body: optBody.value });
+      body.dataset.dirty = ""; optBody.dataset.dirty = "";
       say("第 " + seg.index + " 段提示词已保存（需重出本段才生效）", "ok");
       await reload();
     } catch (e) { say("保存失败：" + e.message, "error"); }
+  });
+  const optBtn = document.createElement("button");
+  optBtn.textContent = "优化";
+  optBtn.title = "把【原提示词】发给 LM Studio 改写，结果填入下方「优化后」框；原提示词保留不覆盖";
+  optBtn.addEventListener("click", async () => {
+    const raw = body.value.trim();
+    if (!raw) { say("原提示词是空的，没啥可优化", "error"); return; }
+    optBtn.disabled = true; optBtn.textContent = "优化中…";
+    try {
+      // 直接读已保存的全局配置（地址+模型名），全项目通用，不依赖弹窗是否打开过
+      try {
+        const cfg = await getJSON("/h3-long-video/selflift/prompt-lm-config");
+        if (cfg && cfg.ok) { LM_CFG.api_base = cfg.api_base || ""; LM_CFG.model = cfg.model || ""; }
+      } catch (_) {}
+      const r = await optimizePrompt({
+        text: raw, kind: "body", mode: optSegMode(seg),
+        references: optBuildRefs(seg),
+        duration: (state.data && state.data.seconds) || 5,
+        ...optContext(),
+        api_base: LM_CFG.api_base || undefined,
+        model: LM_CFG.model || undefined,
+      });
+      if (r.ok) {
+        optBody.value = r.optimized;
+        optBody.dataset.dirty = "1";
+        let note = r.fallback ? "（模型连不通，已用本地模板兜底）" : "";
+        if (r.truncated) note += "⚠ 输出被 max_tokens 截断：请在「优化器配置」调大 max_tokens，或在 LM Studio 关闭该模型的 Enable Thinking";
+        // 直接落盘：否则不点「保存提示词」就跑片，H3 只会拿到原提示词（optimized_body 在磁盘上为空）
+        try {
+          await apiJson("/h3-long-video/selflift/set",
+            { cfg: state.cfg, seg: seg.index, body: body.value, optimized_body: optBody.value });
+          optBody.dataset.dirty = "";
+          say("第 " + seg.index + " 段已优化并保存（跑片将使用优化后内容）" + note, "ok");
+        } catch (e) {
+          optBody.dataset.dirty = "1";
+          say("优化成功但未保存：" + e.message + "（手动点「保存提示词」生效）" + note, "error");
+        }
+      } else {
+        say("优化失败：" + r.error, "error");
+      }
+    } catch (e) { say("优化失败：" + e.message, "error"); }
+    finally { optBtn.disabled = false; optBtn.textContent = "优化"; }
+  });
+  const clearOpt = document.createElement("button");
+  clearOpt.textContent = "清除优化";
+  clearOpt.title = "清空「优化后」内容，跑片回退到原提示词";
+  clearOpt.addEventListener("click", async () => {
+    optBody.value = ""; optBody.dataset.dirty = "1";
+    try {
+      await apiJson("/h3-long-video/selflift/set",
+        { cfg: state.cfg, seg: seg.index, body: body.value, optimized_body: optBody.value });
+      optBody.dataset.dirty = "";
+      say("已清除并保存优化后内容，跑片将用原提示词", "ok");
+    } catch (e) {
+      optBody.dataset.dirty = "1";
+      say("清除未保存：" + e.message + "（手动点「保存提示词」生效）", "error");
+    }
   });
   const fileIn = document.createElement("input");
   fileIn.type = "file"; fileIn.accept = "image/*";
@@ -1282,7 +1744,7 @@ function card(seg, total) {
       say("第 " + seg.index + " 段首帧已替换", "ok"); await reload();
     } catch (e) { say("上传失败：" + e.message, "error"); }
   });
-  editRow.append(saveBody, fileIn, upFirst);
+  editRow.append(saveBody, optBtn, clearOpt, fileIn, upFirst);
 
   // ---- 动作参考视频（每段一个：截取视频前 n 秒作动作软参考）----
   const rvRow = document.createElement("div");
@@ -1479,7 +1941,7 @@ function card(seg, total) {
   }
   srBox.append(bpHead, bpItems);
 
-  el.append(head, thumbs, row, body, editRow, rvRow, srBox);
+  el.append(head, thumbs, row, body, optLabel, optBody, editRow, rvRow, srBox);
   if (linkRow.childNodes.length) el.append(linkRow);
   return el;
 }
@@ -1531,12 +1993,13 @@ function collectDirtyEdits() {
     if (!s) return;
     const e = bySeg[s.index] || (bySeg[s.index] = { seg: s.index });
     if (el.dataset.keep === "body") e.body = el.value;
+    if (el.dataset.keep === "optimized_body") e.optimized_body = el.value;
     if (el.dataset.keep === "seed") {
       const v = String(el.value).trim();
       if (v !== "" && Number.isFinite(Number(v))) e.seed = Number(v);
     }
   });
-  return Object.values(bySeg).filter((e) => e.body !== undefined || e.seed !== undefined);
+  return Object.values(bySeg).filter((e) => e.body !== undefined || e.seed !== undefined || e.optimized_body !== undefined);
 }
 /** 返回保存条数；失败返回 -1（脏标记保留，页面上改的内容不丢）。 */
 async function saveAllEdits({ silent = false } = {}) {
@@ -1552,6 +2015,7 @@ async function saveAllEdits({ silent = false } = {}) {
     for (const e of edits) {
       const payload = { cfg: state.cfg, seg: e.seg };
       if (e.body !== undefined) payload.body = e.body;
+      if (e.optimized_body !== undefined) payload.optimized_body = e.optimized_body;
       if (e.seed !== undefined) payload.seed = e.seed;
       await apiJson("/h3-long-video/selflift/set", payload);
     }

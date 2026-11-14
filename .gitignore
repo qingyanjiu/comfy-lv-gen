@@ -15,6 +15,9 @@ stitch_test/
 runninghub.local.json
 *.local.json
 
+# 提示词优化器的本地连接配置（含局域网 IP / 模型名，每台机器不同）
+prompt_lm_config.json
+
 # 本地临时备份（改代码前手存的 .bak / .bak-日期）
 *.bak
 *.bak-*

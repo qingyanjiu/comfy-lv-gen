@@ -28,6 +28,8 @@ from pathlib import Path
 from urllib.parse import quote
 import urllib.request
 
+import aiohttp  # 优化提示词：异步打迷你主机的 LM Studio，绝不阻塞 ComfyUI 的 event loop
+
 DRIVER = Path(os.environ.get(
     "H3_SELFLIFT_DRIVER",
     "D:/Comfy-Desktop/.workbuddy/skills/h3-long-video/scripts/run_selflift.py",
@@ -41,12 +43,31 @@ def _global_cfg():
     return _schema_module().load_global_cfg()
 
 
+# 这几项是「本片自己的参数」：网页下拉框 / CLI set 都能改，跑片前**绝不能**用全局值覆盖。
+# 之前是无条件 `for k, v in g.items(): cfg[k] = v`，于是点一次「一键跑全片」，
+# 用户刚选好的 9:16 / 高画质就被冲回全局的 16:9 / 省时画质。
+# 语义定成「全局是缺省值，不是强制值」：本片有值就保留，缺了才从全局补。
+LOCAL_PARAM_KEYS = ("aspect_ratio", "megapixels", "quality", "seconds")
+
+
+def _has_local(v):
+    """字段是否「本片真的定过」：None / 空串不算。"""
+    if v is None:
+        return False
+    if isinstance(v, (int, float)):
+        return v > 0
+    return bool(str(v).strip())
+
+
 def _sync_global_to_cfg(cfg_path, story_override=None, force=False):
     """把唯一全局约束合并进片目录 cfg，返回 (changed, story, story_source)。
 
     - 跑片前由 run / runall 自动调用（force=False）：只有约束层真的变了才写、
       才打 head/res/quality 时间戳；没变就一个字节都不动，避免每次跑片都标需重出。
     - 手动「套用全局配置」用 force=True：无条件刷新并标需重出。
+    - `LOCAL_PARAM_KEYS`（画幅 / 分辨率 / 画质 / 秒数）永远以本片为准，不参与覆盖，
+      也不参与「约束是否变了」的判断——否则用户改了画幅就会被当成约束漂移，
+      反过来触发一次全量覆盖，把画幅又冲回全局值。
     - story 属内容层，单独存字段；老片把它写在 head 里时从【本片设定】块抢救回来，
       绝不会被整块替换的 head 带走。
     """
@@ -66,7 +87,8 @@ def _sync_global_to_cfg(cfg_path, story_override=None, force=False):
 
     desired_head = schema.compose_head(g["head"], story)
     # g["head"] 是带 {story} 占位符的原文，不能拿它跟已注入的本片 head 直接比
-    constraint_diff = (any(cfg.get(k) != g[k] for k in g if k != "head")
+    constraint_diff = (any(cfg.get(k) != g[k] for k in g
+                           if k != "head" and k not in LOCAL_PARAM_KEYS)
                        or cfg.get("head") != desired_head)
     if not constraint_diff and not force:
         # 只是补记 story 字段（老片迁移）：写字段但不打时间戳、不标需重出
@@ -79,6 +101,8 @@ def _sync_global_to_cfg(cfg_path, story_override=None, force=False):
     old = {k: cfg.get(k) for k in
            ("head", "tail", "seconds", "fps", "megapixels", "quality")}
     for k, v in g.items():
+        if k in LOCAL_PARAM_KEYS and _has_local(cfg.get(k)):
+            continue  # 本片自己定过 → 保留（全局只当缺省值）
         cfg[k] = v
     cfg["story"] = story
     cfg["head"] = desired_head
@@ -132,6 +156,230 @@ def _schema_module():
     _SCHEMA = module
     _SCHEMA_MTIME = mtime
     return module
+
+
+# ---------------------------------------------------------------------------
+# 提示词优化器：在 8845HS 迷你主机上跑 LM Studio（OpenAI 兼容接口），本机只发请求。
+# 系统提示词是官方 h3-prompt-writing 模板的蒸馏版，按 mtime 缓存、改了不用重启。
+# ---------------------------------------------------------------------------
+_LM_CFG_PATH = Path(__file__).with_name("prompt_lm_config.json")
+_OPT_SYS_PATH = Path(__file__).with_name("prompt_optimizer_system.txt")
+_OPT_SYS_MTIME = None
+_OPT_SYS_TEXT = None
+
+
+def _load_lm_cfg():
+    """读 LM Studio 连接配置：env 给默认，文件可覆盖。"""
+    cfg = {
+        "api_base": os.environ.get("H3_PROMPT_LM_URL", "").strip().rstrip("/"),
+        "model": os.environ.get("H3_PROMPT_LM_MODEL", "").strip(),
+        "max_tokens": int(os.environ.get("H3_PROMPT_LM_MAX_TOKENS", "4096") or 4096),
+    }
+    try:
+        if _LM_CFG_PATH.is_file():
+            saved = json.loads(_LM_CFG_PATH.read_text(encoding="utf-8"))
+            if isinstance(saved, dict):
+                if saved.get("api_base"):
+                    cfg["api_base"] = saved["api_base"]
+                if saved.get("model"):
+                    cfg["model"] = saved["model"]
+                if saved.get("max_tokens"):
+                    try:
+                        cfg["max_tokens"] = int(saved["max_tokens"])
+                    except (TypeError, ValueError):
+                        pass
+    except Exception:  # noqa: BLE001
+        pass
+    return cfg
+
+
+def _save_lm_cfg(cfg):
+    existing = {}
+    try:
+        if _LM_CFG_PATH.is_file():
+            existing = json.loads(_LM_CFG_PATH.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        pass
+    merged = {
+        "api_base": cfg.get("api_base", existing.get("api_base", "")),
+        "model": cfg.get("model", existing.get("model", "")),
+        "max_tokens": int(cfg.get("max_tokens") or existing.get("max_tokens") or 4096),
+    }
+    _LM_CFG_PATH.write_text(
+        json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    return _load_lm_cfg()
+
+
+def _optimizer_system():
+    """带 mtime 缓存地读系统提示词；改了 txt 下次请求自动重载。"""
+    global _OPT_SYS_MTIME, _OPT_SYS_TEXT
+    try:
+        mtime = _OPT_SYS_PATH.stat().st_mtime
+    except OSError:
+        mtime = None
+    if _OPT_SYS_TEXT is not None and mtime is not None and _OPT_SYS_MTIME == mtime:
+        return _OPT_SYS_TEXT
+    try:
+        text = _OPT_SYS_PATH.read_text(encoding="utf-8")
+    except OSError:
+        text = "You are a senior prompt engineer for MiniMax H3. Rewrite the user's text into a high-quality H3 prompt. Preserve all {pic:N} placeholders verbatim. Output only the rewritten prompt."
+    _OPT_SYS_TEXT = text
+    _OPT_SYS_MTIME = mtime
+    return text
+
+
+_KIND_HINT = {
+    "body": "kind=body: ONE segment's shot storyboard. Organize as 第一镜/第二镜/… (estimated_shots), each shot in this project's four-block spec (动作 / [机位] / [光线] / [场景], blank-line separated). EXPAND the action: break each motion into 3–6 ordered steps (先…然后…接着…再…最后), naming body part + direction + amplitude + where it settles — write it clearly and naturally, not a one-liner. In [机位], use PRECISE professional camera language from §2b (dolly in/out, pan, truck, crane, follow, arc, slider, handheld, dolly zoom…) with type+amplitude+speed, one primary move per shot, kept H3-achievable (slow & steady; avoid whip pan / fast dolly). Be concrete (lighting direction+quality, At 00:SS.mmm keyframes, specific physical sounds). Write as long as the content genuinely needs (soft cap ~1200 chars); no padding with empty adjectives. Use {pic:N}, refer to characters by role/name (NOT <Subject N>). Do NOT repeat head/tail global constraints.",
+    "head": "kind=head: GLOBAL constraint (identity/scene anchors, eye/blink rules, prohibitions); constraint-style prose, preserve {pic:N}, not the six-section structure.",
+    "tail": "kind=tail: GLOBAL ending/style/continuity constraint; constraint-style prose, preserve {pic:N}.",
+    "full": "kind=full: produce the complete structured prompt for the given mode.",
+}
+
+
+async def _optimize_prompt(text, kind, mode, references, duration, api_base, model,
+                            max_tokens=4096, story=None, film_title=None,
+                            aspect_ratio=None, resolution=None):
+    """异步打 LM Studio 的 /v1/chat/completions，返回 (优化后文本, finish_reason)。
+
+    finish_reason == "length" 表示输出被 max_tokens 截断，调用方据此提示用户。
+    Qwen3.x 这类带思考(Thinking)的模型会把思考 token 计入 max_tokens 预算，
+    所以默认给到 4096，避免正文被挤成「一点点」。
+    """
+    if not text or not str(text).strip():
+        raise ValueError("待优化的提示词为空")
+    # 按秒数推导「镜头数」与「目标字数」，让模型有精确目标（时间越长字数越多、
+    # 必要则拆镜：第一镜/第二镜…），而不是只靠系统提示词的定性描述。
+    try:
+        _dur = float(duration or 5.0)
+    except (TypeError, ValueError):
+        _dur = 5.0
+    _shot_count = max(1, round(_dur / 5))          # 每 ~5s 一镜
+    sys_text = _optimizer_system()
+    user_lines = [
+        f"kind={kind or 'body'}",
+        f"mode={mode or 'T2VA'}",
+        f"duration_seconds={_dur:.1f}",
+        f"estimated_shots={_shot_count}  # 拆成 第一镜/第二镜/… 共 {_shot_count} 镜；动作要逐步扩写，长度按内容自然发挥",
+    ]
+    # 故事背景梗概 + 画幅/分辨率：只作参考，用来保证人物关系/场景连贯、构图贴合画幅；
+    # 不要把梗概或像素数字抄进 body。story 截断，避免撑爆 4096 上下文。
+    if film_title:
+        user_lines.append("film_title: " + re.sub(r"\s+", " ", str(film_title)).strip()[:80])
+    if story:
+        user_lines.append("story_context: "
+                          + re.sub(r"\s+", " ", str(story)).strip()[:400])
+    if aspect_ratio or resolution:
+        user_lines.append(
+            f"frame: aspect_ratio={aspect_ratio or '?'}; resolution={resolution or '?'}")
+    if references:
+        user_lines.append("references: " + "; ".join(
+            f"{r.get('label')}={r.get('role')}" for r in references if r.get("label")))
+    user_lines.append("")
+    user_lines.append("Rewrite the following into an H3-optimized prompt:")
+    user_lines.append(str(text))
+    messages = [
+        {"role": "system", "content": sys_text},
+        {"role": "user", "content": "\n".join(user_lines)},
+    ]
+    payload = {
+        "messages": messages,
+        "temperature": 0.4,
+        "max_tokens": int(max_tokens or 4096),
+        "stream": False,
+    }
+    if model:
+        payload["model"] = model
+    url = api_base.rstrip("/") + "/chat/completions"
+    timeout = aiohttp.ClientTimeout(total=300)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(url, json=payload,
+                               headers={"Content-Type": "application/json"}) as resp:
+            raw = await resp.text()
+            if resp.status != 200:
+                raise RuntimeError(f"LM Studio 返回 {resp.status}: {raw[:400]}")
+            data = json.loads(raw)
+    try:
+        out = data["choices"][0]["message"]["content"]
+        finish = data["choices"][0].get("finish_reason", "")
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"LM Studio 响应格式异常：{raw[:400]}") from exc
+    # 防御：模型有时仍会吐 <Picture N> 而非 {pic:N}（runner 的 expand_pic_tags 只认
+    # {pic:N}，不认 <Picture N>），这里归一化回来，保证参考图编号能被正确换算。
+    out = re.sub(r"<Picture\s*([A-Za-z0-9]+)>", r"{pic:\1}", out)
+    # body 模式下：剥掉 <Subject N> 命名（人物已在 head 定义）与孤立的段头标题
+    # <...> / <...>：（这些是 head/tail 的全局内容，逐段 body 不该重复）。
+    if str(kind).strip().lower() == "body":
+        out = re.sub(r"<\s*Subject\s*[A-Za-z0-9]+\s*>", "", out)
+        out = re.sub(r"^\s*<[^>]+>\s*[:：]?\s*$", "", out, flags=re.MULTILINE)
+        out = "\n".join(line for line in out.splitlines() if line.strip())
+    return out.strip(), finish
+
+
+_PIC_TOKEN_RE = re.compile(r"\{pic(?:\?)?:[^\}]+\}")
+
+
+def _fallback_prompt(text, kind, mode, references, duration):
+    """模型 API 连不通时的本地兜底：不调任何模型，按模板把原文整理成 H3 结构。
+
+    只做结构拼装 + 占位符保护，不做语义重写——目的是工作流不中断。
+    模型恢复后仍是它出质量更好的版本，这里只是「能用」的保底。
+    """
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("待优化的提示词为空")
+    kind = str(kind or "body").strip().lower()
+    mode = str(mode or "T2VA").strip().upper()
+    try:
+        dur = float(duration or 5.0)
+    except (TypeError, ValueError):
+        dur = 5.0
+
+    # 先抽出所有占位符，结尾逐一确认一个都没丢（本地兜底最怕把 {pic:N} 吃掉）
+    pics = _PIC_TOKEN_RE.findall(text)
+
+    ref_lines = ""
+    if references:
+        ref_lines = "\n".join(
+            f"<{r.get('label', 'Picture')}> {r.get('role', '')}".strip()
+            for r in references if r.get("label"))
+
+    if kind == "body":
+        out = text
+        low = text.lower()
+        if "sound" not in low and "声音" not in text and "音效" not in text \
+                and "soundscape" not in low:
+            out += "\nThe ambient soundscape matches the scene and stays subtle."
+    elif kind in ("head", "tail"):
+        out = text
+    elif kind == "full":
+        if mode == "REF2VA":
+            subject = (ref_lines or "<Subject 1> (see reference image)")
+            summary = (text.splitlines()[0].strip()
+                       if text.splitlines() else "A single continuous shot.")
+            out = (
+                f"subject_definitions:\n{subject}\n\n"
+                f"summary:\n{summary}\n\n"
+                f"retention_analysis:\nKeep the character identity, clothing and "
+                f"composition consistent with the reference images across the shot.\n\n"
+                f"detailed_description:\n{text}\n\n"
+                f"overall_soundscape:\nAmbient soundscape matching the scene; keep it "
+                f"subtle unless the action demands otherwise.\n\n"
+                f"non_diegetic_music:\nN/A"
+            )
+        else:
+            out = (
+                f"integrated_multimodal_description:\n{text}\n\n"
+                f"overall_soundscape:\nAmbient soundscape matching the scene.\n\n"
+                f"non_diegetic_music:\nN/A"
+            )
+    else:
+        out = text
+
+    # 占位符保护：抽出的 pic 必须原样回到输出末尾
+    for pic in pics:
+        if pic not in out:
+            out += "\n" + pic
+    return out.strip()
 
 
 def _safe(raw, must_exist=True):
@@ -746,6 +994,8 @@ def register_routes(routes, web):
                 args += ["--seed", str(int(p["seed"]))]
             if p.get("body") is not None:
                 args += ["--body", str(p["body"])]
+            if "optimized_body" in p:
+                args += ["--optimized-body", str(p["optimized_body"])]
             if p.get("head") is not None:
                 args += ["--head", str(p["head"])]
             if p.get("tail") is not None:
@@ -794,6 +1044,119 @@ def register_routes(routes, web):
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.get("/h3-long-video/selflift/prompt-lm-config")
+    async def selflift_prompt_lm_config_get(request):
+        """读 LM Studio 连接配置（迷你主机的 OpenAI 兼容服务地址 / 模型名 / max_tokens）。"""
+        try:
+            cfg = _load_lm_cfg()
+            return web.json_response({"ok": True, "api_base": cfg["api_base"],
+                                      "model": cfg["model"], "max_tokens": cfg["max_tokens"]})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.post("/h3-long-video/selflift/prompt-lm-config")
+    async def selflift_prompt_lm_config_set(request):
+        """存 LM Studio 连接配置（落 prompt_lm_config.json，刷新/重启不丢）。"""
+        try:
+            p = await request.json()
+            cfg = _load_lm_cfg()
+            if p.get("api_base") is not None:
+                cfg["api_base"] = str(p["api_base"]).strip().rstrip("/")
+            if "model" in p:
+                cfg["model"] = str(p.get("model") or "").strip()
+            if p.get("max_tokens") is not None:
+                try:
+                    cfg["max_tokens"] = int(p["max_tokens"])
+                except (TypeError, ValueError):
+                    pass
+            cfg = _save_lm_cfg(cfg)
+            return web.json_response({"ok": True, "api_base": cfg["api_base"],
+                                      "model": cfg["model"], "max_tokens": cfg["max_tokens"]})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.get("/h3-long-video/selflift/global")
+    async def selflift_global_get(request):
+        """读本片全局 head/tail（弹窗「载入本片全局 head/tail」用）。"""
+        try:
+            cfg_path = _safe(request.query.get("cfg"))
+            if not cfg_path or not os.path.isfile(cfg_path):
+                raise ValueError("缺少有效的 cfg 路径")
+            cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
+            return web.json_response({
+                "ok": True,
+                "head": cfg.get("head", "") or "",
+                "tail": cfg.get("tail", "") or "",
+            })
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.post("/h3-long-video/selflift/optimize-prompt")
+    async def selflift_optimize_prompt(request):
+        """调迷你主机的 LM Studio，把一段 H3 提示词改写成更贴合模型的结构。
+
+        异步打外部服务，不阻塞 ComfyUI 的 event loop。
+        未配置 / 连不通 / 超时 / 模型报错时，自动兜底到本地模板生成（fallback=True），
+        工作流不中断；只有本地兜底也失败才回 400。
+        """
+        try:
+            p = await request.json()
+            cfg = _load_lm_cfg()
+            api_base = str(p.get("api_base") or cfg["api_base"]).strip().rstrip("/")
+            model = str(p.get("model") or cfg["model"] or "").strip()
+            text = str(p.get("text", ""))
+            kind = str(p.get("kind") or "body").strip().lower()
+            mode = str(p.get("mode") or "T2VA").strip().upper()
+            references = p.get("references") or []
+            duration = float(p.get("duration") or 5.0)
+            max_tokens = int(cfg.get("max_tokens") or 4096)
+            story = p.get("story") or ""
+            film_title = p.get("title") or p.get("film_title") or ""
+            aspect_ratio = p.get("aspect_ratio") or ""
+            resolution = p.get("resolution") or ""
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+        # 没配 LM：直接本地兜底，不报错、不白连
+        if not api_base:
+            try:
+                optimized = _fallback_prompt(text, kind, mode, references, duration)
+            except Exception as exc:  # noqa: BLE001
+                return web.json_response(
+                    {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+            return web.json_response({"ok": True, "optimized": optimized,
+                                      "fallback": True, "reason": "no_lm_config"})
+
+        # 配了 LM：先试模型，任何失败（连不通/超时/报错/格式异常）都兜底
+        try:
+            optimized, finish = await _optimize_prompt(
+                text=text, kind=kind, mode=mode,
+                references=references, duration=duration,
+                api_base=api_base, model=model, max_tokens=max_tokens,
+                story=story, film_title=film_title,
+                aspect_ratio=aspect_ratio, resolution=resolution)
+            truncated = (finish == "length")
+            return web.json_response({"ok": True, "optimized": optimized,
+                                      "fallback": False,
+                                      "truncated": truncated,
+                                      "reason": ("length" if truncated else "")})
+        except Exception as exc:  # noqa: BLE001
+            try:
+                optimized = _fallback_prompt(text, kind, mode, references, duration)
+            except Exception as fexc:  # noqa: BLE001
+                return web.json_response(
+                    {"ok": False,
+                     "error": f"模型不可用且本地兜底也失败：{type(exc).__name__}: {exc} / "
+                              f"{type(fexc).__name__}: {fexc}"},
+                    status=400)
+            return web.json_response(
+                {"ok": True, "optimized": optimized, "fallback": True,
+                 "reason": f"{type(exc).__name__}: {exc}"})
 
     @routes.post("/h3-long-video/selflift/cancel")
     async def selflift_cancel(request):
@@ -967,8 +1330,12 @@ def register_routes(routes, web):
         page = Path(__file__).with_name("web") / "selflift_app.html"
         if not page.is_file():
             return web.Response(text=f"缺少页面文件：{page}", status=404)
+        # 页面是每次从磁盘现读的，但浏览器对没有缓存头的 HTML 会走启发式缓存：
+        # 改了控件/前端逻辑之后用户那边还跑旧版（表现为「新加的按钮没有」「某处改不动」）。
+        # 页面本身只有几十 KB，禁掉缓存最省事。改 panel 要重启，改 html 刷新即可。
         return web.Response(text=page.read_text(encoding="utf-8"),
-                            content_type="text/html", charset="utf-8")
+                            content_type="text/html", charset="utf-8",
+                            headers={"Cache-Control": "no-store, max-age=0"})
 
     @routes.get("/h3-long-video/selflift/template")
     async def selflift_template(request):
@@ -990,7 +1357,7 @@ def register_routes(routes, web):
             content = {k: cfg[k] for k in schema.CONTENT_KEYS if k in cfg}
             # 段里只留内容字段；id / 帧路径 / 状态 / 时间戳 / head 覆盖标记等
             # 都是跑片产物，导出它们反而会让再导入的片带上脏状态。
-            keep = set(schema.SEG_PASSTHROUGH_KEYS) | {"title", "body"}
+            keep = set(schema.SEG_PASSTHROUGH_KEYS) | {"title", "body", "optimized_body"}
             content["segments"] = [
                 {k: v for k, v in (seg or {}).items()
                  if k in keep and v not in (None, "", {}, [])}
@@ -1182,6 +1549,7 @@ def register_routes(routes, web):
                         (seed_base + index * 37) if seed_base
                         else random.randint(300000, 900000)),
                     "body": seg["body"],
+                    "optimized_body": seg.get("optimized_body", ""),
                 }
                 if seg.get("head"):
                     item["head"] = seg["head"]
@@ -1273,6 +1641,75 @@ def register_routes(routes, web):
                 PROCS.pop(key, None)
                 CANCELLED.discard(key)
             return web.json_response({"ok": True, "dir": film_dir.name})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.post("/h3-long-video/selflift/delete-seg")
+    async def selflift_delete_seg(request):
+        """只删**这一段**的视频产物，片和段配置都留着。
+
+        删三样：`segments/<prefix>_s0N.mp4` + 本段 `refs/..._s0N_first.png` /
+        `_last.png` + ComfyUI input 里的尾帧副本（链式下游读的是它）。
+        body / title / seed / link 一概不动，所以删完重新点这一段的「跑」就能按原配置重出。
+
+        之前段卡片上的「删除视频」走的是整片删除（`/selflift/delete`），
+        按钮名和行为对不上，每段都要弹一段「它删的是整部片」的解释。
+        """
+        try:
+            p = await request.json()
+            cfg = _safe(p.get("cfg"))
+            idx = int(p.get("seg") or 0)
+            if idx < 1:
+                raise ValueError(f"段号不合法：{idx}（从 1 起）")
+            key = str(cfg)
+            with LOCK:
+                if TASKS.get(key, {}).get("running") or key in PROCS:
+                    raise RuntimeError("本片正在跑任务，跑完再删除")
+
+            data = await _status_async(cfg)
+            prefix = data.get("prefix") or ""
+            target = next((s for s in data.get("segments") or []
+                           if int(s.get("index") or 0) == idx), None)
+            if target is None:
+                raise ValueError(f"找不到第 {idx} 段（共 {len(data.get('segments') or [])} 段）")
+
+            removed, missing = [], []
+            # status 里给的是绝对路径，直接照着删，别自己拼目录（段级配置可能另存过路径）
+            for label, fp in (("视频", target.get("video")),
+                              ("首帧", target.get("first_frame")),
+                              ("尾帧", target.get("last_frame"))):
+                if not fp:
+                    continue
+                f = Path(fp)
+                if f.is_file():
+                    f.unlink()
+                    removed.append(f"{label} {f.name}")
+                elif f.suffix:
+                    missing.append(f"{label} {f.name}")
+            # ComfyUI input 里的尾帧副本：链式下游从这儿读，不删会拿旧帧当首帧
+            if prefix:
+                copy = Path(INPUT_ROOT) / f"{prefix}_s{idx:02d}_last.png"
+                if copy.is_file():
+                    copy.unlink()
+                    removed.append(f"尾帧副本 {copy.name}")
+
+            note = ("这一段的视频已删除；段配置（提示词 / seed / 承接方式）都保留，"
+                    "重新点这一段的「跑」就能按原样重出。")
+            if target.get("done") is False:
+                note = "这一段本来就没有视频，只清理了残留的首尾帧图。"
+            nxt = [s["index"] for s in data.get("segments") or []
+                   if int(s.get("index") or 0) > idx
+                   and (s.get("link") or {}).get("mode", "chain") == "chain"]
+            tail = ""
+            if nxt:
+                tail = f" 后面第 {nxt[0]} 段是链式承接，它的首帧来自这一段，需要一起重出。"
+            if data.get("finals"):
+                tail += " final/ 里的成片还是旧内容，要重拼才更新。"
+            return web.json_response({
+                "ok": True, "seg": idx, "removed": removed, "missing": missing,
+                "note": note + tail,
+            })
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
@@ -1593,6 +2030,8 @@ def register_routes(routes, web):
                 sg.pop("ref_video", None)
                 sg.pop("ref_video_seconds", None)
                 sg["body"] = _strip_video_ref(sg.get("body") or "")
+                if "optimized_body" in sg:
+                    sg["optimized_body"] = _strip_video_ref(sg.get("optimized_body") or "")
                 with open(cfg, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
                 return web.json_response({"ok": True, "op": "delete", "seg": seg,
@@ -1632,6 +2071,8 @@ def register_routes(routes, web):
             sg["ref_video"] = dst_name
             sg["ref_video_seconds"] = seconds
             sg["body"] = _inject_video_ref(sg.get("body") or "")
+            if "optimized_body" in sg:
+                sg["optimized_body"] = _inject_video_ref(sg.get("optimized_body") or "")
             with open(cfg, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             return web.json_response({
