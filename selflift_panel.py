@@ -1359,7 +1359,7 @@ def register_routes(routes, web):
             content = {k: cfg[k] for k in schema.CONTENT_KEYS if k in cfg}
             # 段里只留内容字段；id / 帧路径 / 状态 / 时间戳 / head 覆盖标记等
             # 都是跑片产物，导出它们反而会让再导入的片带上脏状态。
-            keep = set(schema.SEG_PASSTHROUGH_KEYS) | {"title", "body", "optimized_body"}
+            keep = set(schema.SEG_PASSTHROUGH_KEYS) | {"title", "body", "optimized_body", "optimized_at"}
             content["segments"] = [
                 {k: v for k, v in (seg or {}).items()
                  if k in keep and v not in (None, "", {}, [])}
