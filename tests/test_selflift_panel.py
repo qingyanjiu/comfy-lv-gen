@@ -49,12 +49,12 @@ class TestSelfLiftPanel(unittest.TestCase):
         routes = FakeRoutes()
         SP.register_routes(routes, FakeWeb())
         urls = {path for _, path in routes.paths}
-        self.assertEqual(len(urls), 27, f"路由数不对：{routes.paths}")
+        self.assertEqual(len(urls), 28, f"路由数不对：{routes.paths}")
         for suffix in ("status", "set", "run", "merge", "init", "upload", "frame",
                        "media", "insert", "refimg", "import", "preview", "template",
                        "refvideo", "rename", "films", "delete", "delete-seg", "runall",
-                       "global", "global-cfg", "apply-global", "export", "prompt-lm-config",
-                       "optimize-prompt"):
+                       "global", "global-cfg", "film-override", "apply-global", "export",
+                       "prompt-lm-config", "optimize-prompt"):
             self.assertIn(f"/h3-long-video/selflift/{suffix}", urls)
         self.assertIn("/h3-long-video/app", urls)
 

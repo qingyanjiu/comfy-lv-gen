@@ -85,11 +85,19 @@ def _sync_global_to_cfg(cfg_path, story_override=None, force=False):
         story = schema.extract_story_from_head(old_head)
         source = "recovered" if story else "none"
 
-    desired_head = schema.compose_head(g["head"], story)
-    # g["head"] 是带 {story} 占位符的原文，不能拿它跟已注入的本片 head 直接比
+    # 本片覆盖层：head_override / tail_override 非空时，本片就用它，共用模板改了也不冲掉。
+    # 这正是「只想改这一部片」的实现方式（否则每次跑片都会被共用 head 覆盖）。
+    ov_head = str(cfg.get("head_override") or "").strip()
+    ov_tail = str(cfg.get("tail_override") or "").strip()
+    desired_head = schema.compose_head(ov_head or g["head"], story)
+    desired_tail = ov_tail or g["tail"]
+    # g["head"] 是带 {story} 占位符的原文，不能拿它跟已注入的本片 head 直接比；
+    # head / tail 单独比（它们可能是本片覆盖后的结果），其余参数照旧比。
     constraint_diff = (any(cfg.get(k) != g[k] for k in g
-                           if k != "head" and k not in LOCAL_PARAM_KEYS)
-                       or cfg.get("head") != desired_head)
+                           if k not in ("head", "tail")
+                           and k not in LOCAL_PARAM_KEYS)
+                       or cfg.get("head") != desired_head
+                       or cfg.get("tail") != desired_tail)
     if not constraint_diff and not force:
         # 只是补记 story 字段（老片迁移）：写字段但不打时间戳、不标需重出
         if cfg.get("story") != story:
@@ -106,6 +114,7 @@ def _sync_global_to_cfg(cfg_path, story_override=None, force=False):
         cfg[k] = v
     cfg["story"] = story
     cfg["head"] = desired_head
+    cfg["tail"] = desired_tail   # 有本片覆盖就用覆盖版，否则回落到共用 tail
     cfg["length"] = int(17 * round(float(cfg["seconds"]) *
                                    int(cfg["fps"]) / 17) + 5)
     now = time.time()
@@ -1524,6 +1533,74 @@ def register_routes(routes, web):
                                "点「一键跑全片」按新约束重跑。"
                                + ("" if not same else "（提示词内容没变，只重刷了本片约束）"))
             return web.json_response(out)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.get("/h3-long-video/selflift/film-override")
+    async def selflift_film_override_get(request):
+        """读本片的 head / tail 覆盖层（只影响这一部片，不动共用模板）。"""
+        try:
+            cfg_path = _safe(request.query.get("cfg"))
+            cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
+            g = _global_cfg()
+            schema = _schema_module()
+            ov_head = str(cfg.get("head_override") or "")
+            ov_tail = str(cfg.get("tail_override") or "")
+            return web.json_response({
+                "ok": True, "path": str(cfg_path),
+                "head_override": ov_head, "tail_override": ov_tail,
+                "has_override": bool(ov_head.strip() or ov_tail.strip()),
+                # 底稿：共用模板按本片 story 注入后的样子，供「以共用内容为底稿」
+                "base_head": schema.compose_head(g["head"], str(cfg.get("story") or "")),
+                "base_tail": g["tail"],
+                "head": cfg.get("head", ""), "tail": cfg.get("tail", ""),
+            })
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
+
+    @routes.post("/h3-long-video/selflift/film-override")
+    async def selflift_film_override_save(request):
+        """写 / 清本片的 head、tail 覆盖层。
+
+        传空字符串 = 清除覆盖，回到共用模板。写入后只改本片，**不动**
+        selflift.global.json，所以换一部片看到的还是共用版本。
+        """
+        try:
+            p = await request.json()
+            cfg_path = _safe(p.get("cfg"))
+            head = str(p.get("head") or "")
+            tail = str(p.get("tail") or "")
+            with LOCK:
+                key = str(cfg_path)
+                if TASKS.get(key, {}).get("running") or key in PROCS:
+                    raise RuntimeError("本片正在跑任务，跑完再改本片提示词")
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            schema = _schema_module()
+            g = _global_cfg()
+            if head.strip():
+                cfg["head_override"] = head
+            else:
+                cfg.pop("head_override", None)
+            if tail.strip():
+                cfg["tail_override"] = tail
+            else:
+                cfg.pop("tail_override", None)
+            story = str(cfg.get("story") or "")
+            cfg["head"] = schema.compose_head(
+                cfg.get("head_override") or g["head"], story)
+            cfg["tail"] = cfg.get("tail_override") or g["tail"]
+            cfg["head_updated_at"] = time.time()
+            cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
+                                encoding="utf-8")
+            has = bool(cfg.get("head_override") or cfg.get("tail_override"))
+            return web.json_response({
+                "ok": True, "has_override": has,
+                "note": ("本片已改用自己那份提示词，不再跟随共用模板；全片标需重出。"
+                         if has else
+                         "已清除本片覆盖，回到共用提示词；全片标需重出。"),
+            })
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
