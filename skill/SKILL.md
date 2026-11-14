@@ -193,6 +193,11 @@ agent   ：跑工序 · 读质检 · 按失败码修参数重跑
   `head/res/quality_updated_at`（全片标需重出）；完全一致就一个字节都不写、不标需重出。
   `POST /selflift/apply-global`（force=True）保留作维护者强制刷新口，`GET /selflift/global`
   只读接口保留，**网页不再暴露**这两个入口。
+- **`LOCAL_PARAM_KEYS = (aspect_ratio, megapixels, quality, seconds)` 以本片为准，跑片不覆盖**：
+  语义是「全局是缺省值，不是强制值」。本片有值就保留，缺了才从全局补；这四项也**不参与**
+  「约束是否变了」的判断——否则用户把画幅改成 9:16 就会被判成约束漂移，反过来触发一次
+  全量覆盖，把画幅冲回全局的 16:9（用户报告过：「点一键跑全片，分辨率变回 16:9、
+  画质变成省时画质」）。force 手动套用同样保留这四项。
 - **自动合并会整块替换 head，但不会丢 `story`**：优先 `cfg["story"]`；老片没有该字段时
   从旧 head 的【本片设定】块抢救回填（`extract_story_from_head`），返回 `story_source`
   （request / cfg / recovered / none）。
@@ -476,6 +481,17 @@ http://127.0.0.1:8188/h3-long-video/app
 
 **四步出片**：导入分镜 JSON（或直接粘长文本）→ 自动切段 → 传参考图/空镜板 → 「一键跑全片」
 （跑完自动拼接，可下载成片）。每段卡片能改 seed / 提示词 / 首尾帧 / 承接方式，能力与面板一致。
+
+**两种删除，别搞混（2026-11-13 修）**：
+
+| 入口 | 接口 | 删什么 |
+|---|---|---|
+| 工具条 `🗑 删除` | `POST /selflift/delete` | **整部片目录**（segments/ final/ refs/ segments.json 全没），要手打片名确认 |
+| 段卡片 `删除视频` | `POST /selflift/delete-seg` | **只删这一段**：`segments/<prefix>_s0N.mp4` + 本段 `refs/..._s0N_first/last.png` + ComfyUI input 里的尾帧副本 |
+
+段级删除**不动** body / title / seed / link / 整片目录，所以删完点这一段的「跑」就能按原配置重出；
+返回的 note 会提示「后面第 N 段是链式承接，首帧来自这一段，需要一起重出」以及「final/ 成片是旧内容」。
+本片有任务在跑时拒绝删除。两个入口都不再共用同一个函数。
 
 **运行日志面板（2026-11-11 改）**：底部独立面板，等宽字体、`resize:vertical` 可拖高。
 标题栏显示 `N 行 · X KB · 运行中/完成/失败`，右侧「跟随 / 只看问题 / 复制全部 / 下载 / 收起」。
