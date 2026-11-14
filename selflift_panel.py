@@ -312,10 +312,40 @@ async def _optimize_prompt(text, kind, mode, references, duration, api_base, mod
         out = re.sub(r"<\s*Subject\s*[A-Za-z0-9]+\s*>", "", out)
         out = re.sub(r"^\s*<[^>]+>\s*[:：]?\s*$", "", out, flags=re.MULTILINE)
         out = "\n".join(line for line in out.splitlines() if line.strip())
+        out = _ensure_blink(out, duration)   # 兜底：防眯眼句 + ≥5s 一次眨眼
     return out.strip(), finish
 
 
 _PIC_TOKEN_RE = re.compile(r"\{pic(?:\?)?:[^\}]+\}")
+
+
+# 眨眼/防眯眼是 H3 的硬需求，靠模型「每次都写」不可靠（实测会漏）。这里做后处理兜底：
+# 动作块里没有「眼睛正常睁开、看着前方」就补上；≥5s 的段没有眨眼动作就补一次快速眨眼。
+_BLINK_PHRASES = ("合拢", "眨眼", "眨动", "眨了", "眨一下", "眨了一下")
+_EYE_OPEN_PHRASE = "眼睛正常睁开、看着前方"
+_BLINK_ACTION = "很快地眨了一下眼，眼睑迅速合拢又立刻睁开（约 0.5 秒）"
+
+
+def _ensure_blink(text, duration):
+    """保证 body 里有防眯眼句；≥5s 再保证有一次快速眨眼。返回补过后的文本。"""
+    text = text or ""
+    try:
+        dur = float(duration or 5.0)
+    except (TypeError, ValueError):
+        dur = 5.0
+    parts = []
+    if _EYE_OPEN_PHRASE not in text:
+        parts.append(_EYE_OPEN_PHRASE)
+    if dur >= 5.0 and not any(k in text for k in _BLINK_PHRASES):
+        parts.append(_BLINK_ACTION)
+    if not parts:
+        return text
+    insert = "；".join(parts) + "。"
+    # 优先插到第一处「动作」块的冒号后，保证落在动作块里；没有就整段前面补一行。
+    m = re.search(r"(动作\s*[：:]\s*)", text)
+    if m:
+        return text[:m.end()] + insert + text[m.end():]
+    return "动作：" + insert + "\n\n" + text
 
 
 def _fallback_prompt(text, kind, mode, references, duration):
