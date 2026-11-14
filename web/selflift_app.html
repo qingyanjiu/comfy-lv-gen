@@ -518,7 +518,7 @@
 <ol>
   <li><b>导入分镜</b>：点「导入分镜 JSON」，可以选文件、也可以直接粘贴 JSON 或一整段剧情文字（会自动切段）。不知道怎么写就先点「下载模板」，每个字段都带中文说明。JSON 里的 <code>title</code> 就是片名，会连同编号一起写进文件夹名；没写的话用第一段标题当默认名。</li>
   <li><b>传参考图</b>：页面顶部参考图条带里，给每个人物各传一张半身/胸像，再传一张<b>完全无人</b>的场景空镜板（橙色边框）。这一步不能省——head 里引用的 <code>&lt;Picture N&gt;</code> 必须有真实接线，否则提交会被拒。</li>
-  <li><b>写全局提示词</b>：head 写身份与场景锚，tail 写画风与衔接规则。用 <code>{pic:1}</code> 之类的占位符，别手写编号。</li>
+  <li><b>写全局提示词</b>：head 写身份与场景锚，tail 写画风与衔接规则。引用图写成 <code>&lt;Picture {pic:1}&gt;</code> 这种形式（外层尖括号别省），别手写编号。</li>
   <li><b>逐段调整</b>：每段改 body / seed / 承接方式 / 段级参考图。改完不用逐个保存，直接跑片即可（会自动落盘）。</li>
   <li><b>出片</b>：点「一键跑全片」串行渲染，全部完成后自动拼接；或点「拼接成片」只重拼现有段。</li>
 </ol>
@@ -567,7 +567,7 @@
 <p>全局 head / tail 只有一份，所有段共用；<code>{pic:}</code> 占位符会按<b>本段实际接线</b>自动换算成真编号：</p>
 <table>
   <tr><th>写法</th><th>含义</th></tr>
-  <tr><td><code>{pic:1}</code> … <code>{pic:N}</code></td><td>第 N 个人物参考图</td></tr>
+  <tr><td><code>&lt;Picture {pic:1}&gt;</code> … <code>&lt;Picture {pic:N}&gt;</code></td><td>第 N 个人物参考图（外层尖括号别省）</td></tr>
   <tr><td><code>{pic:plate}</code></td><td>场景空镜板</td></tr>
   <tr><td><code>{pic:first}</code></td><td>本段首帧（仅链式段有）</td></tr>
   <tr><td><code>{pic?:first}</code></td><td>可选版：本段没接该媒体就<b>整行删掉</b></td></tr>

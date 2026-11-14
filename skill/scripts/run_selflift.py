@@ -1103,8 +1103,10 @@ def submit(api, timeout=5400):
                         f"    ComfyUI 原话：{err[:300]}\n"
                         "    这不是并行 / 显存问题，原样重跑这一段还会挂。修法二选一：\n"
                         "      1) 在导演台补上传缺失的参考图（最常见是空镜板没传），让编号数量对上；\n"
-                        "      2) 把 head/body 里写死的 <Picture N> 改成 {pic:1} / {pic:plate} /\n"
-                        "         {pic?:first} 占位符，由 seg_prompt 按本段真实接线自动换算。")
+                        "      2) 把 head/body 里写死的 <Picture N> 改成 <Picture {pic:1}> /\n"
+                        "         <Picture {pic:plate}> / <Picture {pic?:first}> 这种占位符写法\n"
+                        "         （外层 <Picture> 别省；裸写 {pic:1} 只会展开成一个数字），\n"
+                        "         由 seg_prompt 按本段真实接线自动换算。")
                 P.die("执行出错" + (f"：{err[:300]}" if err else ""))
             return hist[pid].get("outputs", {})
         # 队列状态：既给进度条用，也用来识别「任务已从队列消失」的僵尸等待

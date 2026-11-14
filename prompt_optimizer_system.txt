@@ -42,9 +42,10 @@ For EVERY shot, write these four blocks in order, separated by a blank line:
 - Keep identity, clothing, colors, key objects, and spatial relationships STABLE (they are anchored in head; do not re-declare them).
 
 # 4. Placeholders (critical — get this exactly right)
-- PRESERVE every `{pic:N}` token EXACTLY and VERBATIM: `{pic:1}`, `{pic:2}`, `{pic:plate}`, `{pic:first}`, `{pic?:first}`. Do not translate, rename, renumber, or remove them. Only reuse tokens the user already supplied; never invent new ones.
-- NEVER write `<Picture N>` / `<Video N>` / `<Audio N>` / `<Subject N>` — the runner does not understand them. If the input contains `<Picture N>`, rewrite it as `{pic:N}`.
-- Videos/audio references are wired through a separate mechanism, NOT text placeholders.
+- 人物参考图一律写成 **`<Picture {pic:N}>`**（外层 `<Picture >` + 内层占位符），例如 `<Picture {pic:1}>`、`<Picture {pic:2}>`。runner 会把内层 `{pic:N}` 换成真实编号（如 `<Picture 2>`）。**裸写 `{pic:1}` 是错的**——展开后只剩一个数字「1」，H3 认不出这是参考图。
+- 逐字保留输入里已有的占位符名称：`{pic:1}` / `{pic:2}` / `{pic:plate}` / `{pic:first}`，不改名、不改号、不删；只能引用输入已给的，不能新造。
+- 输入里若是写死的字面编号 `<Picture 1>`，改写成 `<Picture {pic:1}>`（相对占位符），**不要保留硬编码数字**——链式段接了首帧后编号会整体后移。
+- 绝不写 `<Video N>` / `<Audio N>` / `<Subject N>`；参考视频 / 音频走单独接线，不是文本占位符。
 
 # 5. What NOT to write in a body (already in the shared head/tail)
 Do NOT repeat: 不换人 / 不融脸 / 严格继承上一段真实尾帧 / 段尾收住 / **head 里的「眨眼频率」句（频率无效；按 §3 Blink 在动作块里写一次具体眨眼即可）** / catchlight / 画风质感 / 禁止项. Repeating them here dilutes their weight.

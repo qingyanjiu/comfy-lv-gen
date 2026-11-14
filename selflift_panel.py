@@ -229,7 +229,7 @@ def _optimizer_system():
 
 
 _KIND_HINT = {
-    "body": "kind=body: ONE segment's shot storyboard. Organize as 第一镜/第二镜/… (estimated_shots), each shot in this project's four-block spec (动作 / [机位] / [光线] / [场景], blank-line separated). EXPAND the action: break each motion into 3–6 ordered steps (先…然后…接着…再…最后), naming body part + direction + amplitude + where it settles — write it clearly and naturally, not a one-liner. EMOTION & POSTURE: every shot MUST describe the protagonist's facial micro-expression (eyes/brows/mouth/jaw) AND body posture (weight/shoulders/spine/hands/stance) and how they change through the action — never wooden, blank, or statue-like. BLINK: if duration ≥5s, put ONE blink for the WHOLE segment (not per shot; ≤2 only if >10s) into the 动作 block ('很快地眨了一下眼，眼睑迅速合拢又立刻睁开', ~0.5s), and you MUST literally include the sentence '眼睛正常睁开、看着前方'; never write a blink frequency ('每隔N秒眨一次') and never '缓慢闭上双眼' — H3 ignores/over-stretches those. In [机位], use PRECISE professional camera language from §2b (dolly in/out, pan, truck, crane, follow, arc, slider, handheld, dolly zoom…) with type+amplitude+speed, one primary move per shot, kept H3-achievable (slow & steady; avoid whip pan / fast dolly). Be concrete (lighting direction+quality, At 00:SS.mmm keyframes, specific physical sounds). Write as long as the content genuinely needs (soft cap ~1200 chars); no padding with empty adjectives. Use {pic:N}, refer to characters by role/name (NOT <Subject N>). Do NOT repeat head/tail global constraints.",
+    "body": "kind=body: ONE segment's shot storyboard. Organize as 第一镜/第二镜/… (estimated_shots), each shot in this project's four-block spec (动作 / [机位] / [光线] / [场景], blank-line separated). EXPAND the action: break each motion into 3–6 ordered steps (先…然后…接着…再…最后), naming body part + direction + amplitude + where it settles — write it clearly and naturally, not a one-liner. EMOTION & POSTURE: every shot MUST describe the protagonist's facial micro-expression (eyes/brows/mouth/jaw) AND body posture (weight/shoulders/spine/hands/stance) and how they change through the action — never wooden, blank, or statue-like. BLINK: if duration ≥5s, put ONE blink for the WHOLE segment (not per shot; ≤2 only if >10s) into the 动作 block ('很快地眨了一下眼，眼睑迅速合拢又立刻睁开', ~0.5s), and you MUST literally include the sentence '眼睛正常睁开、看着前方'; never write a blink frequency ('每隔N秒眨一次') and never '缓慢闭上双眼' — H3 ignores/over-stretches those. In [机位], use PRECISE professional camera language from §2b (dolly in/out, pan, truck, crane, follow, arc, slider, handheld, dolly zoom…) with type+amplitude+speed, one primary move per shot, kept H3-achievable (slow & steady; avoid whip pan / fast dolly). Be concrete (lighting direction+quality, At 00:SS.mmm keyframes, specific physical sounds). Write as long as the content genuinely needs (soft cap ~1200 chars); no padding with empty adjectives. Use <Picture {pic:N}> (e.g. <Picture {pic:1}>), NEVER a bare {pic:N} or a hardcoded <Picture 1>; refer to characters by role/name (NOT <Subject N>). Do NOT repeat head/tail global constraints.",
     "head": "kind=head: GLOBAL constraint (identity/scene anchors, eye/blink rules, prohibitions); constraint-style prose, preserve {pic:N}, not the six-section structure.",
     "tail": "kind=tail: GLOBAL ending/style/continuity constraint; constraint-style prose, preserve {pic:N}.",
     "full": "kind=full: produce the complete structured prompt for the given mode.",
@@ -303,9 +303,12 @@ async def _optimize_prompt(text, kind, mode, references, duration, api_base, mod
         finish = data["choices"][0].get("finish_reason", "")
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError(f"LM Studio 响应格式异常：{raw[:400]}") from exc
-    # 防御：模型有时仍会吐 <Picture N> 而非 {pic:N}（runner 的 expand_pic_tags 只认
-    # {pic:N}，不认 <Picture N>），这里归一化回来，保证参考图编号能被正确换算。
-    out = re.sub(r"<Picture\s*([A-Za-z0-9]+)>", r"{pic:\1}", out)
+    # 防御：runner 的 expand_pic_tags 只把 `{pic:N}` 换成**数字**，所以引用图必须是
+    # `<Picture {pic:N}>`（外层尖括号），裸 `{pic:N}` 展开后只剩一个数字。
+    # ① 模型吐硬编码 `<Picture 1>`（链式段会错位）→ 改成相对占位符 `<Picture {pic:1}>`
+    out = re.sub(r"<Picture\s*([A-Za-z0-9]+)>", r"<Picture {pic:\1}>", out)
+    # ② 模型裸写 `{pic:1}` → 补上 `<Picture >` 外壳（已在外壳内的不重复包）
+    out = re.sub(r"(?<!<Picture )\{pic:(\d+)\}", r"<Picture {pic:\1}>", out)
     # body 模式下：剥掉 <Subject N> 命名（人物已在 head 定义）与孤立的段头标题
     # <...> / <...>：（这些是 head/tail 的全局内容，逐段 body 不该重复）。
     if str(kind).strip().lower() == "body":
