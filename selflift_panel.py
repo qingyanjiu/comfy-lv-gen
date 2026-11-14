@@ -238,7 +238,7 @@ def _optimizer_system():
 
 
 _KIND_HINT = {
-    "body": "kind=body: ONE segment's shot storyboard. Organize as 第一镜/第二镜/… (estimated_shots), each shot in this project's four-block spec (动作 / [机位] / [光线] / [场景], blank-line separated). EXPAND the action: break each motion into 3–6 ordered steps (先…然后…接着…再…最后), naming body part + direction + amplitude + where it settles — write it clearly and naturally, not a one-liner. EMOTION & POSTURE: every shot MUST describe the protagonist's facial micro-expression (eyes/brows/mouth/jaw) AND body posture (weight/shoulders/spine/hands/stance) and how they change through the action — never wooden, blank, or statue-like. BLINK: if duration ≥5s, put ONE blink for the WHOLE segment (not per shot; ≤2 only if >10s) into the 动作 block ('很快地眨了一下眼，眼睑迅速合拢又立刻睁开', ~0.5s), and you MUST literally include the sentence '眼睛正常睁开、看着前方'; never write a blink frequency ('每隔N秒眨一次') and never '缓慢闭上双眼' — H3 ignores/over-stretches those. In [机位], use PRECISE professional camera language from §2b (dolly in/out, pan, truck, crane, follow, arc, slider, handheld, dolly zoom…) with type+amplitude+speed, one primary move per shot, kept H3-achievable (slow & steady; avoid whip pan / fast dolly). Be concrete (lighting direction+quality, At 00:SS.mmm keyframes, specific physical sounds). Write as long as the content genuinely needs (soft cap ~1200 chars); no padding with empty adjectives. Use <Picture {pic:N}> (e.g. <Picture {pic:1}>), NEVER a bare {pic:N} or a hardcoded <Picture 1>; refer to characters by role/name (NOT <Subject N>). Do NOT repeat head/tail global constraints.",
+    "body": "kind=body: ONE segment's shot storyboard. Organize as 第一镜/第二镜/… (estimated_shots), each shot in this project's four-block spec (动作 / [机位] / [光线] / [场景], blank-line separated). EXPAND the action: break each motion into 3–6 ordered steps (先…然后…接着…再…最后), naming body part + direction + amplitude + where it settles — write it clearly and naturally, not a one-liner. EMOTION & POSTURE: every shot MUST describe the protagonist's body posture (weight/shoulders/spine/hands/stance) and how it changes — never wooden, blank, or statue-like. Facial detail is SHOT-SIZE GATED: medium/close shots write full micro-expression (eyes/brows/mouth/jaw); full shots only a general mood; WIDE / EXTREME-WIDE shots (subject <40% of frame height, face ≈10–20px) must NOT describe the face at all — body language, silhouette, direction, weapon/armor glints only, at most '神情沉毅'. If the audience must remember the face, give a separate medium-close or close shot; wide shots carry scale, close shots carry identity. Never try to fix a distant face with resolution. BLINK: if duration ≥5s AND the segment is not a wide/extreme-wide shot, put ONE blink for the WHOLE segment (not per shot; ≤2 only if >10s) into the 动作 block ('很快地眨了一下眼，眼睑迅速合拢又立刻睁开', ~0.5s), and you MUST literally include the sentence '眼睛正常睁开、看着前方'; never write a blink frequency ('每隔N秒眨一次') and never '缓慢闭上双眼' — H3 ignores/over-stretches those. In [机位], use PRECISE professional camera language from §2b (dolly in/out, pan, truck, crane, follow, arc, slider, handheld, dolly zoom…) with type+amplitude+speed, one primary move per shot, kept H3-achievable (slow & steady; avoid whip pan / fast dolly). Be concrete (lighting direction+quality, At 00:SS.mmm keyframes, specific physical sounds). Write as long as the content genuinely needs (soft cap ~1200 chars); no padding with empty adjectives. Use <Picture {pic:N}> (e.g. <Picture {pic:1}>), NEVER a bare {pic:N} or a hardcoded <Picture 1>; refer to characters by role/name (NOT <Subject N>). Do NOT repeat head/tail global constraints.",
     "head": "kind=head: GLOBAL constraint (identity/scene anchors, eye/blink rules, prohibitions); constraint-style prose, preserve {pic:N}, not the six-section structure.",
     "tail": "kind=tail: GLOBAL ending/style/continuity constraint; constraint-style prose, preserve {pic:N}.",
     "full": "kind=full: produce the complete structured prompt for the given mode.",
@@ -336,11 +336,20 @@ _PIC_TOKEN_RE = re.compile(r"\{pic(?:\?)?:[^\}]+\}")
 _BLINK_PHRASES = ("合拢", "眨眼", "眨动", "眨了", "眨一下", "眨了一下")
 _EYE_OPEN_PHRASE = "眼睛正常睁开、看着前方"
 _BLINK_ACTION = "很快地眨了一下眼，眼睑迅速合拢又立刻睁开（约 0.5 秒）"
+# 远景/大远景里脸只有 10–20 像素：补「眨眼」「眼睛正常睁开」既看不见，还会诱导模型
+# 硬糊一张白脸。这种镜按规范本就不写脸，所以兜底也跳过。
+_WIDE_SHOT_RE = re.compile(
+    r"(大远景|极远景|远景|wide\s*shot|long\s*shot|extreme\s*wide)", re.I)
 
 
 def _ensure_blink(text, duration):
-    """保证 body 里有防眯眼句；≥5s 再保证有一次快速眨眼。返回补过后的文本。"""
+    """保证 body 里有防眯眼句；≥5s 再保证有一次快速眨眼。返回补过后的文本。
+
+    远景/大远景整镜跳过：那种景别不写脸（见 segment 规范 §4.1）。
+    """
     text = text or ""
+    if _WIDE_SHOT_RE.search(text):
+        return text
     try:
         dur = float(duration or 5.0)
     except (TypeError, ValueError):
