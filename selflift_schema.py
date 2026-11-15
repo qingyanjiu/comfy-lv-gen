@@ -27,7 +27,7 @@ SEG_TITLE_KEYS = ("title", "name", "shot_name", "label")
 COMPOSE_KEYS = ("shot", "camera", "light", "open_action", "motion", "end_action", "frame")
 SEGMENT_LIST_KEYS = ("segments", "scenes", "shots", "clips", "items", "parts")
 # 段级字段原样透传（seed / 接缝 / 段级 head / 首尾帧锁定）
-SEG_PASSTHROUGH_KEYS = ("seed", "link", "head", "cast",
+SEG_PASSTHROUGH_KEYS = ("seed", "link", "head", "cast", "ref_images",
                         "first_frame_override", "last_frame_override")
 
 # ---------------------------------------------------------------- 分层配置
@@ -251,6 +251,8 @@ def normalize(raw, *, title=None, seconds=None, fps=24, megapixels=0.5,
                     continue
                 if key == "link" and index == 1:
                     continue        # 首段没有接缝，忽略
+                if key == "ref_images" and not isinstance(value, list):
+                    continue        # 段级参考图只接受数组，别把脏值透出去
                 item[key] = value
         segments.append(item)
 

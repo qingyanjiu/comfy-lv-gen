@@ -2777,7 +2777,7 @@ $("mOk").addEventListener("click", async () => {
 });
 
 /* 版本对齐：Python 路由改了不重启就等于没改，这里让旧进程自己暴露出来 */
-const UI_BUILD = "2026-11-15a-cast";
+const UI_BUILD = "2026-11-15b-reuse";
 (async function checkBackendBuild() {
   try {
     const r = await getJSON("/h3-long-video/selflift/build");

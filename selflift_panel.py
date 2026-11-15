@@ -51,7 +51,7 @@ LOCAL_PARAM_KEYS = ("aspect_ratio", "megapixels", "quality", "seconds", "audio")
 
 # 改了路由/参数（比如新增 --cast）就把这个标记一起改掉，并且**重启出片服务**。
 # 前端 web/selflift_app.html 里的 UI_BUILD 必须写成同一个值，否则页面会提示进程是旧版。
-_PANEL_BUILD = "2026-11-15a-cast"
+_PANEL_BUILD = "2026-11-15b-reuse"
 
 
 def _has_local(v):
@@ -1422,8 +1422,9 @@ def register_routes(routes, web):
             content = {k: cfg[k] for k in schema.CONTENT_KEYS if k in cfg}
             # 段里只留内容字段；id / 帧路径 / 状态 / 时间戳 / head 覆盖标记等
             # 都是跑片产物，导出它们反而会让再导入的片带上脏状态。
-            keep = set(schema.SEG_PASSTHROUGH_KEYS) | {"title", "body", "cast",
-                                                       "optimized_body", "optimized_at"}
+            keep = (set(schema.SEG_PASSTHROUGH_KEYS)
+                    | {"title", "body", "ref_images", "cast",
+                       "optimized_body", "optimized_at"})
             content["segments"] = [
                 {k: v for k, v in (seg or {}).items()
                  if k in keep and v not in (None, "", {}, [])}
@@ -1769,6 +1770,22 @@ def register_routes(routes, web):
                 }
                 if seg.get("head"):
                     item["head"] = seg["head"]
+                if seg.get("cast"):
+                    item["cast"] = seg["cast"]
+                # 段级参考图：文件真的存在才带过去，comfy_name 换成新片 prefix 下唯一名，
+                # 否则老路径/重名会让 ComfyUI 报 Invalid image file 或串到别的片。
+                seg_refs = []
+                for j, r in enumerate(seg.get("ref_images") or []):
+                    rp = Path(str((r or {}).get("path") or ""))
+                    if not rp.is_file():
+                        continue
+                    seg_refs.append({
+                        "path": str(rp),
+                        "comfy_name": f"{prefix}_s{index:02d}_ref{j}{rp.suffix or '.png'}",
+                        "label": str((r or {}).get("label") or f"参考 {j + 1}"),
+                    })
+                if seg_refs:
+                    item["ref_images"] = seg_refs
                 for key in ("first_frame_override", "last_frame_override"):
                     if seg.get(key):
                         item[key] = seg[key]
