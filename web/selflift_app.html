@@ -230,6 +230,10 @@
     <option value="off">静音</option>
     <option value="native">保留原声</option>
   </select>
+  <select id="engineSel" title="生成链路。SelfLift=原内置二采；黑鹤二采=Dasiwa 底模 + 一采 0.2MP / 二采 2 倍放大（成片约 0.8MP），人物一致性通常更好但更慢。切换后全片标记需重出；黑鹤链路下画质档位与百万像素不参与，段间也不做首帧像素承接">
+    <option value="selflift">SelfLift 二采</option>
+    <option value="blackcrane">黑鹤二采（Dasiwa）</option>
+  </select>
   <button id="runAll" class="primary">一键跑全片</button>
   <select id="join" title="段间接续方式：只影响拼接，不改变画面内容"> 
     <option value="auto">按每段转场</option>
@@ -698,6 +702,7 @@ const state = { cfg: null, data: null, queue: null, waiting: null, busy: false, 
                 timer: null, cardSig: null, resDirty: false, cancelled: false,
                 mediaNonce: 0, filmSig: null, films: [], joinTouched: false, savedJoin: "auto",
                 qualityTouched: false, savedQuality: "fast",
+                engineTouched: false, savedEngine: "selflift",
                 runallOn: false, lastRunMsg: "" };   // runallOn：上一轮是否在跑全片，用于只报一次结果
 
 function say(text, kind = "info") {
@@ -1472,6 +1477,36 @@ $("audioSel").addEventListener("change", async () => {
   }
 });
 
+/* ---------- 生成链路：SelfLift 内置二采 / 黑鹤 Dasiwa 二采 ---------- */
+function syncEngine(data) {
+  state.savedEngine = data.engine || "selflift";
+  if (state.engineTouched) return;
+  const v = state.savedEngine;
+  if ([...$("engineSel").options].some((o) => o.value === v)) $("engineSel").value = v;
+}
+$("engineSel").addEventListener("change", async () => {
+  if (!state.cfg) { say("先选一部片", "error"); syncEngine(state.data || {}); return; }
+  const v = $("engineSel").value;
+  if (v === state.savedEngine) return;
+  state.engineTouched = true;
+  const label = $("engineSel").selectedOptions[0].textContent.trim();
+  try {
+    await apiJson("/h3-long-video/selflift/set", { cfg: state.cfg, engine: v });
+    state.savedEngine = v;
+    say("生成链路已切换为「" + label + "」，全片标记需重出。"
+        + (v === "blackcrane"
+           ? "黑鹤链路：Dasiwa 底模 + 一采 0.2MP / 二采 2 倍（成片约 0.8MP）；画质档位与百万像素不参与，段间不做首帧像素承接。"
+           : "已回到原 SelfLift 内置二采链路。"), "ok");
+    await reload();
+  } catch (e) {
+    say("切换生成链路失败：" + e.message + "，仍是 "
+        + (state.savedEngine === "blackcrane" ? "黑鹤二采" : "SelfLift 二采") + "。", "error");
+    syncEngine(state.data || {});
+  } finally {
+    state.engineTouched = false;
+  }
+});
+
 /* ---------- 使用手册：内容内嵌在页面，用 Blob 打开独立窗口，零后端路由 ---------- */
 $("manualBtn").addEventListener("click", () => {
   const raw = $("manualDoc")?.textContent || "";
@@ -1542,6 +1577,7 @@ function render(data) {
   syncJoin(data);
   syncQuality(data);
   syncAudio(data);
+  syncEngine(data);
   const task = data.task || {};
   if (state.cancelled) {
     say("已取消全片：当前段已中断、ComfyUI 队列已清空。要继续请重新点「一键跑全片」", "info");
@@ -2777,7 +2813,7 @@ $("mOk").addEventListener("click", async () => {
 });
 
 /* 版本对齐：Python 路由改了不重启就等于没改，这里让旧进程自己暴露出来 */
-const UI_BUILD = "2026-11-15b-reuse";
+const UI_BUILD = "2026-11-15c-engine";
 (async function checkBackendBuild() {
   try {
     const r = await getJSON("/h3-long-video/selflift/build");
