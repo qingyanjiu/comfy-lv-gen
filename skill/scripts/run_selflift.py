@@ -44,6 +44,16 @@ DEFAULT_CFG = "D:/Comfy-Desktop/output/rooftop-dusk/segments.json"
 DEFAULT_WORKFLOW = (
     "D:/Comfy-Desktop/.workbuddy/skills/h3-long-video/assets/H3-SelfLift_单图参考.base.json"
 )
+# 生成链路下拉的第二套：复制自 deprecated/minimax h3二采工作流（改自黑鹤大佬），
+# 一采 0.2MP → 3D latent 放大 2 倍 → MMH3UltimateUpscale 低噪二采。
+BLACKCRANE_BASE = (
+    "D:/Comfy-Desktop/.workbuddy/skills/h3-long-video/assets/H3-SelfLift_黑鹤二采.base.json"
+)
+WORKFLOW_BASES = {"selflift": DEFAULT_WORKFLOW, "blackcrane": BLACKCRANE_BASE}
+BC_PLATE = 313  # 黑鹤链路：全片空镜板挂到最后一张 ref_image 槽
+BC_FIRST = 311  # 黑鹤链路：上一段尾帧 → AddGuide 的 image
+BC_GUIDE = 320  # 核心 MiniMaxH3AddGuide：在 frame 0 追加 keyframe（不换条件节点）
+BC_FIRST_FRAME = None  # build_wf 写入、_to_api_blackcrane 读取：本段是否接首帧
 # 唯一一份全局约束配置（约束层）。CLI import 与网页建片读的是同一个文件。
 GLOBAL_CFG_PATH = (
     "D:/Comfy-Desktop/.workbuddy/skills/h3-long-video/assets/selflift.global.json"
@@ -98,7 +108,97 @@ N_FIRST = 151   # LoadImage：上一段尾帧 → first_frame
 N_PLATE = 152   # LoadImage：全片唯一无人空镜板 → ref_images.ref_image_<人数>
 N_LAST = 153    # LoadImage：可选的本段尾帧锁 → last_frame（默认不接）
 N_PEOPLE_BASE = 160  # 第 2、3… 个人物参考的 LoadImage 起始节点号（160/161/…）
+
+# 两套工作流节点契约。SelfLift 用 T8 的 238 条件节点 + SelfLiftH3Sampler；
+# 黑鹤用 ComfyUI 核心 MiniMaxH3ReferenceToVideo + SamplerCustomAdvanced + 二采。
+PROFILE_IDS = {
+    "selflift": dict(image=N_IMAGE, res=N_RES, dur=N_DUR, prompt=N_PROMPT,
+                     sampler=N_SAMPLER, video=N_VIDEO, clip=N_CLIP, cond=238,
+                     people_base=N_PEOPLE_BASE),
+    "blackcrane": dict(image=24, res=8, dur=17, prompt=6, sampler=12,
+                       video=114, clip=18, cond=6, people_base=300),
+}
+
+
+def profile(cfg):
+    """由 cfg.workflow 路径判断链路；老片没这个字段一律回落 selflift。"""
+    return "blackcrane" if "黑鹤" in str(cfg.get("workflow") or "") else "selflift"
+
+
+def _ui2api(wf):
+    """按 widget.name 把 UI 工作流转 API（黑鹤链路专用）。
+
+    pipeline.build_prompt 对「已被连线接管但仍占 widgets_values 位置」的控件、
+    以及 VHS 的 dict 控件会错位；这里沿用 tools/ui2api_run.py 的字段映射做法。
+
+    mode 语义与 ComfyUI 一致：0=正常，2=静音(mute)，4=旁路(bypass)。静音节点在
+    前端是「注释掉」，不能提交——否则它的输入会按 widgets 默认值重新填一遍，
+    等于把用户注释掉的逻辑又跑起来（典型例子：二采时间切块节点被注释后仍切块）。
+    """
+    import urllib.request
+    info = json.load(urllib.request.urlopen(P_API + "/object_info", timeout=120))
+    linkmap = {l[0]: l for l in wf["links"]}
+    prompt = {}
+    for n in wf["nodes"]:
+        t = n["type"]
+        if t in ("MarkdownNote", "Note"):
+            continue
+        if n.get("mode") in (2, 4):
+            continue
+        if t not in info:
+            raise RuntimeError(f"节点类型未注册：{t}（重启 ComfyUI 后生效）")
+        req = info[t]["input"].get("required", {})
+        opt = info[t]["input"].get("optional", {})
+        ordered = list(req) + list(opt)
+        links = {i["name"]: i for i in (n.get("inputs") or [])}
+        wv = n.get("widgets_values")
+        if isinstance(wv, dict):
+            by_name = dict(wv)
+        elif isinstance(wv, list):
+            wnames = [i["widget"]["name"] for i in (n.get("inputs") or [])
+                      if isinstance(i.get("widget"), dict)]
+            if len(wnames) != len(wv):
+                def _isw(spec):
+                    return isinstance(spec, list) and (
+                        isinstance(spec[0], list) or
+                        (isinstance(spec[0], str) and spec[0] in
+                         ("COMBO", "INT", "FLOAT", "BOOLEAN", "STRING",
+                          "COMFY_DYNAMICCOMBO_V3")))
+                wnames = [k for k in ordered if _isw(req.get(k) or opt.get(k))]
+            if len(wnames) < len(wv):
+                wnames += [f"_extra_{i}" for i in range(len(wv) - len(wnames))]
+            by_name = dict(zip(wnames, wv))
+        else:
+            by_name = {}
+        inputs = {}
+        for name in ordered:
+            li = links.get(name)
+            if li is not None and li.get("link") is not None:
+                s = linkmap.get(li["link"])
+                if s is None:
+                    raise RuntimeError(f"{t}#{n['id']} 的 {name} 连线找不到")
+                inputs[name] = [str(s[1]), s[2]]
+            elif name in by_name:
+                inputs[name] = by_name[name]
+        for name, li in links.items():
+            if name in inputs or li.get("link") is None:
+                continue
+            s = linkmap.get(li["link"])
+            if s:
+                inputs[name] = [str(s[1]), s[2]]
+        prompt[str(n["id"])] = {"class_type": t, "inputs": inputs}
+    return prompt
+
+
+P_API = os.environ.get("H3_COMFY_API", "http://127.0.0.1:8188")
 DEFAULT_MEGAPIXELS = 0.5  # 用户定：长视频默认 0.5MP，别再沿用旧值 0.3/0.98
+# 黑鹤一采默认 0.2MP：模板 8 号节点原本写死 0.2，一采再被 118 放大（现在 1.5x）。
+# 0.2MP(608x352) x1.5 -> 896x512，二采单块 N=28*16*52=23296，8GB 卡余量充足。
+BC_DEFAULT_MEGAPIXELS = 0.2
+# 上限 0.4MP：0.4MP(864x480) x1.5 -> 1312x736，二采单块 N=41*23*52=49036，
+# 仍在内核 TOKEN_CEILING=74898 的 65%。再往上 0.5MP -> 1440x832 / N=60840(81%)，
+# 8GB 卡在 MiniMaxLowVRAMAttention head_chunks=4 下已到边缘，故封顶 0.4。
+BC_MP_CAP = 0.4
 DEFAULT_ASPECT_RATIO = "16:9 (Widescreen)"
 # 与 ComfyUI ResolutionSelector 节点的 options 保持一致，别自己造字符串
 ASPECT_RATIO_CHOICES = (
@@ -203,11 +303,12 @@ def people_refs(cfg, seg=None):
     return []
 
 
-def count_people_in_wf(wf):
-    """从 UI wf 里数接了几个 ref_image 槽（150 恒定在，160… 连续递增）。"""
+def count_people_in_wf(wf, prof="selflift"):
+    """从 UI wf 里数接了几个 ref_image 槽（首图恒定在，后续节点连续递增）。"""
     ids = {n["id"] for n in wf["nodes"]}
-    c = 1 if N_IMAGE in ids else 0
-    while (N_PEOPLE_BASE + c - 1) in ids:
+    conf = PROFILE_IDS[prof]
+    c = 1 if conf["image"] in ids else 0
+    while (conf["people_base"] + c - 1) in ids:
         c += 1
     return c
 
@@ -246,12 +347,15 @@ def pic_numbers(cfg, seg):
     """
     m = {}
     n = 0
-    if seg.get("first_frame"):
-        n += 1
-        m["first"] = n
-    if seg.get("last_frame_override"):
-        n += 1
-        m["last"] = n
+    # SelfLift 的 238 把 first/last 也喂给 Qwen，会占 <Picture N> 编号；
+    # 黑鹤用 AddGuide 只追加 latent keyframe、不喂图给 Qwen，编号不能后移。
+    if profile(cfg) == "selflift":
+        if seg.get("first_frame"):
+            n += 1
+            m["first"] = n
+        if seg.get("last_frame_override"):
+            n += 1
+            m["last"] = n
     for i in range(len(people_refs(cfg, seg))):
         n += 1
         m[str(i + 1)] = n
@@ -320,19 +424,22 @@ def seg_prompt(cfg, seg):
     m = pic_numbers(cfg, seg)
     head = expand_pic_tags(seg.get("head") or cfg.get("head") or "", m, "head")
     tail = expand_pic_tags(seg.get("tail") or cfg.get("tail") or "", m, "tail")
-    body = expand_pic_tags(seg.get("body") or "", m, "segments[].body")
+    # 本段出场人物：逐段不同，所以单独一个字段，拼在 head 之后、body 之前。
+    # head 里只保留「第几号图 = 第几位人物」的通用绑定，具体是谁、本段什么状态写在这里。
+    cast = expand_pic_tags(seg.get("cast") or "", m, "segments[].cast")
+    body = expand_pic_tags(seg.get("optimized_body") or seg.get("body") or "", m, "segments[].body")
     # {pic?:first} 在首段整行删掉后会留下前导空行，strip 一下别把空行喂给文本编码器
-    return "\n\n".join([p.strip() for p in (head, body, tail) if p and p.strip()])
+    return "\n\n".join([p.strip() for p in (head, cast, body, tail) if p and p.strip()])
 
 
-def add_load_image(wf, node_id, filename):
-    """复制节点 150（人物参考图）的结构，挂一张新的 LoadImage。"""
+def add_load_image(wf, node_id, filename, template_id=N_IMAGE):
+    """复制人物参考图 LoadImage 的结构，挂一张新的 LoadImage。"""
     if any(n["id"] == node_id for n in wf["nodes"]):
         for n in wf["nodes"]:
             if n["id"] == node_id:
                 n["widgets_values"][0] = filename
         return
-    base = next(n for n in wf["nodes"] if n["id"] == N_IMAGE)
+    base = next(n for n in wf["nodes"] if n["id"] == template_id)
     node = copy.deepcopy(base)
     node["id"] = node_id
     node["widgets_values"][0] = filename
@@ -340,40 +447,72 @@ def add_load_image(wf, node_id, filename):
 
 
 def build_wf(cfg, seg, out_path):
+    prof = profile(cfg)
+    ids = PROFILE_IDS[prof]
     with open(cfg["workflow"], encoding="utf-8") as f:
-        wf = normalize(json.load(f))
+        wf = json.load(f)
+    # SelfLift 的 180 号输出控件在 UI 里是 dict，build_prompt 要摊平成 list；
+    # 黑鹤 114 号保持 dict，交给 _ui2api 按字段名映射，不能摊平。
+    if prof == "selflift":
+        wf = normalize(wf)
     nodes = {n["id"]: n for n in wf["nodes"]}
     people = people_refs(cfg, seg)
-    nodes[N_IMAGE]["widgets_values"][0] = (people[0]["comfy_name"] if people
-                                           else cfg.get("comfy_ref_name") or "image.png")
+    nodes[ids["image"]]["widgets_values"][0] = (people[0]["comfy_name"] if people
+                                               else cfg.get("comfy_ref_name") or "image.png")
     if cfg.get("clip_name"):
-        nodes[N_CLIP]["widgets_values"][0] = cfg["clip_name"]
-    nodes[N_PROMPT]["widgets_values"][0] = seg_prompt(cfg, seg)
-    nodes[N_DUR]["widgets_values"][0] = float(cfg["seconds"])
-    nodes[N_RES]["widgets_values"][0] = cfg.get("aspect_ratio") or DEFAULT_ASPECT_RATIO
-    nodes[N_RES]["widgets_values"][1] = float(cfg.get("megapixels", DEFAULT_MEGAPIXELS))
-    nodes[N_SAMPLER]["widgets_values"][0] = int(seg["seed"])
-    # 画质档位：写 lowres_scale / rho。没设过就用 fast（= base.json 原值 0.5/0），行为不变。
-    quality = cfg.get("quality") or DEFAULT_QUALITY
-    if quality in QUALITY_PRESETS:
-        lowres, rho = QUALITY_PRESETS[quality]
-        _w = nodes[N_SAMPLER]["widgets_values"]
-        _w[Q_IDX_LOWRES] = lowres
-        _w[Q_IDX_RHO] = rho
-    nodes[N_VIDEO]["widgets_values"][0] = float(cfg["fps"])
-    nodes[N_VIDEO]["widgets_values"][2] = f"{cfg['prefix']}_{seg['id']}"
+        nodes[ids["clip"]]["widgets_values"][0] = cfg["clip_name"]
+    nodes[ids["prompt"]]["widgets_values"][0] = seg_prompt(cfg, seg)
+    # 段级 seconds 优先：手动按帧切段时每段长度不同（H3 会按 17n+5 对齐）
+    nodes[ids["dur"]]["widgets_values"][0] = float(seg.get("seconds") or cfg["seconds"])
+    nodes[ids["res"]]["widgets_values"][0] = cfg.get("aspect_ratio") or DEFAULT_ASPECT_RATIO
+    nodes[ids["sampler"]]["widgets_values"][0] = int(seg["seed"])
+    # megapixels 两条链路都写。黑鹤原注释「一采固定 0.2MP」是历史限制（模板 8 号节点
+    # 写死 0.2），不是模型限制——放开后仍受 BC_MP_CAP 兜底，避免 8GB 卡一采就爆。
+    nodes[ids["res"]]["widgets_values"][1] = float(
+        cfg.get("megapixels", DEFAULT_MEGAPIXELS) if prof == "selflift"
+        else min(float(cfg.get("megapixels", BC_DEFAULT_MEGAPIXELS)), BC_MP_CAP))
+    if prof == "selflift":
+        quality = cfg.get("quality") or DEFAULT_QUALITY
+        if quality in QUALITY_PRESETS:
+            lowres, rho = QUALITY_PRESETS[quality]
+            _w = nodes[ids["sampler"]]["widgets_values"]
+            _w[Q_IDX_LOWRES] = lowres
+            _w[Q_IDX_RHO] = rho
+        vw = nodes[ids["video"]]["widgets_values"]
+        vw[0] = float(cfg["fps"])
+        vw[2] = f"{cfg['prefix']}_{seg['id']}"
+        plate = seg.get("bg_plate", cfg.get("bg_plate"))
+        if plate:
+            add_load_image(wf, N_PLATE, plate)
+        if seg.get("first_frame"):
+            add_load_image(wf, N_FIRST, seg["first_frame"])
+        if seg.get("last_frame_override"):
+            add_load_image(wf, N_LAST, seg["last_frame_override"])
+    else:
+        # 黑鹤：一采固定 0.2MP、二采 2 倍（模板节点 8 / 151）。本片「百万像素」
+        # 不参与，否则 0.5MP 一采放大 4 倍会撑爆 8GB 卡。
+        vw = nodes[ids["video"]]["widgets_values"]
+        vw["frame_rate"] = float(cfg["fps"])
+        vw["filename_prefix"] = f"{cfg['prefix']}_{seg['id']}"
+        # 空镜板要接成最后一张 ref_image：全局 head 里的 {pic?:plate} 会按接线
+        # 展开成 <Picture N>，不接就会留下悬空标签。
+        plate = seg.get("bg_plate", cfg.get("bg_plate"))
+        if plate:
+            add_load_image(wf, BC_PLATE, plate, template_id=ids["image"])
     for i, pp in enumerate(people[1:], start=1):
-        add_load_image(wf, person_node(i), pp["comfy_name"])
-    plate = seg.get("bg_plate", cfg.get("bg_plate"))
-    if plate:
-        add_load_image(wf, N_PLATE, plate)
-    if seg.get("first_frame"):
-        add_load_image(wf, N_FIRST, seg["first_frame"])
-    if seg.get("last_frame_override"):
-        add_load_image(wf, N_LAST, seg["last_frame_override"])
-    global REF_VIDEO_PATH, REF_VIDEO_SECONDS
+        add_load_image(wf, ids["people_base"] + i - 1, pp["comfy_name"],
+                       template_id=ids["image"])
+    global REF_VIDEO_PATH, REF_VIDEO_SECONDS, AUDIO_MODE, BC_FIRST_FRAME, BC_TWO_PASS
+    BC_FIRST_FRAME = None
+    # 二采开关：默认开；cfg 显式写 False 才关（None/缺省都视为开）
+    BC_TWO_PASS = cfg.get("bc_two_pass") is not False
+    if prof == "blackcrane" and seg.get("first_frame"):
+        nodes[BC_FIRST]["widgets_values"][0] = seg["first_frame"]
+        BC_FIRST_FRAME = seg["first_frame"]
     REF_VIDEO_PATH = seg.get("ref_video") or cfg.get("ref_video") or None
     REF_VIDEO_SECONDS = seg.get("ref_video_seconds") or None
+    # 片级 audio 优先，没写就默认 off（要声音必须显式写 "native"）
+    AUDIO_MODE = str(cfg.get("audio") or "off").strip().lower()
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(wf, f, ensure_ascii=False)
     return out_path
@@ -383,18 +522,21 @@ def check_graph(cfg, seg, verbose=True):
     tmp = os.path.join(QA_DIR, f"_graph_{seg['id']}.json")
     build_wf(cfg, seg, tmp)
     wf = json.load(open(tmp, encoding="utf-8"))
-    prompt = to_api(wf)
-    a = prompt[str(N_IMAGE)]["inputs"]["image"]
-    b = prompt[str(N_SAMPLER)]["inputs"]
-    c = prompt[str(N_VIDEO)]["inputs"]
-    d = prompt["238"]["inputs"]
+    prof = profile(cfg)
+    ids = PROFILE_IDS[prof]
+    prompt = to_api(wf, prof)
+    a = prompt[str(ids["image"])]["inputs"]["image"]
+    b = prompt[str(ids["sampler"])]["inputs"]
+    c = prompt[str(ids["video"])]["inputs"]
+    d = prompt[str(ids["cond"])]["inputs"]
     if verbose:
         print(f"    image={a!r} seed={b.get('seed')} cfg={b.get('cfg')} "
               f"trans={b.get('transition_step')} rho={b.get('rho')}", flush=True)
         print(f"    video: fps={c.get('frame_rate')} prefix={c.get('filename_prefix')!r} "
               f"fmt={c.get('format')} audio={c.get('audio')}", flush=True)
-        print(f"    238: {d.get('width')}x{d.get('height')} len={d.get('length')} "
-              f"task={d.get('task_type')} audio={d.get('audio_mode')}", flush=True)
+        print(f"    cond: {d.get('width')}x{d.get('height')} "
+              f"len={d.get('length')} task={d.get('task_type')} "
+              f"audio={d.get('audio_mode')}", flush=True)
         print(f"    image={a!r} seed={b.get('seed')} cfg={b.get('cfg')} "
               f"trans={b.get('transition_step')} rho={b.get('rho')}", flush=True)
         refs = sorted((k for k in d if k.startswith("ref_images.")),
@@ -404,7 +546,7 @@ def check_graph(cfg, seg, verbose=True):
             ((k, d[k]) for k in refs)), flush=True)
         print(f"    接续: first_frame={d.get('first_frame')} "
               f"last_frame={d.get('last_frame')}", flush=True)
-        res = prompt[str(N_RES)]["inputs"]
+        res = prompt[str(ids["res"])]["inputs"]
         print(f"    resolution: {res.get('aspect_ratio')} / {res.get('megapixels')} MP",
               flush=True)
         print(f"    prompt chars={len(seg_prompt(cfg, seg))}", flush=True)
@@ -560,6 +702,9 @@ def seg_status(cfg):
             "title": sg.get("title", ""),
             "seed": sg.get("seed"),
             "body": sg.get("body", ""),
+            "cast": sg.get("cast", ""),
+            "optimized_body": sg.get("optimized_body", ""),
+            "optimized_at": sg.get("optimized_at"),
             "first_frame_override": sg.get("first_frame_override"),
             "last_frame_override": sg.get("last_frame_override"),
             "done": done,
@@ -587,7 +732,8 @@ def seg_status(cfg):
                      cfg.get("head_updated_at", 0),
                      cfg.get("res_updated_at", 0),
                      cfg.get("quality_updated_at", 0),
-                     cfg.get("audio_updated_at", 0)) > item["mtime"] + 1
+                     cfg.get("audio_updated_at", 0),
+                     cfg.get("workflow_updated_at", 0)) > item["mtime"] + 1
         prev = segs[i-1]["last_frame"] if i > 0 else None
         # 转场模式(transition)的段首帧独立生成，上游尾帧变化不会让它失效
         lmode = (cfg["segments"][i].get("link") or {}).get("mode", "chain")
@@ -620,6 +766,8 @@ def seg_status(cfg):
         "quality_updated_at": cfg.get("quality_updated_at", 0),
         "audio": cfg.get("audio") or "off",
         "audio_updated_at": cfg.get("audio_updated_at", 0),
+        "engine": profile(cfg),
+        "workflow": cfg.get("workflow", ""),
         "quality_presets": {k: {"lowres_scale": v[0], "rho": v[1]}
                             for k, v in QUALITY_PRESETS.items()},
         "chain_first_frame": bool(cfg.get("chain_first_frame")),
@@ -701,6 +849,18 @@ def cmd_set(cfg, args):
         cfg["audio_updated_at"] = time.time()
         changed.append(f"audio={audio}")
 
+    engine = getattr(args, "engine", None)
+    if engine is not None:
+        engine = str(engine).strip().lower()
+        if engine not in WORKFLOW_BASES:
+            P.die(f"未知生成链路：{engine}（可选：{' / '.join(WORKFLOW_BASES)}）")
+        if not os.path.isfile(WORKFLOW_BASES[engine]):
+            P.die(f"找不到该链路的 base 工作流：{WORKFLOW_BASES[engine]}")
+        cfg["workflow"] = WORKFLOW_BASES[engine]
+        # 换链路 = 换底模/条件节点/采样方式，同 seed 也不是同一个画面 → 全片需重出
+        cfg["workflow_updated_at"] = time.time()
+        changed.append(f"生成链路={engine}（{os.path.basename(cfg['workflow'])}）")
+
     if args.ref_video is not None:
         rv = str(args.ref_video).strip()
         if rv.lower() in ("", "none", "clear"):
@@ -715,8 +875,10 @@ def cmd_set(cfg, args):
             changed.append(f"ref_video={dst_name}（已复制进 ComfyUI input）")
 
     idx = args.seg - 1
-    seg_args = (args.seed, args.body, args.first_frame, args.last_frame,
-                args.link_mode, args.link_transition, args.seg_head, args.seg_tail)
+    seg_args = (args.seed, args.body, getattr(args, "optimized_body", None),
+                getattr(args, "cast", None),
+                args.first_frame, args.last_frame, args.link_mode,
+                args.link_transition, args.seg_head, args.seg_tail)
     if any(v is not None for v in seg_args):
         if not (0 <= idx < len(cfg["segments"])):
             P.die(f"段号越界：{args.seg}（共 {len(cfg['segments'])} 段）")
@@ -728,6 +890,22 @@ def cmd_set(cfg, args):
         if args.body is not None:
             sg["body"] = args.body
             seg_changed.append("body")
+        opt_body = getattr(args, "optimized_body", None)  # 老调用方可能没这个字段
+        if opt_body is not None:
+            sg["optimized_body"] = opt_body
+            if str(opt_body).strip():
+                sg["optimized_at"] = time.time()   # 记优化时间，前端在优化框角上显示
+            else:
+                sg.pop("optimized_at", None)       # 清空优化 = 回退原提示词，时间戳一并清掉
+            seg_changed.append("optimized_body")
+        cast_text = getattr(args, "cast", None)
+        if cast_text is not None:
+            if str(cast_text).strip():
+                sg["cast"] = str(cast_text)
+                seg_changed.append("本段人物")
+            else:
+                sg.pop("cast", None)   # 清空 = 本段不额外声明人物，回到只靠 head 的通用绑定
+                seg_changed.append("本段人物=清空")
         if args.seg_head is not None:
             head_text = _global_text(args.seg_head)
             if head_text:
@@ -884,6 +1062,11 @@ def run_seg(cfg, idx):
     seg = dict(cfg["segments"][idx])
     link = cfg["segments"][idx].get("link") or {}
     lmode = link.get("mode", "chain")
+    if profile(cfg) == "blackcrane":
+        # 首帧由 MiniMaxH3AddGuide 在 frame 0 硬锚，照常走下面的链式承接；
+        # 这条链没接 last_frame，别让它在 pic_numbers 里占编号。
+        seg.pop("last_frame_override", None)
+        print("    黑鹤链路：首帧由 AddGuide 在 frame 0 硬锚", flush=True)
     if seg.get("first_frame_override"):
         seg["first_frame"] = seg["first_frame_override"]
         print(f"    首帧覆盖（面板指定）：{seg['first_frame']}", flush=True)
@@ -989,14 +1172,84 @@ def has_audio(path):
 REF_VIDEO_PATH = None
 REF_VIDEO_SECONDS = None
 
+# 黑鹤二采开关：True=一采0.2MP→放大2倍→二采精修（默认，高质量）；
+# False=直接 decode 一采 latent（约0.2MP低清，跳过 118/106/113，快很多）。
+# cfg["bc_two_pass"]=False 可关；build_wf 写入，_to_api_blackcrane 读取。
+BC_TWO_PASS = True
 
-def to_api(wf):
+# 输出音轨：off = 断开输出节点的 audio 输入，生成的 mp4 直接没有音轨；
+# native = 保留模型自推的声音。默认 off —— H3 是音视频联合生成，声音按画面自己推
+# （车厢就给你车厢轰鸣），而且提示词控不住：实测写「只有呼吸声」会把整条音轨压掉 23dB
+# 变成近乎静音，正面写「清楚听见呼吸」反而只剩一条持续低频嗡声。
+# 想配音就走后期（同一首/同一套音效贴全片），比赌模型生成什么可靠得多。
+AUDIO_MODE = "off"
+
+
+def _to_api_blackcrane(wf):
+    ids = PROFILE_IDS["blackcrane"]
+    p = _ui2api(wf)
+    if not BC_FIRST_FRAME:
+        # 第 1 段 / 转场段没有首帧：AddGuide 必须拿掉（没 image 会执行时报错），
+        # 采样 guider / 二采 / negative 的 conditioning 回连到 6 号原始输出。
+        p.pop(str(BC_GUIDE), None)
+        p.pop(str(BC_FIRST), None)
+        for _nid in ("14", "113", "110"):
+            if _nid in p and p[_nid]["inputs"].get("conditioning") == [str(BC_GUIDE), 0]:
+                p[_nid]["inputs"]["conditioning"] = [str(ids["cond"]), 0]
+    cond = p[str(ids["cond"])]["inputs"]
+    if _audio_off():
+        p[str(ids["video"])]["inputs"].pop("audio", None)
+    n_ppl = count_people_in_wf(wf, "blackcrane")
+    for i in range(1, n_ppl):
+        node = str(ids["people_base"] + i - 1)
+        if node in p:
+            cond[f"ref_images.ref_image_{i}"] = [node, 0]
+    if str(BC_PLATE) in p:
+        cond[f"ref_images.ref_image_{n_ppl}"] = [str(BC_PLATE), 0]
+    if REF_VIDEO_PATH:
+        vname = os.path.basename(REF_VIDEO_PATH)
+        cap = 200
+        if REF_VIDEO_SECONDS:
+            cap = max(200, int(REF_VIDEO_SECONDS * 24) + 10)
+        p["900"] = {"class_type": "VHS_LoadVideo", "inputs": {
+            "video": vname, "force_rate": 24, "custom_width": 0,
+            "custom_height": 0, "frame_load_cap": cap,
+            "skip_first_frames": 0, "select_every_nth": 1, "format": "None"}}
+        cond["ref_videos.ref_video_0"] = ["900", 0]
+    if not BC_TWO_PASS:
+        # 关二采：解码节点 107 直接吃一采的 video_latent（节点90 的 slot0），
+        # 跳过 118(放大)/106(合并)/113(二采)。这三个节点不在输出依赖链里，
+        # ComfyUI 不会执行它们 → 省掉放大+二采的显存和时间。
+        # 代价：输出分辨率是一采 0.2MP（约原尺寸一半），只适合快速预览。
+        if "107" in p and "90" in p:
+            p["107"]["inputs"]["samples"] = ["90", 0]
+        for _nid in ("118", "106", "113"):
+            p.pop(_nid, None)
+    return p
+
+
+def _audio_off():
+    return AUDIO_MODE != "native"
+
+
+def to_api(wf, prof=None):
     """pipeline.build_prompt 对 MiniMaxH3AudioConditioningT8 会错位（UI 里转成输入的
     宽/高/时长仍在 widgets_values 里占位），这里单独重写该节点，其余节点按原样用。
 
     ref_images 槽位顺序 = 人物 0..N-1，空镜板排最后的第 N 位（见 people_refs）。
+    黑鹤链路走 _to_api_blackcrane（按字段名转换，不碰 238 重写逻辑）。
     """
+    if prof is None:
+        prof = "selflift" if any(str(n["id"]) == "238" for n in wf["nodes"]) else "blackcrane"
+    if prof == "blackcrane":
+        return _to_api_blackcrane(wf)
     p = P.build_prompt(wf)
+    if _audio_off():
+        # 断开输出节点的 audio 输入：VHS_VideoCombine 没接音频就不封装音轨，
+        # 产物是真·静音（不是把音量调到 -inf），后续 merge / 剪辑也不会多出声音。
+        for _node in p.values():
+            if _node.get("class_type") == "VHS_VideoCombine":
+                _node.get("inputs", {}).pop("audio", None)
     if "238" in p:
         inp = {
             "clip": [str(N_CLIP), 0],
@@ -1334,7 +1587,13 @@ def cmd_merge(cfg, join=None):
         if is_xfade(i - 1):
             off = cur - d
             nx = f"x{i}"
-            vlines.append(f"[{prev}][v{i}]xfade=transition=fade:duration={d:.3f}:offset={off:.3f}[{nx}]")
+            # concat 链的输出 timebase 是 AVTB(1/1000000)，单段 v{i} 经 fps 后是 1/fps；
+            # ffmpeg 9 起 xfade 要求两路 timebase 严格一致，否则报
+            # "First input link main timebase do not match ... xfade timebase"。
+            # 叠化前把 prev 统一回 1/fps，再与 v{i} 混合。
+            nprev = f"p{i}"
+            vlines.append(f"[{prev}]settb=AVTB,fps={fps}[{nprev}]")
+            vlines.append(f"[{nprev}][v{i}]xfade=transition=fade:duration={d:.3f}:offset={off:.3f}[{nx}]")
             prev = nx
             cur = off + dur_i
         else:
@@ -1599,6 +1858,11 @@ def main():
     ap.add_argument("--seg", type=int, default=0, help="set 命令的目标段号（1 起）")
     ap.add_argument("--seed", type=int, default=None, help="set：换 seed 重出用")
     ap.add_argument("--body", default=None, help="set：替换该段提示词正文")
+    ap.add_argument("--optimized-body", dest="optimized_body", default=None,
+                   help="set：写入该段优化后提示词（跑片时优先于 --body 使用）")
+    ap.add_argument("--cast", default=None,
+                    help="set：本段出场人物说明（拼在 head 之后、body 之前；逐段可不同）。"
+                         "写清本段出现谁、谁对应哪张参考图、本段外观状态；空=清空")
     ap.add_argument("--seg-head", dest="seg_head", default=None,
                     help="set：本段 head（整段覆盖全局，不是追加）；clear=删掉、回落到全局")
     ap.add_argument("--seg-tail", dest="seg_tail", default=None,
@@ -1614,6 +1878,10 @@ def main():
     ap.add_argument("--quality", choices=list(QUALITY_PRESETS), default=None,
                     help="画质档位：fast=最快(默认) / standard=折中 / high=细节最好但慢约 36%%。"
                          "换档位会改变采样轨迹，同 seed 也会出不同画面，全片需重出")
+    ap.add_argument("--engine", choices=list(WORKFLOW_BASES), default=None,
+                    help="set：切换生成链路 selflift=原 SelfLift 二采 / "
+                         "blackcrane=黑鹤二采（Dasiwa 底模，一采 0.2MP + 二采 2 倍）；"
+                         "改动后全片需重出")
     ap.add_argument("--audio", choices=["native", "off"], default=None,
                     help="set：声音模式 native=保留模型原声 / off=静音（默认）。"
                          "改动后全片需重出（已出片段没有音轨）")
