@@ -173,6 +173,12 @@ python skill/scripts/sync_repo.py --apply
 python skill/scripts/sync_repo.py --check    # 应输出 ALL SYNCED
 ```
 
+**注意活跃目录不是本仓库的 checkout**，它是个独立的本地 git 仓库（分支 `master`，
+历史与 `main` 无 merge-base）。在那里 `git commit` **永远进不了 `main`**，同步只
+靠上面的 `sync_repo.py` 搬文件。它原先挂过指向本仓库的 `origin`、推 `master` 分支，
+但 `origin/master` 与 `main/skill/` 32 个文件逐字节零差异，纯冗余 —— 2026-11-17 已
+`git remote remove origin`，从根上杜绝「push 成功 = 已同步」的错觉。
+
 ### 三条纪律
 
 1. **改配置只改活跃目录**（`.workbuddy/skills/h3-long-video/assets/`）。运行时读的是
