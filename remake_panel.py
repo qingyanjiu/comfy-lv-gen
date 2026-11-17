@@ -134,6 +134,64 @@ def probe(path):
     return float(d["format"]["duration"]), v["width"], v["height"], float(num)/float(den or 1)
 
 
+_HA_CACHE = {}
+
+
+def has_audio(path):
+    """这条媒体里有没有音轨（切段保留原音、贴回时都要判）。
+
+    按 (mtime, size) 缓存——/api/state 每次轮询都要查所有段，不能每轮都起 ffprobe。
+    """
+    try:
+        stt = os.stat(path)
+        key = (path, stt.st_mtime_ns, stt.st_size)
+    except OSError:
+        return False
+    if key in _HA_CACHE:
+        return _HA_CACHE[key]
+    out = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "a",
+                          "-show_entries", "stream=index", "-of", "csv=p=0", path],
+                         capture_output=True, text=True).stdout
+    v = bool(out.strip())
+    if len(_HA_CACHE) > 512:
+        _HA_CACHE.clear()
+    _HA_CACHE[key] = v
+    return v
+
+
+def mux_src_audio(gen_video, src_clip, out_path, mode="hold"):
+    """把源段的原音贴回生成段。
+
+    H3 会把时长对齐到 17n+5 帧，生成段通常比源段长一点（7.008s → 7.2917s）。
+    对齐方式（用户 2026-11-17 定「起点对齐 + 末尾补静音」）：
+      hold = 音频从段首开始播，多出来的视频用 apad 补静音（音调不变、不累积偏移）
+      fit  = 用 atempo 把音频拉长铺满整段（段内全程有声，音调轻微变化）
+    生成段比源段短时，用 -shortest 以视频为准截断音频。
+
+    返回 (ok, msg)。生成段本来就有音轨时不动它（模型自推的声音优先保留）。
+    """
+    if not src_clip or not os.path.exists(src_clip):
+        return False, "源段不存在，无法贴音频"
+    if not has_audio(src_clip):
+        return False, "源段没有音轨"
+    gen_dur, _, _, _ = probe(gen_video)
+    src_dur, _, _, _ = probe(src_clip)
+    af = None
+    if mode == "fit" and src_dur > 0 and gen_dur > src_dur:
+        af = "atempo=%.6f" % max(0.5, min(2.0, src_dur / gen_dur))
+    cmd = [FFMPEG, "-y", "-loglevel", "error", "-i", gen_video, "-i", src_clip]
+    if af:
+        cmd += ["-filter_complex", f"[1:a]{af},apad[aout]", "-map", "0:v:0", "-map", "[aout]"]
+    else:
+        cmd += ["-map", "0:v:0", "-map", "1:a:0", "-af", "apad"]
+    cmd += ["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+            "-shortest", "-movflags", "+faststart", out_path]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        return False, (r.stderr or "")[-500:]
+    return True, "音频已贴回（%s，源 %.3fs → 成片 %.3fs）" % (mode, src_dur, gen_dur)
+
+
 def work_dir(name):
     """项目目录。新项目一律建在 ROOT；老项目在 LEGACY_ROOT 里时继续原地读。
 
@@ -742,14 +800,69 @@ def ensure_seg_inputs(wd, seg):
                 if not os.path.exists(dst) and os.path.exists(prev_local):
                     shutil.copy2(prev_local, dst)
                     notes.append("重拷上段尾帧 " + prev_name)
-            else:
-                return False, f"首帧图缺失且无法恢复：{ff}"
+            # i == 1 且没有 first_frame_override 是**合法状态**，不是缺失：
+            # 首段前面没有尾帧可承接，未勾「首段用源视频首帧硬锚」时本来就该
+            # 自由起手（黑鹤链路会把 AddGuide 摘掉、让 frame 0 不被锚定）。
+            # 以前这里 return False 报「首帧图缺失且无法恢复：None」，直接把
+            # 首段跑片拦死，是逻辑错误——首段根本不需要首帧图。
     return True, ("；".join(notes) if notes else "参考文件齐全")
 
 
 # ---------- 跑片子进程（流式写日志、跨请求存活） ----------
-def run_seg_proc(wd, idx, seed=None, two_pass=None, prompt=None):
-    """idx 1-based。返回 (ok, msg)。进程在后台线程跑，状态写 _panel_state.json。"""
+def apply_src_audio(wd, idx=None, mode="hold"):
+    """把源段原音贴回已生成的段（idx=None 时处理所有已出片的段）。
+
+    生成段本来就有音轨时跳过——模型自推的声音优先，不覆盖。
+    返回 (ok, msg, 处理条数)。
+    """
+    cfg_f = cfg_path(wd)
+    if not os.path.exists(cfg_f):
+        return False, "未切段", 0
+    cfg = json.load(open(cfg_f, encoding="utf-8"))
+    prefix = cfg.get("prefix")
+    segs = cfg.get("segments") or []
+    targets = segs if idx is None else [segs[idx - 1]] if 0 < idx <= len(segs) else []
+    if not targets:
+        return False, "没有可处理的段", 0
+    done, skipped, failed = 0, [], []
+    for s in targets:
+        sid = s.get("id")
+        gi = segs.index(s)
+        gen = os.path.join(wd, "segments", f"{prefix}_{sid}.mp4")
+        # 源段按序号找：id 是 r01/r02…，切段时写的是 clip_01/clip_02
+        clip = os.path.join(wd, "source_segments", f"clip_{gi+1:02d}.mp4")
+        if not os.path.exists(clip):
+            cand = [f for f in sorted(os.listdir(os.path.join(wd, "source_segments")))
+                    if f.startswith("clip_")] if os.path.isdir(os.path.join(wd, "source_segments")) else []
+            clip = os.path.join(wd, "source_segments", cand[gi]) if gi < len(cand) else clip
+        if not os.path.exists(gen):
+            skipped.append(f"{sid} 未出片")
+            continue
+        if has_audio(gen):
+            skipped.append(f"{sid} 已有音轨")
+            continue
+        tmp = gen + ".mux.mp4"
+        ok, msg = mux_src_audio(gen, clip, tmp, mode=mode)
+        if not ok:
+            failed.append(f"{sid}: {msg}")
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            continue
+        os.replace(tmp, gen)
+        done += 1
+    note = f"贴回 {done} 段"
+    if skipped:
+        note += "；跳过 " + "、".join(skipped)
+    if failed:
+        note += "；失败 " + " | ".join(failed)
+    return (not failed), note, done
+
+
+def run_seg_proc(wd, idx, seed=None, two_pass=None, prompt=None, keep_audio=None):
+    """idx 1-based。返回 (ok, msg)。进程在后台线程跑，状态写 _panel_state.json。
+
+    keep_audio：本段出片后是否把源段原音贴回（None=读片配置 audio_keep）。
+    """
     film = os.path.basename(wd)
     st = load_state(wd)
     if st["jobs"].get(f"seg{idx}") == "running":
@@ -758,6 +871,10 @@ def run_seg_proc(wd, idx, seed=None, two_pass=None, prompt=None):
     if not os.path.exists(cfg):
         return False, "未切段，请先切段"
     reset_stop(film)  # 单段手动生成 = 新一轮，清除之前的停止请求
+    # 保留原音开关：显式传了写回片配置，没传就读片配置
+    if keep_audio is None:
+        keep_audio = bool(json.load(open(cfg, encoding="utf-8")).get("audio_keep"))
+    audio_fit = json.load(open(cfg, encoding="utf-8")).get("audio_fit") or "hold"
     # 可选换 seed / 切换二采 / 改本段提示词（重生成时可覆盖）
     if seed or two_pass is not None or prompt is not None:
         j = json.load(open(cfg, encoding="utf-8"))
@@ -820,6 +937,13 @@ def run_seg_proc(wd, idx, seed=None, two_pass=None, prompt=None):
                 stopped = True
             ok = (not stopped) and (p.returncode == 0)
             append_log(lp, f"\n[exit {p.returncode}] {'STOPPED' if stopped else ('OK' if ok else 'FAIL')}\n")
+            # 出片成功且开了「保留原音」：立刻把源段原音贴回本段
+            if ok and keep_audio:
+                try:
+                    aok, anote, _ = apply_src_audio(wd, idx, mode=audio_fit)
+                    append_log(lp, f"[原音] {anote}\n")
+                except Exception:
+                    append_log(lp, "[原音] 贴回失败：\n" + traceback.format_exc())
         except Exception:
             append_log(lp, traceback.format_exc())
         finally:
@@ -871,6 +995,11 @@ def run_all_proc(wd, skip_done=True):
         n = len(st0["segments"])
         statuses = [st0["segments"][k].get("status") for k in range(n)]
         done_cnt = 0
+        # 全片统一读一次「保留原音」开关（跑片期间改它不影响本次）
+        try:
+            keep_audio = bool(json.load(open(cfg_path(wd), encoding="utf-8")).get("audio_keep"))
+        except Exception:
+            keep_audio = False
         for i in range(1, n + 1):
             if is_stopped(film):
                 append_log(plp, f"[{i}/{n}] 收到停止请求，中止全片（段{i}前）\n")
@@ -883,7 +1012,8 @@ def run_all_proc(wd, skip_done=True):
             append_log(plp, "\n" + "-" * 56)
             append_log(plp, f"  全片进度  正在生成第 {i}/{n} 段   {time.strftime('%H:%M:%S')}")
             append_log(plp, "-" * 56)
-            ok, _ = run_seg_proc(wd, i)
+            # 原音贴回交给 run_seg_proc（它读片配置 audio_keep，逐段出完就贴）
+            ok, _ = run_seg_proc(wd, i, keep_audio=keep_audio)
             # 等待本段结束（或收到停止）
             while True:
                 if is_stopped(film):
@@ -1000,11 +1130,14 @@ def h3_seconds(dur):
 
 
 def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
-             anchor_first=True, cuts=None, fps=None):
+             anchor_first=True, cuts=None, fps=None, keep_audio=None):
     """切段建片。
 
     cuts 为帧号列表（含起点与终点，如 [0, 120, 288, 336]）时按手工切点切，
     每段长度可不同；否则按 seg_sec 均匀切。
+
+    keep_audio：切出的源段是否保留音轨（None=源视频有音轨就保留）。
+    源段音轨是「出片后贴回原音」的唯一素材，丢了找不回来，所以默认保留。
 
     注意：切段/重建一律写新根目录 ROOT。老目录里同名项目不动（要搬用 migrate_project），
     避免「重建老项目」时把结果写回 output/ 造成两份。"""
@@ -1059,6 +1192,8 @@ def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
 
     segs = []
     seg_state = []
+    src_has_audio = has_audio(src)
+    want_audio = src_has_audio if keep_audio is None else (bool(keep_audio) and src_has_audio)
     for i, (a, b) in enumerate(spans):
         clip = os.path.join(wd, "source_segments", f"clip_{i+1:02d}.mp4")
         first = os.path.join(wd, "refs", f"first_{i+1:02d}.png")
@@ -1068,14 +1203,20 @@ def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
             vf = (f"trim=start_frame={a}:end_frame={b},setpts=PTS-STARTPTS,"
                   f"scale=trunc(iw/2)*2:trunc(ih/2)*2")
             cmd = [FFMPEG, "-y", "-loglevel", "error", "-i", src,
-                   "-vf", vf, "-an", "-c:v", "libx264", "-crf", "18",
-                   "-preset", "fast", clip]
+                   "-vf", vf, "-c:v", "libx264", "-crf", "18",
+                   "-preset", "fast"]
         else:
             t0 = a
             this_dur = b - a
             cmd = [FFMPEG, "-y", "-loglevel", "error", "-ss", f"{t0:.3f}", "-i", src,
                    "-t", f"{this_dur:.3f}", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-                   "-c:v", "libx264", "-crf", "18", "-preset", "fast", "-an", clip]
+                   "-c:v", "libx264", "-crf", "18", "-preset", "fast"]
+        # 保留源段原音：贴回成片要用（以前这里写 -an，音频被丢掉，原音再也找不回来）
+        if want_audio:
+            cmd += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
+        else:
+            cmd += ["-an"]
+        cmd.append(clip)
         subprocess.run(cmd, check=True)
         subprocess.run([FFMPEG, "-y", "-loglevel", "error", "-i", clip,
                         "-frames:v", "1", first], check=True)
@@ -1127,6 +1268,9 @@ def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
         "length": h3_seconds(actual)[1],
         "megapixels": 0.3, "aspect_ratio": "16:9 (Widescreen)", "quality": "high",
         "audio": "off", "chain_first_frame": True, "join_mode": "cut",
+        # 保留原音：出片后把源段音轨贴回（用户 2026-11-17 定）。
+        # audio=off 只管模型自推的声音；原音走 ffmpeg 后处理，不进工作流。
+        "audio_keep": bool(want_audio), "audio_fit": "hold",
         "bc_two_pass": bool(two_pass),  # 二采开关：False=跳过放大+二采，快速低清预览
         "head": "", "tail": "", "segments": segs,
     }
@@ -1245,8 +1389,20 @@ class H(BaseHTTPRequestHandler):
                             st["segments"][i].pop("first_override", None)
                             st["segments"][i].pop("first_override_name", None)
                             st["segments"][i].pop("first_override_at", None)
+                    # 保留原音开关（片级）
+                    st["audio_keep"] = bool(j.get("audio_keep"))
+                    st["audio_fit"] = j.get("audio_fit") or "hold"
                 except Exception:
                     pass
+            # 每段实际有没有音轨：卡片上标「原音已贴 / 无音轨」
+            # 注意 state 的段只有 idx，没有 cfg 里的 id（r01）
+            prefix = (st.get("prefix") or "")
+            for i, s in enumerate(st.get("segments") or []):
+                if s.get("status") != "done":
+                    s.pop("has_audio", None)
+                    continue
+                gp = os.path.join(wd, "segments", f"{prefix}_r{int(s.get('idx') or i + 1):02d}.mp4")
+                s["has_audio"] = has_audio(gp) if os.path.exists(gp) else False
             return jresp(self, st)
         if p == "/api/prompt":
             # 公共提示词：优先读本片 shared_prompt.txt，否则读全局默认模板
@@ -1516,7 +1672,8 @@ class H(BaseHTTPRequestHandler):
             try:
                 st = do_split(name, src, seg, exact, prompt,
                               two_pass=bool(data.get("two_pass", True)),
-                              user_refs=user_refs, anchor_first=anchor)
+                              user_refs=user_refs, anchor_first=anchor,
+                              keep_audio=data.get("keep_audio"))
             except Exception:
                 return jresp(self, {"error": traceback.format_exc()[-1200:]}, 500)
             return jresp(self, {"ok": True, "film": name, "n": st["n"],
@@ -1547,7 +1704,8 @@ class H(BaseHTTPRequestHandler):
                 st = do_split(name, src, float(data.get("seg") or 5), False, prompt,
                               two_pass=bool(data.get("two_pass", True)),
                               user_refs=user_refs, anchor_first=anchor,
-                              cuts=cuts, fps=data.get("fps"))
+                              cuts=cuts, fps=data.get("fps"),
+                              keep_audio=data.get("keep_audio"))
             except Exception:
                 return jresp(self, {"error": traceback.format_exc()[-1200:]}, 500)
             return jresp(self, {"ok": True, "film": name, "n": st["n"],
@@ -1733,6 +1891,34 @@ class H(BaseHTTPRequestHandler):
             st = load_state(wd); st["two_pass"] = tp; save_state(wd, st)
             write_project(wd)
             return jresp(self, {"ok": True, "two_pass": tp})
+        if p == "/api/set-audio-keep":
+            # 保留原音开关（写 cfg；下次出片生效，不影响已生成的段）
+            film = data.get("film")
+            wd = work_dir(film)
+            cp = cfg_path(wd)
+            if not os.path.exists(cp):
+                return jresp(self, {"error": "未切段"}, 400)
+            j = json.load(open(cp, encoding="utf-8"))
+            j["audio_keep"] = bool(data.get("keep", True))
+            if data.get("fit") in ("hold", "fit"):
+                j["audio_fit"] = data["fit"]
+            json.dump(j, open(cp, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+            write_project(wd)
+            return jresp(self, {"ok": True, "audio_keep": j["audio_keep"],
+                                "audio_fit": j.get("audio_fit")})
+        if p == "/api/apply-audio":
+            # 手动把原音贴回已出片的段（idx 为空 = 全部）
+            film = data.get("film")
+            wd = work_dir(film)
+            idx = data.get("idx")
+            idx = int(idx) if idx else None
+            mode = data.get("fit") or None
+            if mode is None:
+                cp = cfg_path(wd)
+                mode = json.load(open(cp, encoding="utf-8")).get("audio_fit") if os.path.exists(cp) else "hold"
+            ok, note, n = apply_src_audio(wd, idx, mode=mode or "hold")
+            append_log(log_path(wd), f"[原音] {note}\n")
+            return jresp(self, {"ok": ok, "msg": note, "n": n})
         if p == "/api/reset-seg":
             # 清状态、不删文件（重生成走 /api/gen）
             film = data.get("film"); idx = int(data.get("idx", 0))

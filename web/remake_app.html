@@ -70,6 +70,9 @@ button.sm{padding:5px 10px;font-size:12px}
 .tp{font-size:10px;padding:1px 6px;border-radius:8px;border:1px solid #cbd5e0;color:#4a5568;white-space:nowrap}
 .tp.on{background:#ebf8ff;border-color:#90cdf4;color:#2b6cb0}
 .tp.off{background:#faf5ff;border-color:#d6bcfa;color:#6b46c1}
+.au{font-size:10px;padding:1px 6px;border-radius:8px;white-space:nowrap;border:1px solid}
+.au.on{background:#fffaf0;border-color:#f6ad55;color:#9c4221}
+.au.off{background:#f7fafc;border-color:#e2e8f0;color:#a0aec0}
 /* 段首帧锁定标识 */
 .fov{font-size:10px;padding:1px 6px;border-radius:8px;white-space:nowrap;border:1px solid}
 .fov.prev{background:#ebf8ff;border-color:#90cdf4;color:#2b6cb0}
@@ -171,11 +174,14 @@ button.sm{padding:5px 10px;font-size:12px}
         <label>每段秒数</label><input type="number" id="segsec" value="5" min="2" max="30" step="0.5" style="width:70px">
         <label><input type="checkbox" id="exact"> 固定秒数（尾部不足则丢弃）</label>
         <label><input type="checkbox" id="twopass" checked> 开启二采</label>
+        <label><input type="checkbox" id="keepAudio" checked title="切段时把源视频的音轨一并保留，出片后贴回"> 保留原音</label>
         <button id="btnSplit" class="pri" disabled>切段并建片</button>
       </div>
       <div class="hint" id="splitinfo"></div>
       <div class="hint" style="color:#975a16">二采：一采 0.2MP → 放大 2 倍 → 精修（质量高、约 3 分钟/段，成片 ~736×416）。
         关闭则直接出一采低清（约 368×208，快很多），适合先跑一遍看构图/动作对不对。</div>
+      <div class="hint" style="color:#2c5282">保留原音：切段时把源视频音轨留在源段里，每段出片后由 ffmpeg 把该段原音贴回（人声/音乐/音效全保留）。
+        音频从段首开始播，H3 比源段多出的约 0.28s 补静音，音调不变、不累积偏移。不走工作流，模型照旧只出画面。</div>
     </div>
 
     <div class="tabpane" id="paneManual">
@@ -200,6 +206,7 @@ button.sm{padding:5px 10px;font-size:12px}
       <div class="cutlist" id="cutList"></div>
       <div class="row" style="margin-top:10px">
         <label><input type="checkbox" id="tlTwoPass" checked> 开启二采</label>
+        <label><input type="checkbox" id="tlKeepAudio" checked title="切段时把源视频的音轨一并保留，出片后贴回"> 保留原音</label>
         <button id="btnGenCuts" class="pri" disabled>按切点生成</button>
         <span class="sel" id="cutInfo"></span>
       </div>
@@ -217,6 +224,14 @@ button.sm{padding:5px 10px;font-size:12px}
       <button id="btnSaveProj">💾 保存项目</button>
       <button id="btnStop" class="danger">⏹ 停止所有任务</button>
       <label class="sel">二采 <select id="tpSwitch"><option value="1">开（高质量）</option><option value="0">关（快速低清）</option></select></label>
+      <label class="sel" title="出片后把源段原音贴回（人声/音乐/音效全保留）。改了只对之后出的段生效。">
+        <input type="checkbox" id="keepAudioSw" checked> 保留原音
+        <select id="audioFit" title="hold：音频从段首播，多出的视频补静音（音调不变）；fit：把音频拉长铺满整段（音调轻微变化）">
+          <option value="hold">起点对齐</option>
+          <option value="fit">拉长铺满</option>
+        </select>
+      </label>
+      <button id="btnApplyAudio" title="把原音贴回所有已出片但还没有音轨的段">🎵 立即贴回</button>
       <span class="sel" id="globalStatus"></span>
       <span class="sel" id="tpSummary"></span>
       <span class="sp" style="flex:1"></span>
@@ -857,7 +872,8 @@ $('#btnGenCuts').onclick=()=>{
     body:JSON.stringify({film,src:SRC,cuts:CUTS,fps:TLFPS,seg:parseFloat($('#segsec').value)||5,
       two_pass:$('#tlTwoPass').checked,prompt:$('#pubprompt').value,
       refs:REFS.map(r=>({path:r.path,comfy_name:r.comfy_name,label:r.label})),
-      anchor_first:$('#anchorFirst').checked})})
+      anchor_first:$('#anchorFirst').checked,
+      keep_audio:$('#tlKeepAudio').checked})})
   .then(r=>r.json()).then(j=>{
     $('#btnGenCuts').disabled=false;
     if(j.error){$('#cutInfo').textContent='✗ '+j.error;return}
@@ -880,7 +896,8 @@ $('#btnSplit').onclick=()=>{
     body:JSON.stringify({film,src:SRC,seg:parseFloat($('#segsec').value),exact:$('#exact').checked,
                          two_pass:$('#twopass').checked,prompt:$('#pubprompt').value,
                          refs:REFS.map(r=>({path:r.path,comfy_name:r.comfy_name,label:r.label})),
-                         anchor_first:$('#anchorFirst').checked})})
+                         anchor_first:$('#anchorFirst').checked,
+                         keep_audio:$('#keepAudio').checked})})
   .then(r=>r.json()).then(j=>{
     $('#btnSplit').disabled=false;
     if(j.error){$('#splitinfo').textContent='✗ '+j.error;return}
@@ -891,11 +908,37 @@ $('#btnSplit').onclick=()=>{
 };
 
 // ---- 状态轮询（不整块重建：签名相同跳过） ----
-function sigOf(st){return JSON.stringify(st.segments.map(s=>[s.status,s.stale,s.seed,s.two_pass,s.seconds,s.first_override||'',s.first_override_at||0]))+'|'+JSON.stringify(st.jobs)+'|'+st.merged+'|'+st.two_pass+'|'+st.current_seg}
+function sigOf(st){return JSON.stringify(st.segments.map(s=>[s.status,s.stale,s.seed,s.two_pass,s.seconds,s.first_override||'',s.first_override_at||0,s.has_audio]))+'|'+JSON.stringify(st.jobs)+'|'+st.merged+'|'+st.two_pass+'|'+st.audio_keep+'|'+st.current_seg}
 $('#tpSwitch').onchange=()=>{
   if(!FILM)return;
   fetch('/api/set-twopass',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({film:FILM,two_pass:$('#tpSwitch').value==='1'})}).then(r=>r.json()).then(()=>pollNow());
+};
+// 保留原音：勾选/换对齐方式 → 写片配置（只影响之后出的段）
+function pushAudioCfg(){
+  if(!FILM)return;
+  const keep=$('#keepAudioSw').checked, fit=$('#audioFit').value;
+  $('#keepAudio').checked=keep; $('#tlKeepAudio').checked=keep;
+  fetch('/api/set-audio-keep',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,keep,fit})}).then(r=>r.json()).then(j=>{
+      if(j.error){$('#globalStatus').textContent='✗ '+j.error;return}
+      $('#globalStatus').textContent=keep
+        ? `原音已开（${fit==='fit'?'拉长铺满':'起点对齐'}）· 之后出的段自动贴回`
+        : '原音已关 · 之后出的段不带原音';
+    }).catch(()=>{});
+}
+$('#keepAudioSw').onchange=pushAudioCfg;
+$('#audioFit').onchange=pushAudioCfg;
+$('#btnApplyAudio').onclick=()=>{
+  if(!FILM)return;
+  const btn=$('#btnApplyAudio');
+  btn.disabled=true; btn.textContent='🎵 贴回中…';
+  fetch('/api/apply-audio',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,fit:$('#audioFit').value})}).then(r=>r.json()).then(j=>{
+    btn.disabled=false; btn.textContent='🎵 立即贴回';
+    $('#globalStatus').textContent=(j.ok?'✓ ':'⚠ ')+(j.msg||'');
+    pollNow();
+  }).catch(e=>{btn.disabled=false;btn.textContent='🎵 立即贴回';$('#globalStatus').textContent='✗ '+e});
 };
 function pollNow(){
   if(!FILM)return;
@@ -917,6 +960,13 @@ function pollNow(){
       $('#twopass').checked=!!st.two_pass;
       $('#tlTwoPass').checked=!!st.two_pass;
     }
+    // 保留原音开关（片级）：切段时定的，可在段落面板改，只影响之后出的段
+    if(st.audio_keep!==undefined){
+      $('#keepAudioSw').checked=!!st.audio_keep;
+      $('#keepAudio').checked=!!st.audio_keep;
+      $('#tlKeepAudio').checked=!!st.audio_keep;
+    }
+    if(st.audio_fit)$('#audioFit').value=st.audio_fit;
     // 二采标识汇总（按已完成段实际用的开关统计）
     const doneSegs=st.segments.filter(s=>s.status==='done');
     const onN=doneSegs.filter(s=>s.two_pass===true).length;
@@ -952,6 +1002,11 @@ function fovTag(s){
     return '<span class="fov prev" title="本段首帧 = 源视频该段的第一帧（切段时按「首段硬锚」写入）">首帧←源片</span>';
   return '';
 }
+function audTag(s){
+  if(s.status!=='done')return '';
+  if(s.has_audio)return '<span class="au on" title="这一段已把源视频该段原音贴回（人声/音乐/音效保留）">原音</span>';
+  return '<span class="au off" title="这一段没有音轨。点上方「🎵 立即贴回」可从源段补上">无音</span>';
+}
 function renderCards(st){
   const g=$('#grid'); g.innerHTML=''; $('#segCount').textContent='共 '+st.segments.length+' 段';
   st.segments.forEach((s,i)=>{
@@ -968,7 +1023,7 @@ function renderCards(st){
         ${fovTag(s)}
       </div>
       <div class="bd">
-        <div class="tt"><span>段 ${idx}</span><span style="display:flex;gap:5px;align-items:center">${tpTag(s)}<span class="st ${statusCls(s)}">${statusTxt(s)}</span></span></div>
+        <div class="tt"><span>段 ${idx}</span><span style="display:flex;gap:5px;align-items:center">${tpTag(s)}${audTag(s)}<span class="st ${statusCls(s)}">${statusTxt(s)}</span></span></div>
         <div class="meta">${secTxt}${clipTxt} · seed ${s.seed!=null?s.seed:'—'}</div>
         <div class="ops">
           <button data-act="gen" data-i="${idx}" ${s.status==='running'?'disabled':''}>${s.status==='done'?'重生成':'生成'}</button>
