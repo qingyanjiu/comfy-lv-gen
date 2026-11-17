@@ -18,7 +18,7 @@ remake_panel.py — 视频复刻导演台（黑鹤二采 · 切段 · 链式首�
 import os, sys, json, time, shutil, subprocess, threading, traceback, re
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SKILL_SCRIPTS = "D:/Comfy-Desktop/.workbuddy/skills/h3-long-video/scripts"
@@ -45,7 +45,7 @@ FPS = 24
 # 合并模式下由 tools/serve_app.py 覆盖成实际监听端口（8900），
 # /api/version 靠它报真实端口；--standalone 时才用这里的 8901。
 PORT = 8901
-UI_BUILD = "2026-11-17r-singleport"
+UI_BUILD = "2026-11-17s-download-mobile"
 COMFY = "http://127.0.0.1:8188"
 
 os.makedirs(ROOT, exist_ok=True)
@@ -1306,6 +1306,58 @@ def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
     return st
 
 
+# ---------- 媒体文件定位 / 下载 ----------
+# 这两件事原来分散在 H.do_GET 和 tools/remake_bridge.py 里各写一份（FileResponse 那条
+# 路由为了不把大文件攒进内存，只能重新实现一遍定位逻辑）。加下载功能时必然两边都要改，
+# 一旦漏改就是「打开能看、下载 404」。所以统一收到这里，两处都只调这几个函数。
+def media_path(wd, kind, idx=1):
+    """kind -> 磁盘绝对路径。不判断存在性，由调用方给 404。"""
+    st = load_state(wd)
+    if kind == "final":
+        return os.path.join(wd, "final", f"{st.get('film') or os.path.basename(wd)}_复刻成片.mp4")
+    if kind == "out":
+        return os.path.join(wd, "segments", f"{st.get('prefix') or ''}_r{idx:02d}.mp4")
+    if kind == "first":
+        return os.path.join(wd, "refs", f"first_{idx:02d}.png")
+    if kind == "firstov":
+        # 手动锁定的段首帧（上传 / 抽上段尾帧）
+        return seg_first_override_png(wd, idx)
+    if kind == "last":
+        return os.path.join(wd, "refs", f"{st.get('prefix') or ''}_s{idx:02d}_last.png")
+    return os.path.join(wd, "source_segments", f"clip_{idx:02d}.mp4")
+
+
+def media_download_name(wd, kind, idx=1):
+    """下载时的文件名（磁盘名带内部前缀，给用户的要能直接看懂）。"""
+    st = load_state(wd)
+    film = st.get("film") or os.path.basename(wd)
+    if kind == "final":
+        return f"{film}_复刻成片.mp4"
+    if kind == "out":
+        return f"{film}_段{idx:02d}.mp4"
+    if kind == "clip":
+        return f"{film}_源段{idx:02d}.mp4"
+    if kind in ("first", "firstov"):
+        return f"{film}_段{idx:02d}_首帧.png"
+    return f"{film}_段{idx:02d}_尾帧.png"
+
+
+def content_disposition(filename):
+    """attachment 头：ASCII 兜底 + RFC 5987 UTF-8 真名（中文文件名必需）。
+
+    兜底名必须自己拼干净：直接 encode('ascii','ignore') 会把
+    "复刻_1117_复刻成片.mp4" 剥成 "_1117_.mp4" 这种残骸，不认
+    filename* 的老客户端就存成这个名字。剥完太空则退成 video<ext>。
+    """
+    stem, ext = os.path.splitext(filename)
+    ascii_fb = stem.encode("ascii", "ignore").decode().strip(" _-")
+    if len(ascii_fb) < 3:
+        ascii_fb = "video"
+    q = quote(filename, safe="")
+    return (f"attachment; filename=\"{ascii_fb}{ext}\"; "
+            f"filename*=UTF-8''{q}")
+
+
 # ---------- HTTP 处理 ----------
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -1526,24 +1578,15 @@ class H(BaseHTTPRequestHandler):
                     left -= len(chunk)
             return
         if p == "/api/media":
-            # 读分段视频 / 首帧 / 成片
+            # 读分段视频 / 首帧 / 成片。dl=1 时按附件下载（带中文文件名），否则内联播放。
+            # 合并模式下这条路由走不到（remake_bridge 用 FileResponse 接管，见下）；
+            # 单开本文件调试时走这里，两份逻辑共用 media_path / media_download_name。
             name = q.get("film", [None])[0]
             kind = q.get("kind", ["clip"])[0]
             idx = int(q.get("idx", ["1"])[0])
+            dl = (q.get("dl", ["0"])[0] in ("1", "true", "yes"))
             wd = work_dir(name) if name else None
-            if kind == "final":
-                fp = os.path.join(wd, "final", f"{load_state(wd)['film']}_复刻成片.mp4")
-            elif kind == "out":
-                fp = os.path.join(wd, "segments", f"{load_state(wd)['prefix']}_r{idx:02d}.mp4")
-            elif kind == "first":
-                fp = os.path.join(wd, "refs", f"first_{idx:02d}.png")
-            elif kind == "firstov":
-                # 手动锁定的段首帧（上传/抽上段尾帧）
-                fp = seg_first_override_png(wd, idx)
-            elif kind == "last":
-                fp = os.path.join(wd, "refs", f"{load_state(wd)['prefix']}_s{idx:02d}_last.png")
-            else:
-                fp = os.path.join(wd, "source_segments", f"clip_{idx:02d}.mp4")
+            fp = media_path(wd, kind, idx) if wd else None
             if not fp or not os.path.exists(fp):
                 return jresp(self, {"error": "文件不存在：" + str(fp)}, 404)
             ctype = "image/png" if fp.lower().endswith(".png") else "video/mp4"
@@ -1552,9 +1595,28 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            if dl:
+                self.send_header("Content-Disposition",
+                                 content_disposition(media_download_name(wd, kind, idx)))
             self.end_headers()
             self.wfile.write(data)
             return
+        if p == "/api/final-info":
+            # 成片是否存在 / 多大 / 什么时候拼的 —— 页面据此决定「下载成片」亮不亮
+            name = q.get("film", [None])[0]
+            if not name:
+                return jresp(self, {"error": "缺 film"}, 400)
+            wd = work_dir(name)
+            fp = media_path(wd, "final")
+            if not os.path.exists(fp):
+                return jresp(self, {"ok": True, "exists": False,
+                                    "name": media_download_name(wd, "final")})
+            stt = os.stat(fp)
+            return jresp(self, {"ok": True, "exists": True,
+                                "name": media_download_name(wd, "final"),
+                                "size": stt.st_size, "mtime": stt.st_mtime,
+                                "url": "/api/media?film=" + urllib.parse.quote(name) +
+                                       "&kind=final&idx=1&dl=1"})
         return jresp(self, {"error": "unknown"}, 404)
 
     def do_POST(self):

@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>视频复刻导演台</title>
 <style>
 :root{--bg:#f5f6f8;--card:#fff;--bd:#dfe3e8;--tx:#222;--mut:#888;--acc:#2b6cb0;--ok:#2f855a;--err:#c53030;--run:#d69e2e}
@@ -38,15 +38,27 @@ button.danger{color:var(--err)}
 .card .ops{display:flex;gap:6px;flex-wrap:wrap} .card .ops button{padding:5px 9px;font-size:12px}
 .log{background:#1a202c;color:#cbd5e0;border-radius:6px;padding:12px;font:12px/1.5 Consolas,monospace;
      height:220px;overflow:auto;white-space:pre-wrap;word-break:break-all}
-.bar{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+/* flex-wrap + 按钮不收缩：这一行元素够多（4 按钮 + 2 label + 成片区），
+   总宽一旦超过容器，默认的 flex-shrink 会把按钮压窄让文字折行。
+   宁可整行换行，也不要按钮变形成两行字（2026-11-17 加下载按钮后实测）。 */
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.bar>button{flex:0 0 auto;white-space:nowrap}
+/* 成片区在换行后独占一行时也要靠右（.sp 只在同一行时起作用） */
+#finalBox{margin-left:auto}
 .sel{font-size:12px;color:var(--mut)}select{border:1px solid var(--bd);border-radius:5px;padding:5px 8px;font-size:13px}
 a.vlink{color:var(--acc);text-decoration:none;font-size:12px}
+/* 下载成片：绿色主按钮样式的链接（a 不能套 button，用独立类） */
+a.dlbtn{display:inline-block;background:var(--ok);color:#fff;text-decoration:none;
+  border-radius:5px;padding:6px 12px;font-size:12px;white-space:nowrap}
+a.dlbtn:hover{background:#276749}
+a.dlbtn[aria-disabled=true]{background:#cbd5e0;color:#718096;pointer-events:none}
 textarea{width:100%;border:1px solid var(--bd);border-radius:5px;padding:9px;font:12px/1.6 Consolas,monospace;resize:vertical}
 button.sm{padding:5px 10px;font-size:12px}
 /* 弹窗 */
 .mask{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:99}
 .mask.on{display:flex}
 .modal{background:#fff;border-radius:9px;width:min(760px,92vw);max-height:88vh;overflow:auto;padding:18px 20px;box-shadow:0 10px 40px rgba(0,0,0,.3)}
+.modal-seed{width:min(460px,92vw)}
 .modal h3{margin:0 0 10px;font-size:15px}
 .modal .mops{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
 .card .ops button.ed{color:var(--acc)}
@@ -97,26 +109,120 @@ button.sm{padding:5px 10px;font-size:12px}
 .cutchip.lock{background:#f7fafc;border-style:dashed;color:var(--mut)}
 .cutchip.lock b{color:var(--mut)}
 .tlcuts .m.lock{background:#a0aec0;width:1px}
+/* 头部导航 / 表单宽度工具类（原来写在内联 style 里，手机端没法覆盖） */
+header .nav{font-size:12px;color:#a0aec0}
+.sel-wide{min-width:280px}
+.in-mid{width:230px}
+.in-num{width:70px}
+/* 下载成片：和「打开成片」并排的主操作（样式见上面 a.dlbtn） */
+.tlstrip{touch-action:pan-y}   /* 手机上横向拖动=拖时间轴，纵向仍然滚页面 */
+
+/* ============ 手机 / 窄屏响应式（>760px 桌面完全不受影响） ============
+   目标宽度 360~430px 主流竖屏：控件撑满一行、触摸目标 ≥38px、
+   操作条吸顶、时间轴加高、弹窗改底部抽屉。 */
+@media (max-width:760px){
+  body{font-size:15px}
+  .wrap{margin:10px auto;padding:0 10px calc(16px + env(safe-area-inset-bottom))}
+  .panel{padding:12px;margin-bottom:12px;border-radius:10px}
+  .panel h2{font-size:14px;margin-bottom:10px}
+
+  /* 头部：标题一行，导航另起一行，别挤成一条 */
+  header{padding:10px 12px;gap:8px;flex-wrap:wrap}
+  header h1{font-size:15px;flex:1 1 auto}
+  header .sp{display:none}
+  header .nav{flex:1 1 100%;line-height:1.9}
+
+  /* 表单：控件撑满一行，触摸目标 ≥38px */
+  .row{gap:8px}
+  .row>label{flex:1 1 100%;margin-bottom:-2px}
+  input[type=number],input[type=text],select{font-size:15px;padding:9px 10px}
+  .sel-wide,.in-mid{min-width:0;width:100%}
+  .in-num{width:96px}
+  button{padding:9px 13px;font-size:14px;min-height:38px}
+  button.sm{padding:8px 11px;font-size:13px;min-height:36px}
+
+  /* 段落操作条：换行 + 吸顶（滚到卡片中间也点得到「全片生成」） */
+  /* 必须 flex-wrap：桌面一行放得下，手机上 4 个按钮 + 两个 label 一行放不下，
+     不换行时 flex-shrink 会把按钮压成竖排窄条（2026-11-17 实测）。 */
+  .bar{gap:6px;flex-wrap:wrap}
+  .bar .sp{display:none}
+  #segPanel .bar{position:sticky;top:0;z-index:6;background:#fff;
+    padding:8px 0;margin:-4px 0 10px;border-bottom:1px solid var(--bd);
+    box-shadow:0 4px 10px -8px rgba(0,0,0,.45)}
+  /* 按钮本身不收缩（继承基础样式的 flex:0 0 auto），用 min-width 保证
+     两个按钮一行、且都够宽点得中。 */
+  #segPanel .bar>button{min-width:calc(50% - 3px)}
+  #segPanel .bar>label{flex:1 1 100%;margin:0;display:flex;align-items:center;gap:6px;
+    flex-wrap:wrap;font-size:13px;color:#4a5568}
+  #segPanel .bar>label select{flex:1 1 120px;min-width:0;max-width:100%}
+  #segPanel .bar>#finalBox{flex:1 1 100%;justify-content:flex-end;gap:10px}
+  a.dlbtn{padding:10px 16px;font-size:14px;min-height:38px}
+  a.vlink{font-size:13px}
+
+  /* 段落卡片：单列、按钮变大好点 */
+  .grid{grid-template-columns:1fr;gap:10px}
+  .card .ops{gap:8px}
+  .card .ops button{flex:1 1 calc(50% - 8px);padding:9px 6px;font-size:13px;min-height:38px}
+
+  /* tab：等分铺满 */
+  .tabs{gap:4px}
+  .tabs button{flex:1 1 0;padding:9px 4px;font-size:13px;text-align:center}
+
+  /* 时间轴：加高便于点按；逐帧按钮等分一行 */
+  .tlstrip{height:64px}
+  .tlbar{gap:6px}
+  #tlFirst,#tlPrev,#tlPlay,#tlNext,#tlLast{flex:1 1 0;min-width:0;padding:8px 2px;font-size:12px}
+  #tlPos{flex:1 1 100%;order:9;text-align:center;font-size:12px;color:var(--mut)}
+  #tlCut,#btnToManual{flex:1 1 100%}
+  #tlVideo{max-height:38vh!important}
+
+  /* 参考图：一屏多张 */
+  .refgrid{grid-template-columns:repeat(auto-fill,minmax(88px,1fr))}
+  .refitem .x{width:26px;height:26px;line-height:24px;font-size:16px}
+
+  /* 弹窗：贴底大抽屉，键盘弹出也不挡内容。
+     宽度用 100% 而不是 100vw —— vw 把滚动条宽度也算进去，安卓上会横向溢出；
+     .mask 本身是 inset:0，子元素 100% 就等于可见视口宽。 */
+  .mask{align-items:flex-end}
+  .modal{width:100%;max-width:100%;max-height:92vh;border-radius:14px 14px 0 0;
+    padding:14px 14px calc(14px + env(safe-area-inset-bottom))}
+  .modal .mops button{flex:1 1 0;min-height:42px}
+
+  /* 日志：矮一点但可滚 */
+  .log{height:40vh;font-size:11px;padding:10px}
+
+  /* 长路径 / 长片名不撑破布局 */
+  .hint{word-break:break-word}
+  .hint code{word-break:break-all}
+  #drop{padding:20px}
+}
+/* 只有真正超窄的屏（SE/mini 一代 320、安卓小屏 360）才让卡片按钮各占一行。
+   断点别设 400 —— iPhone 12/13/14/15 都是 390、Pro 是 393，全都落在 400 以内，
+   会把主流机型一起变成 6 行按钮（2026-11-17 实测 390 下太长）。 */
+@media (max-width:360px){
+  .panel{padding:10px}
+  .card .ops button{flex:1 1 100%}   /* 超窄屏：按钮各占一行，不挤成两列小字 */
+}
 </style>
 </head>
 <body>
 <header>
   <h1>视频复刻导演台</h1><span class="bdg" id="build">…</span>
   <span class="sp"></span>
-  <span style="font-size:12px;color:#a0aec0">黑鹤二采 · 链式首帧 · <a href="/h3-long-video/app" style="color:#7cb0ff;text-decoration:none" title="切到 SelfLift 出片台（同一个服务）">出片台</a> · <a href="/" style="color:#7cb0ff;text-decoration:none" title="返回工作台入口">工作台</a></span>
+  <span class="nav">黑鹤二采 · 链式首帧 · <a href="/h3-long-video/app" style="color:#7cb0ff;text-decoration:none" title="切到 SelfLift 出片台（同一个服务）">出片台</a> · <a href="/" style="color:#7cb0ff;text-decoration:none" title="返回工作台入口">工作台</a></span>
 </header>
 <div class="wrap">
   <div class="panel" id="projPanel">
     <h2>① 项目（换页面自动恢复上次）</h2>
     <div class="row">
       <label>已有项目</label>
-      <select id="projSel" style="min-width:280px"><option value="">— 加载中 —</option></select>
+      <select id="projSel" class="sel-wide"><option value="">— 加载中 —</option></select>
       <button id="btnOpenProj" class="pri sm">打开</button>
       <button id="btnRefreshProj" class="sm">刷新列表</button>
     </div>
     <div class="row" style="margin-top:10px">
       <label style="font-weight:600;color:#2d3748">项目名（全片唯一，只在这里改）</label>
-      <input type="text" id="filmName" style="width:230px" placeholder="例如 仙剑_打苗人">
+      <input type="text" id="filmName" class="in-mid" placeholder="例如 仙剑_打苗人">
       <button id="btnNewProj" class="pri sm">＋ 新建项目</button>
       <button id="btnRenameProj" class="sm">改名</button>
       <button id="btnMigrateProj" class="sm" style="display:none">📦 迁移到新目录</button>
@@ -171,7 +277,7 @@ button.sm{padding:5px 10px;font-size:12px}
 
     <div class="tabpane on" id="paneEven">
       <div class="row">
-        <label>每段秒数</label><input type="number" id="segsec" value="5" min="2" max="30" step="0.5" style="width:70px">
+        <label>每段秒数</label><input type="number" id="segsec" class="in-num" value="5" min="2" max="30" step="0.5">
         <label><input type="checkbox" id="exact"> 固定秒数（尾部不足则丢弃）</label>
         <label><input type="checkbox" id="twopass" checked> 开启二采</label>
         <label><input type="checkbox" id="keepAudio" checked title="切段时把源视频的音轨一并保留，出片后贴回"> 保留原音</label>
@@ -235,7 +341,10 @@ button.sm{padding:5px 10px;font-size:12px}
       <span class="sel" id="globalStatus"></span>
       <span class="sel" id="tpSummary"></span>
       <span class="sp" style="flex:1"></span>
-      <a class="vlink" id="finalLink" href="#" target="_blank" style="display:none">▶ 打开成片</a>
+      <span id="finalBox" style="display:none;gap:8px;align-items:center;flex-wrap:wrap">
+        <a class="vlink" id="finalLink" href="#" target="_blank">▶ 打开成片</a>
+        <a class="dlbtn" id="finalDl" href="#" download title="把整部成片下载到本地（手机直接存到「下载」里）">⬇ 下载成片</a>
+      </span>
     </div>
     <div class="grid" id="grid"></div>
   </div>
@@ -254,7 +363,7 @@ button.sm{padding:5px 10px;font-size:12px}
 
   <!-- Seed 重出弹窗 -->
   <div class="mask" id="seedMask">
-    <div class="modal" style="width:min(460px,92vw)">
+    <div class="modal modal-seed">
       <h3 id="seedTitle">重出段 1</h3>
       <div class="sel" style="margin-bottom:6px">当前 seed：<b id="seedCur" style="color:var(--acc)">—</b></div>
       <div class="row">
@@ -981,12 +1090,40 @@ function pollNow(){
     $('#tpSummary').textContent=tpTxt;
     $('#tpSummary').style.cssText=(offN?'color:#6b46c1;font-weight:600':'');
     if(sig!==SIG){SIG=sig;renderCards(st)}
-    $('#finalLink').style.display=st.merged?'inline':'none';
+    syncFinal(st);
     renderModeInfo();
   }).catch(()=>{});
 }
-function statusCls(s){return s.status+(s.stale&&s.status==='done'?' stale':'')}
-function statusTxt(s){return s.stale&&s.status==='done'?'需重出':({pending:'待生成',running:'生成中',done:'完成',error:'失败'}[s.status]||s.status)}
+// ---- 成片：打开 / 下载 ----
+// 「打开成片」= 内联播放；「下载成片」= 服务端带 Content-Disposition: attachment，
+// 手机上点一下直接落到「下载」目录（内联播放再长按保存，iOS 上常常存进相册而不是文件）。
+// 注意别在每次轮询都重新算：先比 key，只有片名 / 拼接状态变了才更新一次。
+let FINAL_KEY='';
+function syncFinal(st){
+  const box=$('#finalBox');
+  const merged=!!st.merged;
+  const key=FILM+'|'+merged+'|'+((st.jobs||{}).merge||'');
+  if(key===FINAL_KEY)return;
+  FINAL_KEY=key;
+  if(!merged){box.style.display='none';return}
+  const url=`/api/media?film=${encodeURIComponent(FILM)}&kind=final&idx=1`;
+  $('#finalLink').href=url;
+  const dl=$('#finalDl');
+  dl.href=url+'&dl=1';
+  dl.setAttribute('download',`${FILM}_复刻成片.mp4`);
+  dl.setAttribute('aria-disabled','false');
+  box.style.display='flex';
+  // 顺带问一下文件在不在、多大：成片被手动删掉时 state 里的 merged 仍是 true，
+  // 直接给个点了 404 的按钮不如藏起来
+  fetch('/api/final-info?film='+encodeURIComponent(FILM)).then(r=>r.json()).then(j=>{
+    if(!j.ok||!j.exists){box.style.display='none';return}
+    const mb=(j.size/1048576).toFixed(1);
+    dl.textContent=`⬇ 下载成片 ${mb}MB`;
+    dl.title=`下载整部成片 ${j.name}（${mb} MB）`;
+    $('#finalLink').title=`在浏览器里播放成片（${mb} MB）`;
+  }).catch(()=>{});
+}
+function statusCls(s){return s.status+(s.stale&&s.status==='done'?' stale':'')}function statusTxt(s){return s.stale&&s.status==='done'?'需重出':({pending:'待生成',running:'生成中',done:'完成',error:'失败'}[s.status]||s.status)}
 function tpTag(s){
   if(s.two_pass===true)return '<span class="tp on" title="这一段是开启二采生成的（一采→放大2倍→精修）">二采</span>';
   if(s.two_pass===false)return '<span class="tp off" title="这一段是关闭二采生成的（一采 368×208 低清）">一采</span>';
@@ -1216,9 +1353,6 @@ $('#btnMerge').onclick=()=>fetch('/api/merge',{method:'POST',headers:{'Content-T
   body:JSON.stringify({film:FILM})}).then(r=>r.json()).then(j=>{
   $('#logSeg').value=''; refreshLog();
 });
-$('#finalLink').onclick=()=>{
-  $('#finalLink').href=`/api/media?film=${encodeURIComponent(FILM)}&kind=final&idx=1`;
-};
 
 // ---- 日志 ----
 $('#btnRefreshLog').onclick=refreshLog;

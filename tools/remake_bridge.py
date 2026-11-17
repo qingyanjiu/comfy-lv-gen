@@ -185,10 +185,11 @@ LAUNCHER_HTML = """<!DOCTYPE html>
 
 
 def _resolve_media(panel, request):
-    """复刻导演台 `/api/media` 的文件定位逻辑（与 remake_panel.H 保持一致）。
+    """复刻导演台 `/api/media` 的文件定位逻辑。
 
-    单独抽出来是为了走 FileResponse：成片/分段视频可能有几十上百 MB，
-    不能让伪 handler 攒进内存。
+    2026-11-17：定位逻辑已收进 `remake_panel.media_path`（原先这里和
+    `H.do_GET` 各写一份，加下载功能时两边都得改，漏改就「能看不能下」）。
+    这里只保留 query 解析，避免两处分叉。
 
     注意 query 的取法：H 里用 `parse_qs()`，返回的是 list，所以写 `q.get("film")[0]`；
     而 aiohttp 的 `request.query` 是 MultiDict，`get()` 直接返回字符串。照抄 `[0]`
@@ -196,26 +197,16 @@ def _resolve_media(panel, request):
     """
     q = parse_qs(request.query_string, keep_blank_values=True)
     name = q.get("film", [None])[0]
-    kind = q.get("kind", ["clip"])[0]
+    if not name:
+        return None, None, 1, False
     try:
         idx = int(q.get("idx", ["1"])[0])
     except (TypeError, ValueError):
         idx = 1
-    wd = panel.work_dir(name) if name else None
-    if not wd:
-        return None
-    st = panel.load_state(wd)
-    if kind == "final":
-        return os.path.join(wd, "final", f"{st['film']}_复刻成片.mp4")
-    if kind == "out":
-        return os.path.join(wd, "segments", f"{st['prefix']}_r{idx:02d}.mp4")
-    if kind == "first":
-        return os.path.join(wd, "refs", f"first_{idx:02d}.png")
-    if kind == "firstov":
-        return panel.seg_first_override_png(wd, idx)
-    if kind == "last":
-        return os.path.join(wd, "refs", f"{st['prefix']}_s{idx:02d}_last.png")
-    return os.path.join(wd, "source_segments", f"clip_{idx:02d}.mp4")
+    kind = q.get("kind", ["clip"])[0]
+    dl = q.get("dl", ["0"])[0] in ("1", "true", "yes")
+    wd = panel.work_dir(name)
+    return wd, panel.media_path(wd, kind, idx), idx, dl
 
 
 def register_remake_routes(routes, web, panel):
@@ -244,11 +235,19 @@ def register_remake_routes(routes, web, panel):
 
     @routes.get("/api/media")
     async def remake_media(request):
-        fp = _resolve_media(panel, request)
+        wd, fp, idx, dl = _resolve_media(panel, request)
         if not fp or not os.path.exists(fp):
             return web.json_response({"error": "文件不存在：" + str(fp)},
                                      status=404)
-        return web.FileResponse(fp, headers={"Cache-Control": "no-store"})
+        headers = {"Cache-Control": "no-store"}
+        if dl:
+            # 下载：带中文文件名的 attachment。FileResponse 保留 Range 能力，
+            # 所以手机上「下载」大文件也能断点续传/边下边看。
+            q = parse_qs(request.query_string, keep_blank_values=True)
+            kind = q.get("kind", ["clip"])[0]
+            headers["Content-Disposition"] = panel.content_disposition(
+                panel.media_download_name(wd, kind, idx))
+        return web.FileResponse(fp, headers=headers)
 
     async def _dispatch(request):
         # H 内部自己做 urlparse(self.path)，所以这里传原始完整路径。
