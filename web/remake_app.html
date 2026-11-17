@@ -1,0 +1,1125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>视频复刻导演台</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--bd:#dfe3e8;--tx:#222;--mut:#888;--acc:#2b6cb0;--ok:#2f855a;--err:#c53030;--run:#d69e2e}
+*{box-sizing:border-box}body{margin:0;font:14px/1.6 -apple-system,"Segoe UI",Microsoft YaHei,sans-serif;background:var(--bg);color:var(--tx)}
+header{background:#1a202c;color:#fff;padding:12px 20px;display:flex;align-items:center;gap:14px}
+header h1{font-size:16px;margin:0}header .bdg{font-size:11px;background:#2b6cb0;padding:2px 8px;border-radius:10px}
+header .sp{flex:1}header a{color:#90cdf4;font-size:12px;text-decoration:none}
+.wrap{max-width:1200px;margin:18px auto;padding:0 16px}
+.panel{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:16px;margin-bottom:16px}
+.panel h2{font-size:14px;margin:0 0 12px;color:#2d3748}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+label{font-size:12px;color:var(--mut)}
+input[type=number],input[type=text]{border:1px solid var(--bd);border-radius:5px;padding:6px 8px;font-size:13px}
+button{border:1px solid var(--bd);background:#fff;border-radius:5px;padding:7px 13px;font-size:13px;cursor:pointer;color:var(--tx)}
+button:hover{border-color:var(--acc);color:var(--acc)}button.pri{background:var(--acc);color:#fff;border-color:var(--acc)}
+button.pri:hover{background:#2c5282;color:#fff}button:disabled{opacity:.5;cursor:not-allowed}
+button.danger{color:var(--err)}
+.hint{font-size:12px;color:var(--mut);margin-top:8px}
+#drop{border:2px dashed var(--bd);border-radius:8px;padding:26px;text-align:center;color:var(--mut);cursor:pointer;transition:.15s}
+#drop.hover{border-color:var(--acc);background:#ebf8ff;color:var(--acc)}
+#drop b{color:var(--acc)}
+.prog{height:6px;background:#edf2f7;border-radius:4px;overflow:hidden;margin-top:10px;display:none}
+.prog>i{display:block;height:100%;background:var(--acc);width:0;transition:width .2s}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+.card{border:1px solid var(--bd);border-radius:8px;overflow:hidden;background:#fff}
+.card .thumb{width:100%;aspect-ratio:16/9;object-fit:cover;background:#000;display:block}
+.card .bd{padding:10px}
+.card .tt{font-weight:600;font-size:13px;display:flex;justify-content:space-between;align-items:center}
+.card .meta{font-size:11px;color:var(--mut);margin:4px 0 8px}
+.st{font-size:11px;padding:2px 7px;border-radius:9px;background:#edf2f7;color:var(--mut)}
+.st.done{background:#f0fff4;color:var(--ok)}.st.running{background:#fffaf0;color:var(--run)}
+.st.error{background:#fff5f5;color:var(--err)}.st.stale{background:#fffbea;color:#975a16}
+.card .ops{display:flex;gap:6px;flex-wrap:wrap} .card .ops button{padding:5px 9px;font-size:12px}
+.log{background:#1a202c;color:#cbd5e0;border-radius:6px;padding:12px;font:12px/1.5 Consolas,monospace;
+     height:220px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+.sel{font-size:12px;color:var(--mut)}select{border:1px solid var(--bd);border-radius:5px;padding:5px 8px;font-size:13px}
+a.vlink{color:var(--acc);text-decoration:none;font-size:12px}
+textarea{width:100%;border:1px solid var(--bd);border-radius:5px;padding:9px;font:12px/1.6 Consolas,monospace;resize:vertical}
+button.sm{padding:5px 10px;font-size:12px}
+/* 弹窗 */
+.mask{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:99}
+.mask.on{display:flex}
+.modal{background:#fff;border-radius:9px;width:min(760px,92vw);max-height:88vh;overflow:auto;padding:18px 20px;box-shadow:0 10px 40px rgba(0,0,0,.3)}
+.modal h3{margin:0 0 10px;font-size:15px}
+.modal .mops{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
+.card .ops button.ed{color:var(--acc)}
+.refgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin-top:10px}
+.refitem{position:relative;border:1px solid var(--bd);border-radius:6px;overflow:hidden;background:#f7fafc}
+.refitem img{width:100%;aspect-ratio:1;object-fit:cover;display:block}
+.refitem .x{position:absolute;top:2px;right:2px;background:rgba(0,0,0,.6);color:#fff;border:0;border-radius:50%;width:20px;height:20px;line-height:18px;font-size:14px;cursor:pointer;padding:0}
+.refitem .n{font-size:10px;color:var(--mut);text-align:center;padding:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 时间轴 / 按帧切段 */
+.tlbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}
+.tlstrip{position:relative;height:48px;background:repeating-linear-gradient(90deg,#f7fafc 0 24px,#edf2f7 24px 25px, #f7fafc 25px 49px);border:1px solid var(--bd);border-radius:6px;cursor:crosshair;overflow:hidden;user-select:none}
+.tlfill{position:absolute;left:0;top:0;bottom:0;width:0;background:#bee3f8;opacity:.45;pointer-events:none}
+.tlhead{position:absolute;top:0;bottom:0;width:2px;background:var(--acc);left:0;pointer-events:none;box-shadow:0 0 4px rgba(43,108,176,.8)}
+.tlcuts{position:absolute;inset:0;pointer-events:none}
+.tlcuts .m{position:absolute;top:0;bottom:0;width:2px;background:#e53e3e}
+.tlcuts .m::after{content:'';position:absolute;top:0;left:-5px;border-left:5px solid transparent;border-right:5px solid transparent;border-top:7px solid #e53e3e}
+.cutlist{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;min-height:24px}
+.cutchip{font-size:12px;background:#f7fafc;border:1px solid var(--bd);border-radius:12px;padding:2px 8px;display:flex;gap:6px;align-items:center}
+.cutchip b{color:var(--acc);font-weight:600}
+.cutchip button{border:0;background:none;color:var(--err);cursor:pointer;padding:0;font-size:14px;line-height:1}
+.tp{font-size:10px;padding:1px 6px;border-radius:8px;border:1px solid #cbd5e0;color:#4a5568;white-space:nowrap}
+.tp.on{background:#ebf8ff;border-color:#90cdf4;color:#2b6cb0}
+.tp.off{background:#faf5ff;border-color:#d6bcfa;color:#6b46c1}
+/* 段首帧锁定标识 */
+.fov{font-size:10px;padding:1px 6px;border-radius:8px;white-space:nowrap;border:1px solid}
+.fov.prev{background:#ebf8ff;border-color:#90cdf4;color:#2b6cb0}
+.fov.up{background:#f0fff4;border-color:#9ae6b4;color:#276749}
+.card .thumbwrap{position:relative}
+.card .thumbwrap .fov{position:absolute;left:6px;bottom:6px;background:rgba(255,255,255,.92)}
+.card .ops button.fo{color:#2b6cb0}
+/* tab 与折叠面板 */
+.tabs{display:flex;gap:6px;align-items:center;margin:0 0 14px;border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.tabs button{border:1px solid transparent;border-bottom:none;border-radius:6px 6px 0 0;background:#f7fafc;color:var(--mut);
+  padding:7px 15px;font-size:13px;margin-bottom:-1px;cursor:pointer}
+.tabs button:hover{color:var(--acc)}
+.tabs button.on{background:#fff;border-color:var(--bd);color:var(--acc);font-weight:600;box-shadow:inset 0 2px 0 var(--acc)}
+.tabpane{display:none}.tabpane.on{display:block}
+.panel>h2.hdl{cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px}
+.panel>h2.hdl:hover{color:var(--acc)}
+.panel.folded>h2.hdl{margin-bottom:0}
+.panel.folded>.pbody{display:none}
+.fold{font-size:10px;color:var(--mut);width:10px;display:inline-block;flex:0 0 auto}
+.panel.folded .fold{color:var(--acc)}
+.seglen{font-size:10px;color:var(--mut);align-self:center;background:#edf2f7;border-radius:8px;padding:1px 6px}
+.cutchip.lock{background:#f7fafc;border-style:dashed;color:var(--mut)}
+.cutchip.lock b{color:var(--mut)}
+.tlcuts .m.lock{background:#a0aec0;width:1px}
+</style>
+</head>
+<body>
+<header>
+  <h1>视频复刻导演台</h1><span class="bdg" id="build">…</span>
+  <span class="sp"></span>
+  <span style="font-size:12px;color:#a0aec0">黑鹤二采 · 链式首帧 · 独立服务 :8901</span>
+</header>
+<div class="wrap">
+  <div class="panel" id="projPanel">
+    <h2>① 项目（换页面自动恢复上次）</h2>
+    <div class="row">
+      <label>已有项目</label>
+      <select id="projSel" style="min-width:280px"><option value="">— 加载中 —</option></select>
+      <button id="btnOpenProj" class="pri sm">打开</button>
+      <button id="btnRefreshProj" class="sm">刷新列表</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label style="font-weight:600;color:#2d3748">项目名（全片唯一，只在这里改）</label>
+      <input type="text" id="filmName" style="width:230px" placeholder="例如 仙剑_打苗人">
+      <button id="btnRenameProj" class="sm">改名</button>
+      <button id="btnDeleteProj" class="danger sm">🗑 删除项目</button>
+    </div>
+    <div class="hint" id="projHint">这里就是整片的名字：切段时用它建项目，改名=硬盘目录一起改（各段视频、成片、配置都跟着走）。
+      切段面板里不再单独填片名。</div>
+    <div class="hint" id="projInfo"></div>
+  </div>
+
+  <div class="panel" id="upPanel">
+    <h2>② 上传源视频</h2>
+    <div id="drop">点击或拖拽视频到这里（mp4 / mov / webm / mkv）<br><b>选择文件</b></div>
+    <input type="file" id="file" accept="video/*" hidden>
+    <div class="prog" id="prog"><i></i></div>
+    <div class="hint" id="upinfo"></div>
+  </div>
+
+  <div class="panel" id="refPanel">
+    <h2>③ 人物参考图（可选）</h2>
+    <div id="refDrop" style="border:2px dashed var(--bd);border-radius:8px;padding:16px;text-align:center;color:var(--mut);cursor:pointer">
+      点击或拖拽上传人物参考图（可多张）<br><span class="sel">上传的图作 &lt;Picture 1&gt;、&lt;Picture 2&gt;… 身份锚；不传则用源视频首帧</span>
+    </div>
+    <input type="file" id="refFile" accept="image/*" multiple hidden>
+    <div class="refgrid" id="refGrid"></div>
+    <div class="row" style="margin-top:10px">
+      <label><input type="checkbox" id="anchorFirst"> 首段也用源视频首帧硬锚（构图更准，但可能把原人物脸锁进画面）</label>
+    </div>
+    <div class="hint" id="refinfo"></div>
+  </div>
+
+  <div class="panel" id="promptPanel">
+    <h2>④ 公共提示词（所有段共用）<span class="sel" id="promptBrief"></span></h2>
+    <div class="row" style="margin-bottom:8px">
+      <span class="sel" id="promptSrc"></span>
+      <button class="sm" id="btnSavePrompt">保存</button>
+      <button class="sm" id="btnApplyPrompt">应用到所有段</button>
+    </div>
+    <textarea id="pubprompt" rows="9" spellcheck="false" placeholder="图定身份、视频定动作、提示词定画风…"></textarea>
+    <div class="hint">保存=只存本片公共提示词，不覆盖各段；应用到所有段=覆盖未完成段的提示词（已完成的不动）。
+      每段可在段落卡片里单独改。<code>{pic:N}</code> 会按每段实际接线自动换算。</div>
+  </div>
+
+  <div class="panel" id="splitPanel">
+    <h2>⑤ 切段 <span class="sel" id="modeInfo"></span></h2>
+    <div class="tabs">
+      <button id="tabEven" class="on">按秒均匀切</button>
+      <button id="tabManual">按帧手动切</button>
+    </div>
+    <div class="hint" id="splitTarget" style="margin:-4px 0 10px"></div>
+
+    <div class="tabpane on" id="paneEven">
+      <div class="row">
+        <label>每段秒数</label><input type="number" id="segsec" value="5" min="2" max="30" step="0.5" style="width:70px">
+        <label><input type="checkbox" id="exact"> 固定秒数（尾部不足则丢弃）</label>
+        <label><input type="checkbox" id="twopass" checked> 开启二采</label>
+        <button id="btnSplit" class="pri" disabled>切段并建片</button>
+      </div>
+      <div class="hint" id="splitinfo"></div>
+      <div class="hint" style="color:#975a16">二采：一采 0.2MP → 放大 2 倍 → 精修（质量高、约 3 分钟/段，成片 ~736×416）。
+        关闭则直接出一采低清（约 368×208，快很多），适合先跑一遍看构图/动作对不对。</div>
+    </div>
+
+    <div class="tabpane" id="paneManual">
+      <video id="tlVideo" preload="auto" playsinline muted tabindex="0"
+             style="width:100%;max-height:320px;background:#000;border-radius:6px;display:none"></video>
+      <div class="tlbar">
+        <button class="sm" id="tlFirst" title="回到首帧">⏮ 首帧</button>
+        <button class="sm" id="tlPrev" title="上一帧（←）">◀ 1 帧</button>
+        <button class="sm pri" id="tlPlay" title="播放/暂停（空格）">▶ 播放</button>
+        <button class="sm" id="tlNext" title="下一帧（→）">1 帧 ▶</button>
+        <button class="sm" id="tlLast" title="跳到末帧">末帧 ⏭</button>
+        <span class="sel" id="tlPos">帧 0 / 0 · 00:00.000</span>
+        <span style="flex:1"></span>
+        <button class="sm" id="tlCut" style="color:var(--err);border-color:#feb2b2">✂ 在当前帧切断</button>
+        <button class="sm" id="btnToManual" style="display:none">✎ 转手动编辑</button>
+      </div>
+      <div class="tlstrip" id="tlStrip">
+        <div class="tlfill" id="tlFill"></div>
+        <div class="tlcuts" id="tlCuts"></div>
+        <div class="tlhead" id="tlHead"></div>
+      </div>
+      <div class="cutlist" id="cutList"></div>
+      <div class="row" style="margin-top:10px">
+        <label><input type="checkbox" id="tlTwoPass" checked> 开启二采</label>
+        <button id="btnGenCuts" class="pri" disabled>按切点生成</button>
+        <span class="sel" id="cutInfo"></span>
+      </div>
+      <div class="hint">切点按<b>帧号</b>记录（当前 <b id="tlFps">—</b> fps，共 <b id="tlTotal">0</b> 帧）：点时间轴定位 → ✂ 加切点；
+        键盘 ←/→ 逐帧、空格播放暂停。首尾切点自动带上，中间切点可删。每段生成时长按 H3 的 17n+5 帧自动对齐。</div>
+      <div class="hint" id="manualModeNote"></div>
+    </div>
+  </div>
+
+  <div class="panel" id="segPanel" style="display:none">
+    <h2>⑥ 段落 <span id="segCount" class="sel"></span></h2>
+    <div class="bar">
+      <button id="btnAll" class="pri">一键全片生成</button>
+      <button id="btnMerge">拼接成片</button>
+      <button id="btnSaveProj">💾 保存项目</button>
+      <button id="btnStop" class="danger">⏹ 停止所有任务</button>
+      <label class="sel">二采 <select id="tpSwitch"><option value="1">开（高质量）</option><option value="0">关（快速低清）</option></select></label>
+      <span class="sel" id="globalStatus"></span>
+      <span class="sel" id="tpSummary"></span>
+      <span class="sp" style="flex:1"></span>
+      <a class="vlink" id="finalLink" href="#" target="_blank" style="display:none">▶ 打开成片</a>
+    </div>
+    <div class="grid" id="grid"></div>
+  </div>
+
+  <!-- 提示词编辑弹窗 -->
+  <div class="mask" id="pmMask">
+    <div class="modal">
+      <h3 id="pmTitle">编辑提示词</h3>
+      <textarea id="pmText" rows="16" spellcheck="false"></textarea>
+      <div class="mops">
+        <button id="pmCancel">取消</button>
+        <button id="pmSave" class="pri">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Seed 重出弹窗 -->
+  <div class="mask" id="seedMask">
+    <div class="modal" style="width:min(460px,92vw)">
+      <h3 id="seedTitle">重出段 1</h3>
+      <div class="sel" style="margin-bottom:6px">当前 seed：<b id="seedCur" style="color:var(--acc)">—</b></div>
+      <div class="row">
+        <input type="text" id="seedInput" style="flex:1;font:14px Consolas,monospace" placeholder="输入新 seed">
+        <button id="seedRandom" title="随机生成一个新 seed">🎲 随机</button>
+      </div>
+      <div class="hint">新 seed 会换一个随机结果；留空则沿用当前 seed（画面基本不变）。</div>
+      <div class="mops">
+        <button id="seedCancel">取消</button>
+        <button id="seedGo" class="pri">开始重出</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="logPanel">
+    <div class="bar"><h2 style="margin:0">日志</h2>
+      <select id="logSeg"><option value="">面板/拼接</option></select>
+      <button id="btnRefreshLog">刷新</button>
+    </div>
+    <div class="log" id="log">等待操作…</div>
+  </div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+let SRC=null, FILM=null, SIG='', POLL=null, LOGPREV='', PM_IDX=null, REFS=[], SEED_IDX=null, LAST_ST=null, PROJECTS=[];
+// 时间轴状态
+let TOTALF=0, TLFPS=24, CUTS=[], TL_OBJ=null, TL_SEEKING=false;
+// 切段方式：MODE=当前项目已保存的方式（even 按秒 / manual 按帧）；TL_LOCK=时间轴切点只读
+let MODE='even', TL_LOCK=false, MODE_ACTUAL=null;
+
+// ---- 折叠面板：点标题收起/展开，状态记在 localStorage ----
+// 注意：只有 h2 是 panel 直接子元素时才能折叠（否则搬动子节点会把标题一起藏掉）
+function makeFoldable(panel, key, defFolded){
+  if(!panel)return;
+  const h=panel.querySelector('h2'); if(!h||h.dataset.fold)return;
+  if(h.parentElement!==panel){console.warn('makeFoldable: h2 不在面板顶层，跳过',key);return}
+  h.dataset.fold='1';
+  const body=document.createElement('div'); body.className='pbody';
+  [...panel.children].filter(n=>n!==h).forEach(n=>body.appendChild(n));
+  panel.appendChild(body);
+  const ic=document.createElement('span'); ic.className='fold';
+  h.insertBefore(ic,h.firstChild); h.classList.add('hdl');
+  h.title='点击收起/展开这一块';
+  const set=f=>{panel.classList.toggle('folded',f);ic.textContent=f?'▸':'▾'};
+  const saved=localStorage.getItem('rmk_fold_'+key);
+  set(saved===null?!!defFolded:saved==='1');
+  h.onclick=()=>{set(!panel.classList.contains('folded'));
+    localStorage.setItem('rmk_fold_'+key,panel.classList.contains('folded')?'1':'0')};
+}
+// 只有「公共提示词」可收起（页面太长时收起来省地方）；其余面板始终展开
+makeFoldable(document.getElementById('promptPanel'),'prompt',true);
+
+// ---- 切段方式 tab ----
+function setTab(m,opts){
+  const o=opts||{};
+  $('#tabEven').classList.toggle('on',m==='even');
+  $('#tabManual').classList.toggle('on',m==='manual');
+  $('#paneEven').classList.toggle('on',m==='even');
+  $('#paneManual').classList.toggle('on',m==='manual');
+  if(m==='manual'){
+    if(!TOTALF&&SRC)setModeInfo('先上传视频才能按帧切',true);
+    // 面板刚显示出来才拿得到尺寸：重画一次切点；视频没载元数据就补一次 load
+    if(TOTALF){renderTimeline(); applyLockUI();
+      if(tlVideo.readyState===0){
+        tlVideo.load();
+        tlVideo.onloadedmetadata=()=>seekFrame(curFrame());
+      }
+    }
+  }
+  renderModeInfo();
+}
+$('#tabEven').onclick=()=>setTab('even');
+$('#tabManual').onclick=()=>setTab('manual');
+function renderModeInfo(){
+  const el=$('#modeInfo'); if(!el)return;
+  if(!FILM){el.textContent='还没建片：选一种方式切段即可';el.style.color='';return}
+  if(MODE==='manual'){
+    el.textContent=`本片：按帧手动切（${Math.max(1,CUTS.length-1)} 段）`;
+    el.style.color='var(--acc)';
+  }else{
+    const a=(LAST_ST&&LAST_ST.actual)||MODE_ACTUAL;
+    el.textContent=`本片：按秒均匀切（每段 ${a!=null?Number(a).toFixed(2):'?'}s）`;
+    el.style.color='';
+  }
+}
+function setModeInfo(txt,warn){
+  const el=$('#modeInfo'); if(!el)return;
+  el.textContent=txt; el.style.color=warn?'#975a16':'';
+}
+
+// ---- 手动/均匀 数据联动 ----
+function applyLockUI(){
+  // 时间轴只读：当前项目是均匀切的，切点由秒数算出来，不允许随手删改
+  $('#tlCut').disabled=TL_LOCK;
+  $('#btnToManual').style.display=TL_LOCK?'inline-block':'none';
+  $('#btnGenCuts').disabled=TL_LOCK||!TOTALF;
+  $('#manualModeNote').textContent=TL_LOCK
+    ? '↑ 这些切点来自「按秒均匀切」的结果，现在是只读的。要改切点就点「✎ 转手动编辑」，改完再按切点生成（本片会变成按帧手动切）。'
+    : '';
+  $('#manualModeNote').style.color=TL_LOCK?'#975a16':'';
+}
+$('#btnToManual').onclick=()=>{
+  if(!TOTALF)return;
+  TL_LOCK=false;
+  applyLockUI();renderTimeline();
+  $('#cutInfo').textContent='已转手动编辑：加/删切点后点「按切点生成」';
+};
+// 均匀切完之后，把实际切点写进时间轴（只读回显）
+function syncTimelineFromCuts(cuts,lock){
+  if(!cuts||!cuts.length){return}
+  CUTS=cuts.slice();
+  TL_LOCK=!!lock;
+  renderTimeline();applyLockUI();
+}
+// 按秒参数回到默认（切段方式改成手动后，按秒那套就没有意义了）
+function resetEvenParams(){
+  $('#segsec').value=5;
+  $('#exact').checked=false;
+}
+
+fetch('/api/version').then(r=>r.json()).then(j=>$('#build').textContent=j.build).catch(()=>{});
+
+// ---- 项目列表 / 打开（持久化恢复） ----
+function loadProjects(auto){
+  return fetch('/api/projects').then(r=>r.json()).then(j=>{
+    PROJECTS=j.projects||[];
+    const sel=$('#projSel'), cur=sel.value;
+    sel.innerHTML='';
+    if(!PROJECTS.length){
+      const o=document.createElement('option'); o.value=''; o.textContent='（还没有项目，先上传视频切段）';
+      sel.appendChild(o);
+      if(auto)$('#projInfo').textContent='没有可打开的项目';
+      return;
+    }
+    PROJECTS.forEach(p=>{
+      const o=document.createElement('option'); o.value=p.name;
+      const n=p.n||0, d=p.done||0;
+      o.textContent=`${p.name}　${d}/${n} 段${p.merged?'　已成片':''}${p.has_project?'':'　(无配置)'}`;
+      sel.appendChild(o);
+    });
+    if(cur&&PROJECTS.some(p=>p.name===cur))sel.value=cur;
+    if(auto){
+      // 支持 ?film=项目名 直达（也方便分享），否则恢复上次打开的项目
+      const urlFilm=new URLSearchParams(location.search).get('film');
+      const last=urlFilm||localStorage.getItem('rmk_last_film');
+      const pick=(last&&PROJECTS.some(p=>p.name===last))?last:PROJECTS[0].name;
+      sel.value=pick;
+      openProject(pick);
+    }
+  }).catch(()=>{});
+}
+function buildLogSegs(n){
+  const sel=$('#logSeg'); sel.innerHTML='<option value="">面板/拼接</option>';
+  for(let i=1;i<=n;i++){const o=document.createElement('option');o.value=i;o.textContent='段 '+i;sel.appendChild(o)}
+}
+// ---- 项目名（整片唯一，全片只在这里改） ----
+function filmName(){return ($('#filmName').value||'').trim()}
+function updateSplitTarget(){
+  const n=filmName(), el=$('#splitTarget'); if(!el)return;
+  if(!n){el.textContent='↑ 先在①项目面板填「项目名」才能切段';el.style.color='#975a16';return}
+  if(FILM&&n!==FILM){
+    el.textContent=`⚠ 这个名字和当前打开的项目「${FILM}」不一样：切段会新建项目「${n}」，不会改到「${FILM}」。`;
+    el.style.color='#975a16';
+  }else if(FILM){
+    el.textContent=`切段会重建当前项目「${n}」（已生成的视频文件保留，分段/进度会重置）。`;
+    el.style.color='';
+  }else{
+    el.textContent=`切段将创建项目「${n}」。`;
+    el.style.color='';
+  }
+  const ok=!!n&&!!SRC;
+  $('#btnSplit').disabled=!ok;
+  $('#btnGenCuts').disabled=!ok||TL_LOCK||!TOTALF;
+}
+$('#filmName').addEventListener('input',updateSplitTarget);
+$('#btnRenameProj').onclick=()=>{
+  const to=filmName();
+  if(!to){alert('先填一个项目名');return}
+  if(!FILM){$('#projInfo').textContent=`✓ 新项目将命名为「${to}」`;updateSplitTarget();return}
+  if(to===FILM){$('#projInfo').textContent='名字没变';return}
+  if(!confirm(`把项目「${FILM}」改名为「${to}」？\n\n硬盘上 output 里的目录会一起改名，各段视频、成片、参考图、配置都跟着走，不会丢。`))return;
+  const b=$('#btnRenameProj'); b.disabled=true; b.textContent='改名中…';
+  fetch('/api/rename-project',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,to:to})}).then(r=>r.json()).then(j=>{
+    b.disabled=false; b.textContent='改名';
+    if(!j.ok){alert('改名失败：'+(j.error||''));return}
+    FILM=j.film; localStorage.setItem('rmk_last_film',FILM);
+    $('#filmName').value=FILM;
+    $('#projInfo').textContent=`✓ 已改名为「${FILM}」（目录 ${j.film}）`;
+    updateSplitTarget();
+    loadProjects(false).then(()=>{$('#projSel').value=FILM});
+    if(POLL)pollNow();
+  }).catch(e=>{b.disabled=false;b.textContent='改名';alert('改名失败：'+e)});
+};
+$('#btnDeleteProj').onclick=()=>{
+  if(!FILM){alert('先在「已有项目」里选一个项目');return}
+  const typed=prompt(`彻底删除项目「${FILM}」？\n\n会删掉：源视频副本、各段源片段、已生成的段视频、成片、参考图、全部配置。\n删掉后无法恢复。\n\n确认请输入项目名：`);
+  if(typed===null)return;
+  if(typed.trim()!==FILM){alert('名字不一致，已取消');return}
+  const b=$('#btnDeleteProj'); b.disabled=true; b.textContent='删除中…';
+  fetch('/api/delete-project',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM})}).then(r=>r.json()).then(j=>{
+    b.disabled=false; b.textContent='🗑 删除项目';
+    if(!j.ok){alert('删除失败：'+(j.error||''));return}
+    const gone=FILM;
+    FILM=null; SRC=null; SIG=''; LAST_ST=null; CUTS=[]; TOTALF=0; TL_LOCK=false;
+    localStorage.removeItem('rmk_last_film');
+    $('#splitTarget').textContent='';
+    $('#splitinfo').textContent=''; $('#cutInfo').textContent='';
+    $('#segPanel').style.display='none';
+    $('#log').textContent=`项目「${gone}」已删除。`;
+    $('#projInfo').textContent=`✓ 已删除「${gone}」${j.comfy_cleaned?`，清理临时副本 ${j.comfy_cleaned} 个`:''}`;
+    $('#projSel').innerHTML='<option value="">— 加载中 —</option>';
+    loadProjects(false).then(()=>{ if(PROJECTS.length){$('#projSel').value=PROJECTS[0].name;} });
+  }).catch(e=>{b.disabled=false;b.textContent='🗑 删除项目';alert('删除失败：'+e)});
+};
+
+function openProject(name){
+  if(!name)return;
+  fetch('/api/project?film='+encodeURIComponent(name)).then(r=>r.json()).then(j=>{
+    if(j.error){$('#projInfo').textContent='✗ '+j.error;return}
+    const pj=j.project||{}, src=pj.source||{}, stg=pj.settings||{};
+    FILM=pj.film||name; SRC=src.src||null;
+    localStorage.setItem('rmk_last_film',FILM);
+    $('#filmName').value=FILM; updateSplitTarget();
+    if(src.seg_sec!=null)$('#segsec').value=src.seg_sec;
+    $('#exact').checked=!!src.exact;
+    const tp=stg.two_pass!==false;
+    $('#twopass').checked=tp; $('#tpSwitch').value=tp?'1':'0';
+    $('#anchorFirst').checked=!!stg.anchor_first;
+    $('#pubprompt').value=pj.prompt||'';
+    $('#promptSrc').textContent='（本片已保存）';
+    updatePromptBrief();
+    REFS=(pj.refs||[]).map(r=>({name:r.name||((r.path||'').split(/[\\/]/).pop()),
+      path:r.path,comfy_name:r.comfy_name,label:r.label,
+      url:r.url||('/api/ref-file?film='+encodeURIComponent(FILM)+'&name='+encodeURIComponent((r.path||'').split(/[\\/]/).pop()||''))}));
+    renderRefs();
+    $('#upinfo').textContent = src.src
+      ? `源视频：${src.name}　${src.duration!=null?src.duration.toFixed(2):'?'}s`
+      : '（这个项目没记录源视频路径，重新切段需先上传）';
+    const n=(pj.segments||[]).length;
+    $('#splitinfo').textContent='';
+    $('#projInfo').textContent=`${n} 段 · 每段 ${src.actual!=null?src.actual.toFixed(2):'?'}s · 二采${tp?'开':'关'}`
+      + (j.has_config?' · 配置已在硬盘':' · 还没保存过配置');
+    setupTimelineFromProject(FILM, src);   // 回填时间轴/切点，支持再按帧改切
+    renderModeInfo();
+    if(MODE==='manual'){
+      $('#splitinfo').textContent=`本片是「按帧手动切」：共 ${n} 段，切点在下面的「按帧手动切」里看/改；按秒参数已重置。`;
+    }else{
+      $('#splitinfo').textContent=`本片是「按秒均匀切」：每段 ${src.actual!=null?src.actual.toFixed(2):'?'}s 共 ${n} 段；`
+        +'切点可在「按帧手动切」里查看（只读），要改就点「✎ 转手动编辑」。';
+    }
+    buildLogSegs(n);
+    $('#segPanel').style.display=n?'block':'none';
+    $('#btnSplit').disabled=!SRC;
+    SIG=''; LAST_ST=null; LOGPREV='';
+    pollNow(); refreshLog();
+    if(!POLL)POLL=setInterval(pollNow,2000);
+  }).catch(e=>{$('#projInfo').textContent='✗ '+e});
+}
+$('#btnOpenProj').onclick=()=>openProject($('#projSel').value);
+$('#btnRefreshProj').onclick=()=>loadProjects(false);
+$('#projSel').onchange=()=>openProject($('#projSel').value);
+
+// ---- 人物参考图 ----
+// 参考图以「项目」为准：打开项目时从 project.json 恢复，上传后追加到当前列表。
+loadRefs();
+function loadRefs(){
+  if(FILM){renderRefs();return}   // 已打开项目：参考图以 project.json 为准
+  fetch('/api/refs').then(r=>r.json()).then(j=>{
+    REFS=j.refs||[];
+    renderRefs();
+  }).catch(()=>{});
+}
+function renderRefs(){
+  const g=$('#refGrid'); g.innerHTML='';
+  REFS.forEach((r,i)=>{
+    const d=document.createElement('div'); d.className='refitem';
+    d.innerHTML=`<img src="${r.url}" alt="${r.name||''}"><div class="n">Pic ${i+1}</div>
+                 <button class="x" data-n="${encodeURIComponent(r.name||(r.path||'').split(/[\\/]/).pop()||'')}" title="删除">×</button>`;
+    g.appendChild(d);
+  });
+  g.querySelectorAll('button.x').forEach(b=>b.onclick=()=>{
+    const nm=decodeURIComponent(b.dataset.n);
+    fetch('/api/del-ref',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:nm,film:FILM})}).then(()=>{
+        REFS=REFS.filter(x=>(x.name||(x.path||'').split(/[\\/]/).pop())!==nm);
+        renderRefs(); loadRefs();
+      });
+  });
+  $('#refinfo').textContent=REFS.length?`已上传 ${REFS.length} 张，按上排顺序作 <Picture 1..${REFS.length}>`:'';
+}
+const refDrop=$('#refDrop'), refFile=$('#refFile');
+refDrop.onclick=()=>refFile.click();
+refDrop.ondragover=e=>{e.preventDefault();refDrop.style.borderColor='var(--acc)'};
+refDrop.ondragleave=()=>refDrop.style.borderColor='';
+refDrop.ondrop=e=>{e.preventDefault();refDrop.style.borderColor='';if(e.dataTransfer.files.length)uploadRefs(e.dataTransfer.files)};
+refFile.onchange=()=>{if(refFile.files.length)uploadRefs(refFile.files)};
+function uploadRefs(files){
+  let idx=0;
+    const next=()=>{
+    if(idx>=files.length){if(REFS.length)$('#anchorFirst').checked=false;renderRefs();return}
+    const f=files[idx++];
+    if(!f.type.startsWith('image/')){next();return}
+    $('#refinfo').textContent=`上传参考图 ${idx}/${files.length} …`;
+    const r=new FileReader();
+    r.onload=()=>{
+      fetch('/api/upload-ref',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name:f.name,data64:r.result.split(',')[1]})}).then(r=>r.json()).then(j=>{
+        if(j.error)$('#refinfo').textContent='✗ '+j.error;
+        else REFS.push({name:j.name,path:j.path,comfy_name:j.comfy_name,url:j.url,
+                        label:'人物参考（<Picture>）'});
+        next();
+      }).catch(()=>next());
+    };
+    r.readAsDataURL(f);
+  };
+  next();
+}
+
+// 加载默认公共提示词（未切段时读全局模板）
+loadPrompt(null);
+function updatePromptBrief(){
+  const t=$('#pubprompt').value.trim();
+  const b=$('#promptBrief'); if(b)b.textContent=t?`· ${t.length} 字`:'· 还没填';
+}
+$('#pubprompt').addEventListener('input',updatePromptBrief);
+function loadPrompt(film){
+  fetch('/api/prompt'+(film?'?film='+encodeURIComponent(film):'')).then(r=>r.json()).then(j=>{
+    if(j.prompt!==undefined){
+      $('#pubprompt').value=j.prompt;
+      $('#promptSrc').textContent = j.source==='film'?'（本片已保存）':'（全局默认模板）';
+      updatePromptBrief();
+    }
+  }).catch(()=>{});
+}
+
+// ---- 上传 ----
+const drop=$('#drop'), file=$('#file');
+drop.onclick=()=>file.click();
+drop.ondragover=e=>{e.preventDefault();drop.classList.add('hover')};
+drop.ondragleave=()=>drop.classList.remove('hover');
+drop.ondrop=e=>{e.preventDefault();drop.classList.remove('hover');if(e.dataTransfer.files[0])upload(e.dataTransfer.files[0])};
+file.onchange=()=>{if(file.files[0])upload(file.files[0])};
+
+function upload(f){
+  $('#upinfo').textContent='上传中 '+f.name+' …'; $('#prog').style.display='block';
+  const r=new FileReader();
+  r.onprogress=e=>{if(e.lengthComputable)$('#prog i').style.width=(e.loaded/e.total*100)+'%'};
+  r.onload=()=>{
+    const b64=r.result.split(',')[1];
+    fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:f.name,data64:b64})}).then(r=>r.json()).then(j=>{
+      $('#prog').style.display='none';
+      if(j.error){$('#upinfo').textContent='✗ '+j.error;return}
+      SRC=j.file;
+      $('#upinfo').textContent=`✓ ${j.name}  ${j.duration.toFixed(2)}s / ${j.w}×${j.h} / ${j.fps.toFixed(1)}fps`;
+      if(!$('#filmName').value.trim()||$('#filmName').value.trim()===FILM)
+        $('#filmName').value='复刻_'+new Date().toISOString().slice(5,10).replace('-','');
+      updateSplitTarget();
+      $('#btnSplit').disabled=false;
+      setupTimeline(f, j);
+    }).catch(e=>{$('#upinfo').textContent='✗ '+e});
+  };
+  r.readAsDataURL(f);
+}
+
+// ---- 时间轴：按帧定位 / 加切点 ----
+const tlVideo=$('#tlVideo'), tlStrip=$('#tlStrip');
+function setupTimeline(file, j){
+  if(TL_OBJ)URL.revokeObjectURL(TL_OBJ);
+  TL_OBJ=URL.createObjectURL(file);
+  tlVideo.src=TL_OBJ; tlVideo.style.display='block'; tlVideo.load();
+  TLFPS=j.fps||24; TOTALF=Math.max(1, j.frames||Math.round((j.duration||0)*TLFPS));
+  CUTS=[0,TOTALF];
+  TL_LOCK=false;                       // 新素材：切点随便改
+  $('#tlFps').textContent=TLFPS.toFixed(2);
+  $('#tlTotal').textContent=TOTALF;
+  $('#btnGenCuts').disabled=false;
+  tlVideo.onloadedmetadata=()=>{seekFrame(0)};
+  renderTimeline(); applyLockUI();
+  // 不抢 tab：时间轴数据备好，用户想按帧切自己点「按帧手动切」
+}
+function fmtTC(f){const t=Math.max(0,f)/TLFPS;const m=Math.floor(t/60);const s=t-m*60;
+  return `${String(m).padStart(2,'0')}:${s.toFixed(3).padStart(6,'0')}`}
+// 均匀切的项目没有存 cuts 时，按每段秒数现算一份切点
+function cutsFromEven(src, totalF){
+  if(src.cuts&&src.cuts.length>1)return src.cuts.slice();
+  const n=Math.max(1, src.n||1);
+  const actual=src.actual||((src.duration||0)/n);
+  const arr=[];
+  for(let i=0;i<n;i++)arr.push(Math.min(totalF,Math.round(i*actual*TLFPS)));
+  arr.push(src.exact?Math.min(totalF,Math.round(n*actual*TLFPS)):totalF);
+  const out=[];arr.forEach(c=>{if(!out.length||c>out[out.length-1])out.push(c)});
+  return out.length>1?out:[0,totalF];
+}
+// 打开已有项目时，用项目里的源视频回填时间轴与切点（可再次按帧改切）
+function setupTimelineFromProject(film, src){
+  if(TL_OBJ){URL.revokeObjectURL(TL_OBJ);TL_OBJ=null}
+  if(!src||!src.src){
+    tlVideo.style.display='none';TOTALF=0;CUTS=[];TL_LOCK=false;applyLockUI();return;
+  }
+  tlVideo.src='/api/src-video?film='+encodeURIComponent(film);
+  tlVideo.style.display='block'; tlVideo.load();
+  TLFPS=src.fps||24;
+  TOTALF=src.total_frames||Math.round((src.duration||0)*TLFPS)||1;
+  $('#tlFps').textContent=TLFPS.toFixed(2);
+  $('#tlTotal').textContent=TOTALF;
+  MODE=(src.mode==='manual')?'manual':'even';
+  MODE_ACTUAL=src.actual!=null?src.actual:null;
+  if(MODE==='manual'){
+    CUTS=(src.cuts&&src.cuts.length>1)?src.cuts.slice():[0,TOTALF];
+    TL_LOCK=false;
+    resetEvenParams();      // 本片是手动切的 → 按秒参数回到默认（避免误以为它还生效）
+  }else{
+    CUTS=cutsFromEven(src,TOTALF);
+    TL_LOCK=true;           // 均匀切的结果只读回显
+  }
+  $('#btnGenCuts').disabled=false;
+  tlVideo.onloadedmetadata=()=>{seekFrame(0)};
+  renderTimeline(); applyLockUI();
+  renderModeInfo();        // 只更新「本片是哪种切法」，不替用户切 tab
+}
+function curFrame(){
+  if(!TOTALF)return 0;
+  return Math.min(TOTALF-1, Math.max(0, Math.floor(tlVideo.currentTime*TLFPS+1e-6)));
+}
+function seekFrame(f){
+  if(!TOTALF)return;
+  f=Math.max(0,Math.min(TOTALF-1,f));
+  try{tlVideo.currentTime=(f+0.5)/TLFPS}catch(e){}
+  updatePos(f);
+}
+function updatePos(f){
+  const pct=TOTALF?Math.min(100,(f/TOTALF)*100):0;
+  $('#tlHead').style.left=pct+'%';
+  $('#tlFill').style.width=pct+'%';
+  $('#tlPos').textContent=`帧 ${f} / ${TOTALF} · ${fmtTC(f)}`;
+}
+function renderTimeline(){
+  const box=$('#tlCuts'); box.innerHTML='';
+  CUTS.forEach((f,i)=>{
+    if(i===0||i===CUTS.length-1)return;           // 首尾不画标记（就是时间轴两端）
+    const d=document.createElement('div'); d.className='m'+(TL_LOCK?' lock':'');
+    d.style.left=(f/TOTALF*100)+'%'; d.title=`切点 帧 ${f} · ${fmtTC(f)}`;
+    box.appendChild(d);
+  });
+  const list=$('#cutList'); list.innerHTML='';
+  CUTS.forEach((f,i)=>{
+    if(i>0){
+      // 两个切点之间标出「第几段 / 多长」——均匀切的结果也一眼能看清分成了哪些段
+      const sp=document.createElement('span'); sp.className='seglen';
+      sp.textContent=`段${i} ${((f-CUTS[i-1])/TLFPS).toFixed(2)}s`;
+      list.appendChild(sp);
+    }
+    const chip=document.createElement('div'); chip.className='cutchip'+(TL_LOCK?' lock':'');
+    const edge=(i===0||i===CUTS.length-1);
+    chip.innerHTML=`<b>${f}</b><span style="color:var(--mut)">${fmtTC(f)}</span>`+
+      (edge?'<span style="color:#a0aec0">端点</span>':(TL_LOCK?'':'<button title="删除这个切点">×</button>'));
+    const del=chip.querySelector('button');
+    if(del)del.onclick=e=>{e.stopPropagation();CUTS=CUTS.filter(x=>x!==f);renderTimeline();applyLockUI()};
+    chip.style.cursor='pointer';
+    chip.onclick=e=>{if(e.target.tagName!=='BUTTON'){tlVideo.pause();syncPlayBtn();seekFrame(f)}};
+    list.appendChild(chip);
+  });
+  updateCutInfo();
+}
+function updateCutInfo(){
+  const segs=Math.max(0,CUTS.length-1);
+  const lens=[];for(let i=0;i<segs;i++)lens.push(((CUTS[i+1]-CUTS[i])/TLFPS).toFixed(2)+'s');
+  $('#cutInfo').textContent=TOTALF
+    ? `${TL_LOCK?'按秒均匀切结果（只读）':'切成'} ${segs} 段：${lens.join(' / ')}`
+    : '';
+}
+function addCutAt(f){
+  if(!TOTALF)return;
+  if(TL_LOCK){$('#cutInfo').textContent='现在是只读的，先点「✎ 转手动编辑」';return}
+  f=Math.round(f);
+  if(f<=0||f>=TOTALF){$('#cutInfo').textContent='切点要在首尾之间';return}
+  if(CUTS.includes(f)){$('#cutInfo').textContent=`帧 ${f} 已有切点`;return}
+  CUTS.push(f); CUTS.sort((a,b)=>a-b); renderTimeline();
+}
+function syncPlayBtn(){$('#tlPlay').textContent=tlVideo.paused?'▶ 播放':'⏸ 暂停'}
+tlVideo.addEventListener('timeupdate',()=>{if(!tlVideo.paused)updatePos(curFrame())});
+tlVideo.addEventListener('seeked',()=>{updatePos(curFrame())});
+tlVideo.addEventListener('play',syncPlayBtn);
+tlVideo.addEventListener('pause',syncPlayBtn);
+$('#tlPlay').onclick=()=>{if(tlVideo.paused){if(tlVideo.currentTime>=(TOTALF-1)/TLFPS)seekFrame(0);tlVideo.play()}else tlVideo.pause()};
+$('#tlFirst').onclick=()=>{tlVideo.pause();seekFrame(0)};
+$('#tlLast').onclick=()=>{tlVideo.pause();seekFrame(TOTALF-1)};
+$('#tlPrev').onclick=()=>{tlVideo.pause();seekFrame(curFrame()-1)};
+$('#tlNext').onclick=()=>{tlVideo.pause();seekFrame(curFrame()+1)};
+$('#tlCut').onclick=()=>{addCutAt(curFrame())};
+tlStrip.onclick=e=>{
+  if(!TOTALF)return;
+  const r=tlStrip.getBoundingClientRect();
+  const ratio=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));
+  tlVideo.pause();
+  seekFrame(Math.min(TOTALF-1, Math.round(ratio*TOTALF)));
+};
+document.addEventListener('keydown',e=>{
+  const t=e.target.tagName;
+  if(t==='INPUT'||t==='TEXTAREA'||t==='SELECT')return;
+  if(!TOTALF)return;
+  if(e.key==='ArrowLeft'){e.preventDefault();tlVideo.pause();seekFrame(curFrame()-1)}
+  else if(e.key==='ArrowRight'){e.preventDefault();tlVideo.pause();seekFrame(curFrame()+1)}
+  else if(e.key===' '&&document.activeElement===tlVideo){e.preventDefault();
+    tlVideo.paused?tlVideo.play():tlVideo.pause()}
+});
+
+// ---- 切段（公共收尾） ----
+function afterSplit(j, msg, mode){
+  FILM=j.film; SIG=''; LAST_ST=null; LOGPREV='';
+  MODE=mode||'even';
+  MODE_ACTUAL=(j.actual!=null)?j.actual:null;
+  localStorage.setItem('rmk_last_film',FILM);
+  $('#promptSrc').textContent='（本片已保存）';
+  updatePromptBrief();
+  $('#splitinfo').textContent=msg;
+  $('#segPanel').style.display='block';
+  buildLogSegs(j.n);
+  $('#tpSwitch').value=$('#twopass').checked?'1':'0';
+  $('#tpSummary').textContent='';
+  $('#projInfo').textContent=`${j.n} 段 · 配置已落盘`;
+  if(MODE==='even'){
+    // 按秒切完：时间轴回显实际切点（只读），但不抢 tab —— 停在哪一页由用户自己决定
+    if(j.cuts&&j.cuts.length>1){CUTS=j.cuts.slice();TL_LOCK=true;renderTimeline();applyLockUI()}
+    else{TL_LOCK=true;applyLockUI()}
+    $('#splitinfo').textContent+='　切点已同步到「按帧手动切」页（只读回显），要看得自己切过去。';
+  }else{
+    // 按帧切完：按秒那套参数重置，避免误以为还在按秒走
+    resetEvenParams();
+    TL_LOCK=false;
+    $('#splitinfo').textContent=`本片按帧手动切段共 ${j.n} 段；按秒参数已重置为默认（5s / 不丢尾）。要改用按秒均匀切，直接设秒数再切段——会覆盖本片切点。`;
+    $('#manualModeNote').textContent='';
+    setTab('manual');
+    renderTimeline(); applyLockUI();
+  }
+  renderModeInfo();
+  loadProjects(false);
+  pollNow();
+  if(!POLL)POLL=setInterval(pollNow,2000);
+  document.getElementById('segPanel').scrollIntoView({behavior:'smooth',block:'start'});
+}
+$('#btnGenCuts').onclick=()=>{
+  if(!SRC){alert('先上传源视频');return}
+  if(!TOTALF){alert('视频还没加载完');return}
+  if(TL_LOCK){alert('现在显示的是按秒均匀切的切点（只读）。\n要按帧改切，先点「✎ 转手动编辑」。');return}
+  const n=Math.max(0,CUTS.length-1);
+  if(n<1){alert('至少要有两个切点');return}
+  const film=filmName();
+  if(!film){alert('先在①项目面板填项目名');return}
+  if(PROJECTS.some(p=>p.name===film) &&
+     !confirm(`项目「${film}」已存在，重新切段会覆盖它的分段与进度（已生成的视频文件保留）。\n确定继续？`))return;
+  $('#btnGenCuts').disabled=true; $('#cutInfo').textContent='按帧切段中…（视频越长越慢）';
+  fetch('/api/split-at',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film,src:SRC,cuts:CUTS,fps:TLFPS,seg:parseFloat($('#segsec').value)||5,
+      two_pass:$('#tlTwoPass').checked,prompt:$('#pubprompt').value,
+      refs:REFS.map(r=>({path:r.path,comfy_name:r.comfy_name,label:r.label})),
+      anchor_first:$('#anchorFirst').checked})})
+  .then(r=>r.json()).then(j=>{
+    $('#btnGenCuts').disabled=false;
+    if(j.error){$('#cutInfo').textContent='✗ '+j.error;return}
+    $('#filmName').value=j.film; updateSplitTarget();
+    $('#twopass').checked=$('#tlTwoPass').checked;
+    const lens=(j.segments||[]).map(s=>`${s.clip_sec}s→${s.seconds}s`).join(' / ');
+    afterSplit(j, `✓ 按帧切成 ${j.n} 段（参考片段→生成时长：${lens}）。人物身份锚与链式承接同均匀切。`, 'manual');
+    $('#tpSwitch').value=$('#tlTwoPass').checked?'1':'0';
+  }).catch(e=>{$('#btnGenCuts').disabled=false;$('#cutInfo').textContent='✗ '+e});
+};
+
+// ---- 切段 ----
+$('#btnSplit').onclick=()=>{
+  const film=filmName();
+  if(!film){alert('先在①项目面板填项目名');return}
+  if(PROJECTS.some(p=>p.name===film) &&
+     !confirm(`项目「${film}」已存在，重新切段会覆盖它的分段与进度（已生成的视频文件保留）。\n确定继续？`))return;
+  $('#btnSplit').disabled=true; $('#splitinfo').textContent='切段中…';
+  fetch('/api/split',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film,src:SRC,seg:parseFloat($('#segsec').value),exact:$('#exact').checked,
+                         two_pass:$('#twopass').checked,prompt:$('#pubprompt').value,
+                         refs:REFS.map(r=>({path:r.path,comfy_name:r.comfy_name,label:r.label})),
+                         anchor_first:$('#anchorFirst').checked})})
+  .then(r=>r.json()).then(j=>{
+    $('#btnSplit').disabled=false;
+    if(j.error){$('#splitinfo').textContent='✗ '+j.error;return}
+    const refMsg=REFS.length?`人物身份锚 <Picture 1..${REFS.length}>=上传的 ${REFS.length} 张参考图`:'身份锚回退为源视频首帧';
+    const anchorMsg=$('#anchorFirst').checked?'；首段另用源首帧硬锚':'；未用源首帧硬锚（避免锁住原人物脸）';
+    afterSplit(j, `✓ 均匀切成 ${j.n} 段，每段 ${j.actual.toFixed(2)}s。${refMsg}${anchorMsg}；其余段链式承接前段尾帧。`, 'even');
+  }).catch(e=>{$('#splitinfo').textContent='✗ '+e;$('#btnSplit').disabled=false});
+};
+
+// ---- 状态轮询（不整块重建：签名相同跳过） ----
+function sigOf(st){return JSON.stringify(st.segments.map(s=>[s.status,s.stale,s.seed,s.two_pass,s.seconds,s.first_override||'',s.first_override_at||0]))+'|'+JSON.stringify(st.jobs)+'|'+st.merged+'|'+st.two_pass+'|'+st.current_seg}
+$('#tpSwitch').onchange=()=>{
+  if(!FILM)return;
+  fetch('/api/set-twopass',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,two_pass:$('#tpSwitch').value==='1'})}).then(r=>r.json()).then(()=>pollNow());
+};
+function pollNow(){
+  if(!FILM)return;
+  fetch('/api/state?film='+encodeURIComponent(FILM)).then(r=>r.json()).then(st=>{
+    LAST_ST=st;
+    const sig=sigOf(st);
+    const jobs=st.jobs||{};
+    const done=st.segments.filter(s=>s.status==='done').length;
+    let prog=`完成 ${done}/${st.segments.length}`;
+    // 正在生成哪一段：从 state 里找 running 的段（单段或全片都适用）
+    const runningIdx=st.segments.findIndex(s=>s.status==='running');
+    if(runningIdx>=0)prog=`▶ 正在生成第 ${runningIdx+1} 段 · `+prog;
+    if(jobs.all==='running'&&runningIdx<0)prog+=' · 全片生成中';
+    if(jobs.merge==='running')prog+=' · 拼接中';
+    $('#globalStatus').innerHTML=prog;
+    $('#globalStatus').style.cssText=(runningIdx>=0)?'color:var(--run);font-weight:700':'';
+    if(st.two_pass!==undefined){
+      $('#tpSwitch').value=st.two_pass?'1':'0';
+      $('#twopass').checked=!!st.two_pass;
+      $('#tlTwoPass').checked=!!st.two_pass;
+    }
+    // 二采标识汇总（按已完成段实际用的开关统计）
+    const doneSegs=st.segments.filter(s=>s.status==='done');
+    const onN=doneSegs.filter(s=>s.two_pass===true).length;
+    const offN=doneSegs.filter(s=>s.two_pass===false).length;
+    const unkN=doneSegs.length-onN-offN;
+    let tpTxt='';
+    if(doneSegs.length){
+      tpTxt=`本片已出：二采 ${onN} 段 / 一采 ${offN} 段`+(unkN?` / 未记录 ${unkN} 段`:'');
+      if(offN&&!onN)tpTxt='⚠ 全部是一采（低清预览版）';
+      else if(onN&&offN)tpTxt='⚠ 混用：'+tpTxt;
+    }
+    $('#tpSummary').textContent=tpTxt;
+    $('#tpSummary').style.cssText=(offN?'color:#6b46c1;font-weight:600':'');
+    if(sig!==SIG){SIG=sig;renderCards(st)}
+    $('#finalLink').style.display=st.merged?'inline':'none';
+    renderModeInfo();
+  }).catch(()=>{});
+}
+function statusCls(s){return s.status+(s.stale&&s.status==='done'?' stale':'')}
+function statusTxt(s){return s.stale&&s.status==='done'?'需重出':({pending:'待生成',running:'生成中',done:'完成',error:'失败'}[s.status]||s.status)}
+function tpTag(s){
+  if(s.two_pass===true)return '<span class="tp on" title="这一段是开启二采生成的（一采→放大2倍→精修）">二采</span>';
+  if(s.two_pass===false)return '<span class="tp off" title="这一段是关闭二采生成的（一采 368×208 低清）">一采</span>';
+  if(s.status==='done')return '<span class="tp" title="这段在加标识之前生成，没记录当时的二采开关">未记录</span>';
+  return '';
+}
+function fovTag(s){
+  if(s.first_override==='prev_last')
+    return '<span class="fov prev" title="本段首帧 = 上一段成片的尾帧（点「清除首帧」可恢复自动承接）">首帧←上段尾帧</span>';
+  if(s.first_override==='upload')
+    return '<span class="fov up" title="本段首帧 = 手动上传的图（点「清除首帧」可恢复自动承接）">首帧←上传</span>';
+  if(s.first_override==='source')
+    return '<span class="fov prev" title="本段首帧 = 源视频该段的第一帧（切段时按「首段硬锚」写入）">首帧←源片</span>';
+  return '';
+}
+function renderCards(st){
+  const g=$('#grid'); g.innerHTML=''; $('#segCount').textContent='共 '+st.segments.length+' 段';
+  st.segments.forEach((s,i)=>{
+    const idx=i+1;
+    const secTxt=(s.seconds!=null)?`${s.seconds}s`:(st.actual?st.actual.toFixed(2)+'s':'?');
+    const clipTxt=(s.clip_sec!=null&&s.seconds!=null&&Math.abs(s.clip_sec-s.seconds)>0.03)
+      ? `（源片段 ${s.clip_sec}s）`:'';
+    // 缩略图：手动指定（抽尾帧/上传）看 override 图，否则看源段首帧
+    const thumbKind=(s.first_override&&s.first_override!=='source')?'firstov':'first';
+    const c=document.createElement('div'); c.className='card';
+    c.innerHTML=`
+      <div class="thumbwrap">
+        <img class="thumb" src="/api/media?film=${encodeURIComponent(FILM)}&kind=${thumbKind}&idx=${idx}&t=${s.first_override_at||0}" alt="段${idx}首帧">
+        ${fovTag(s)}
+      </div>
+      <div class="bd">
+        <div class="tt"><span>段 ${idx}</span><span style="display:flex;gap:5px;align-items:center">${tpTag(s)}<span class="st ${statusCls(s)}">${statusTxt(s)}</span></span></div>
+        <div class="meta">${secTxt}${clipTxt} · seed ${s.seed!=null?s.seed:'—'}</div>
+        <div class="ops">
+          <button data-act="gen" data-i="${idx}" ${s.status==='running'?'disabled':''}>${s.status==='done'?'重生成':'生成'}</button>
+          <button data-act="edit" data-i="${idx}" class="ed" ${s.status==='running'?'disabled':''}>改提示词</button>
+          <button data-act="preview" data-i="${idx}">源片</button>
+          <button data-act="out" data-i="${idx}" ${s.status==='done'?'':'disabled'}>成片</button>
+          <button data-act="log" data-i="${idx}">日志</button>
+        </div>
+        <div class="ops" style="margin-top:6px">
+          ${idx>1?`<button data-act="ffprev" data-i="${idx}" class="fo" ${s.status==='running'?'disabled':''} title="把上一段成片的最后一帧抽出来，作为本段首帧">⤓ 抽上段尾帧</button>`:''}
+          <button data-act="ffup" data-i="${idx}" class="fo" ${s.status==='running'?'disabled':''} title="上传一张图作为本段首帧（第 1 段也可用）">⤒ 上传首帧</button>
+          ${s.first_override?`<button data-act="ffclear" data-i="${idx}" ${s.status==='running'?'disabled':''} title="解除首帧锁定，回到自动承接上段尾帧">✕ 清除首帧</button>`:''}
+        </div>
+      </div>`;
+    g.appendChild(c);
+  });
+  g.querySelectorAll('button[data-act]').forEach(b=>b.onclick=()=>onCard(b.dataset.act,+b.dataset.i));
+}
+function onCard(act,i){
+  if(act==='gen'){
+    openSeedDlg(i);
+  }else if(act==='preview'){
+    window.open(`/api/media?film=${encodeURIComponent(FILM)}&kind=clip&idx=${i}`,'_blank');
+  }else if(act==='out'){
+    window.open(`/api/media?film=${encodeURIComponent(FILM)}&kind=out&idx=${i}`,'_blank');
+  }else if(act==='log'){
+    $('#logSeg').value=i; refreshLog();
+  }else if(act==='edit'){
+    openPromptEditor(i);
+  }else if(act==='ffprev'){
+    takePrevLastAsFirst(i);
+  }else if(act==='ffup'){
+    pickFirstFrameUpload(i);
+  }else if(act==='ffclear'){
+    clearSegFirst(i);
+  }
+}
+
+// ---- 段首帧：抽上一段尾帧 / 上传 / 清除 ----
+function takePrevLastAsFirst(i){
+  if(!FILM)return;
+  fetch('/api/seg-first-from-prev',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,idx:i})}).then(r=>r.json()).then(j=>{
+    if(!j.ok){alert('抽尾帧失败：'+(j.error||'未知错误'));return}
+    SIG=''; pollNow(); refreshLog();
+  }).catch(e=>alert('请求失败：'+e));
+}
+function clearSegFirst(i){
+  if(!FILM)return;
+  fetch('/api/seg-first-clear',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,idx:i})}).then(r=>r.json()).then(j=>{
+    if(!j.ok){alert('清除失败：'+(j.error||'未知错误'));return}
+    SIG=''; pollNow(); refreshLog();
+  }).catch(e=>alert('请求失败：'+e));
+}
+function pickFirstFrameUpload(i){
+  if(!FILM)return;
+  const inp=document.createElement('input');
+  inp.type='file'; inp.accept='image/*';
+  inp.onchange=()=>{
+    const f=inp.files&&inp.files[0]; if(!f)return;
+    const fr=new FileReader();
+    fr.onload=()=>{
+      const b64=String(fr.result).split(',')[1]||'';
+      fetch('/api/seg-first-upload',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({film:FILM,idx:i,name:f.name,data64:b64})}).then(r=>r.json()).then(j=>{
+        if(!j.ok){alert('上传首帧失败：'+(j.error||'未知错误'));return}
+        SIG=''; pollNow(); refreshLog();
+      }).catch(e=>alert('请求失败：'+e));
+    };
+    fr.readAsDataURL(f);
+  };
+  inp.click();
+}
+
+// ---- 段提示词编辑弹窗 ----
+function openPromptEditor(i){
+  PM_IDX=i;
+  $('#pmTitle').textContent='段 '+i+' 提示词（只影响这一段）';
+  $('#pmText').value='加载中…';
+  $('#pmMask').classList.add('on');
+  fetch('/api/seg-prompt?film='+encodeURIComponent(FILM)+'&idx='+i).then(r=>r.json()).then(j=>{
+    $('#pmText').value=j.prompt||'';
+  }).catch(()=>{$('#pmText').value='（加载失败）'});
+}
+function closePromptEditor(){$('#pmMask').classList.remove('on');PM_IDX=null}
+$('#pmCancel').onclick=closePromptEditor;
+$('#pmMask').onclick=e=>{if(e.target===$('#pmMask'))closePromptEditor()};
+$('#pmSave').onclick=()=>{
+  if(!PM_IDX)return;
+  const txt=$('#pmText').value;
+  $('#pmSave').disabled=true; $('#pmSave').textContent='保存中…';
+  fetch('/api/set-seg-prompt',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,idx:PM_IDX,prompt:txt})}).then(r=>r.json()).then(j=>{
+    $('#pmSave').disabled=false; $('#pmSave').textContent='保存';
+    if(j.ok){closePromptEditor();SIG='';pollNow()}
+    else alert('保存失败:'+(j.error||''));
+  }).catch(e=>{$('#pmSave').disabled=false;$('#pmSave').textContent='保存';alert(e)});
+};
+
+// ---- 公共提示词：保存 / 应用到所有段 ----
+$('#btnSavePrompt').onclick=()=>{
+  if(!FILM){$('#promptSrc').textContent='（先切段才能保存到本片）';return}
+  fetch('/api/set-prompt',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,prompt:$('#pubprompt').value})}).then(r=>r.json()).then(j=>{
+    $('#promptSrc').textContent=j.ok?'✓ 已保存（未覆盖各段）':'保存失败';
+  });
+};
+$('#btnApplyPrompt').onclick=()=>{
+  if(!FILM){$('#promptSrc').textContent='（先切段才能应用）';return}
+  if(!confirm('把公共提示词应用到所有未完成的段？已完成的段不受影响。'))return;
+  fetch('/api/apply-prompt',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,prompt:$('#pubprompt').value})}).then(r=>r.json()).then(j=>{
+    $('#promptSrc').textContent=j.ok?`✓ 已应用到 ${j.applied} 段`:'应用失败';
+    SIG='';pollNow();
+  });
+};
+
+// ---- Seed 重出弹窗 ----
+function randSeed(){return Math.floor(100001+Math.random()*899999)}
+function openSeedDlg(i){
+  SEED_IDX=i;
+  const s=LAST_ST&&LAST_ST.segments[i-1];
+  const cur=s&&s.seed!=null?s.seed:'—';
+  $('#seedTitle').textContent=`重出段 ${i}`+(s&&s.status==='done'?'（当前已完成）':'');
+  $('#seedCur').textContent=cur;
+  $('#seedInput').value='';  // 留空=沿用
+  $('#seedMask').classList.add('on');
+  $('#seedInput').focus();
+}
+function closeSeedDlg(){$('#seedMask').classList.remove('on');SEED_IDX=null}
+$('#seedRandom').onclick=()=>{$('#seedInput').value=randSeed()};
+$('#seedCancel').onclick=closeSeedDlg;
+$('#seedMask').onclick=e=>{if(e.target===$('#seedMask'))closeSeedDlg()};
+$('#seedGo').onclick=()=>{
+  if(!SEED_IDX)return;
+  const raw=$('#seedInput').value.trim();
+  let seed=null;
+  if(raw){
+    if(!/^\d+$/.test(raw)){alert('seed 需为纯数字');return}
+    seed=parseInt(raw,10);
+  }
+  const i=SEED_IDX;
+  $('#seedGo').disabled=true; $('#seedGo').textContent='启动中…';
+  fetch('/api/gen',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,idx:i,seed:seed})}).then(r=>r.json()).then(j=>{
+    $('#seedGo').disabled=false; $('#seedGo').textContent='开始重出';
+    if(j.ok){closeSeedDlg();$('#logSeg').value=i;refreshLog();pollNow()}
+    else alert(j.msg||'启动失败');
+  }).catch(e=>{$('#seedGo').disabled=false;$('#seedGo').textContent='开始重出';alert(e)});
+};
+
+$('#btnAll').onclick=()=>{
+  const skip=confirm('跳过已完成的段，只生成未完成/需重出的段？\n（取消=全部重出）');
+  fetch('/api/gen-all',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,skip_done:skip})}).then(r=>r.json()).then(()=>{
+    $('#logSeg').value=''; LOGPREV=''; refreshLog();  // 切到面板日志看全片进度
+    pollNow();
+  });
+};
+$('#btnSaveProj').onclick=()=>{
+  if(!FILM){alert('请先切段建片');return}
+  const b=$('#btnSaveProj'); b.disabled=true; b.textContent='保存中…';
+  // 先把页面上未提交的公共提示词落盘，再写 project.json
+  fetch('/api/set-prompt',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,prompt:$('#pubprompt').value})}).then(r=>r.json())
+  .then(()=>fetch('/api/save-project',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM})}).then(r=>r.json()))
+  .then(j=>{
+    b.disabled=false; b.textContent='💾 保存项目';
+    if(j.ok){
+      $('#projInfo').textContent=`✓ 已保存配置到 ${j.dir}\\${j.config_name}（${j.done}/${j.n} 段完成）`;
+      localStorage.setItem('rmk_last_film',FILM);
+      loadProjects(false);
+    }else alert('保存失败:'+(j.error||''));
+  }).catch(e=>{b.disabled=false;b.textContent='💾 保存项目';alert('保存失败:'+e)});
+};
+$('#btnStop').onclick=()=>{
+  if(!FILM)return;
+  if(!confirm('停止所有正在进行的生成/拼接任务？\n会终止子进程并清空 ComfyUI 队列。'))return;
+  $('#btnStop').disabled=true; $('#btnStop').textContent='停止中…';
+  fetch('/api/stop-all',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM})}).then(r=>r.json()).then(j=>{
+    $('#btnStop').disabled=false; $('#btnStop').textContent='⏹ 停止所有任务';
+    $('#globalStatus').textContent=`已停止（终止${j.killed}个进程）`;
+    SIG='';pollNow();refreshLog();
+  }).catch(()=>{$('#btnStop').disabled=false;$('#btnStop').textContent='⏹ 停止所有任务'});
+};
+$('#btnMerge').onclick=()=>fetch('/api/merge',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({film:FILM})}).then(r=>r.json()).then(j=>{
+  $('#logSeg').value=''; refreshLog();
+});
+$('#finalLink').onclick=()=>{
+  $('#finalLink').href=`/api/media?film=${encodeURIComponent(FILM)}&kind=final&idx=1`;
+};
+
+// ---- 日志 ----
+$('#btnRefreshLog').onclick=refreshLog;
+$('#logSeg').onchange=refreshLog;
+function refreshLog(){
+  const seg=$('#logSeg').value;
+  fetch('/api/log?film='+encodeURIComponent(FILM||'')+'&seg='+encodeURIComponent(seg))
+    .then(r=>r.json()).then(j=>{
+      if(j.text!==LOGPREV){LOGPREV=j.text;const el=$('#log');el.textContent=j.text||'（空）';el.scrollTop=el.scrollHeight}
+    }).catch(()=>{});
+}
+setInterval(()=>{if(FILM)refreshLog()},2500);
+
+// 页面一打开就恢复上次打开的项目（新页面也能读到全部信息）
+renderModeInfo(); applyLockUI(); updatePromptBrief(); updateSplitTarget();
+loadProjects(true);
+</script>
+</body>
+</html>
