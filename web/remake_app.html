@@ -47,6 +47,9 @@ button.danger{color:var(--err)}
 .prog{height:6px;background:#edf2f7;border-radius:4px;overflow:hidden;margin-top:10px;display:none}
 .prog>i{display:block;height:100%;background:var(--acc);width:0;transition:width .2s}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+/* 编号风险提示条：黄色警示，不阻断操作，只是提醒改提示词写法 */
+.warnbar{margin:0 0 12px;padding:9px 12px;border-radius:6px;font-size:12px;line-height:1.6;
+  background:#fffbea;border:1px solid #f6e05e;color:#975a16;white-space:pre-wrap}
 .card{border:1px solid var(--bd);border-radius:8px;overflow:hidden;background:#fff}
 .card .thumb{width:100%;aspect-ratio:16/9;object-fit:cover;background:#000;display:block}
 .card .bd{padding:10px}
@@ -110,6 +113,15 @@ button.sm{padding:5px 10px;font-size:12px}
 .card .thumbwrap{position:relative}
 .card .thumbwrap .fov{position:absolute;left:6px;bottom:6px;background:rgba(255,255,255,.92)}
 .card .ops button.fo{color:#2b6cb0}
+/* 首帧大图预览（点缩略图打开）。缩略图是 16:9 cover 裁过的，看不清细节，
+   而用户要拿这张图去外部换人物，必须能看到原始分辨率。 */
+.card .thumbwrap{cursor:zoom-in}
+.modal-img{width:min(900px,94vw);display:flex;flex-direction:column;gap:10px}
+.modal-img .imgbox{flex:1 1 auto;min-height:0;max-height:64vh;display:flex;
+  align-items:center;justify-content:center;background:#1a202c;border-radius:6px;overflow:auto}
+.modal-img .imgbox img{max-width:100%;max-height:64vh;object-fit:contain;display:block}
+.modal-img .mops{margin-top:0;flex-wrap:wrap;align-items:center}
+.modal-img .mops .sel{margin-right:auto;font-size:11px}
 /* tab 与折叠面板 */
 .tabs{display:flex;gap:6px;align-items:center;margin:0 0 14px;border-bottom:1px solid var(--bd);flex-wrap:wrap}
 .tabs button{border:1px solid transparent;border-bottom:none;border-radius:6px 6px 0 0;background:#f7fafc;color:var(--mut);
@@ -418,6 +430,9 @@ header .nav{font-size:12px;color:#a0aec0}
       <span class="sel" id="globalStatus"></span>
       <span class="sel" id="tpSummary"></span>
     </div>
+    <!-- <Picture N> 编号后移警告：SelfLift 下接首帧会让首帧占 P1、人物参考顺延成 P2。
+         提示词里写死的 <Picture 1> 就会指到首帧图上。后端只检测不改写（语义只有作者知道）。 -->
+    <div class="warnbar" id="picShiftWarn" style="display:none"></div>
     <div class="grid" id="grid"></div>
   </div>
 
@@ -450,6 +465,20 @@ header .nav{font-size:12px;color:#a0aec0}
     </div>
   </div>
 
+  <!-- 首帧大图预览弹窗：看清原始分辨率，并可下载去外部换人物 -->
+  <div class="mask" id="ffMask">
+    <div class="modal modal-img">
+      <h3 id="ffTitle">段 1 首帧</h3>
+      <div class="imgbox"><img id="ffImg" alt="首帧大图"></div>
+      <div class="mops">
+        <span class="sel" id="ffInfo"></span>
+        <button id="ffDownload">⤓ 下载原图</button>
+        <button id="ffUseAsFirst" class="pri">用这张作本段首帧</button>
+        <button id="ffClose">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <div class="panel" id="logPanel">
     <div class="bar"><h2 style="margin:0">日志</h2>
       <select id="logSeg"><option value="">面板/拼接</option></select>
@@ -462,6 +491,8 @@ header .nav{font-size:12px;color:#a0aec0}
 <script>
 const $=s=>document.querySelector(s);
 let SRC=null, FILM=null, SIG='', POLL=null, LOGPREV='', PM_IDX=null, REFS=[], SEED_IDX=null, LAST_ST=null, PROJECTS=[], PROJ_ROOT='';
+// 首帧大图预览：FF_IDX=当前看的段号，FF_KIND=看的是哪张（firstov 优先，否则 first）
+let FF_IDX=null, FF_KIND='first';
 // 时间轴状态
 let TOTALF=0, TLFPS=24, CUTS=[], TL_OBJ=null, TL_SEEKING=false;
 // 切段方式：MODE=当前项目已保存的方式（even 按秒 / manual 按帧）；TL_LOCK=时间轴切点只读
@@ -1307,6 +1338,8 @@ function afterSplit(j, msg, mode){
     renderTimeline(); applyLockUI();
   }
   renderModeInfo();
+  // 打开项目就先把编号警告画出来（不等第一次轮询，否则会有 2 秒空窗）
+  syncPicWarn({settings:j.settings});
   loadProjects(false);
   pollNow();
   if(!POLL)POLL=setInterval(pollNow,2000);
@@ -1486,6 +1519,7 @@ function pollNow(){
     $('#tpSummary').textContent=tpTxt;
     $('#tpSummary').style.cssText=(offN?'color:#6b46c1;font-weight:600':'');
     if(sig!==SIG){SIG=sig;renderCards(st)}
+    syncPicWarn(st);
     syncFinal(st);
     syncHdrMeta(st);
     renderModeInfo();
@@ -1569,6 +1603,16 @@ function audTag(s){
   if(s.has_audio)return '<span class="au on" title="这一段已把源视频该段原音贴回（人声/音乐/音效保留）">原音</span>';
   return '<span class="au off" title="这一段没有音轨。点上方「🎵 立即贴回」可从源段补上">无音</span>';
 }
+// <Picture N> 编号后移警告。后端 pic_shift_warning() 判定（只读，不改提示词），
+// 两个接口都带这个字段：openProject 从 /api/project 拿、轮询从 /api/state 拿。
+function syncPicWarn(st){
+  const el=$('#picShiftWarn'); if(!el)return;
+  // 两处兜底：settings.pic_shift_warn（project）与 st.pic_shift_warn（state）
+  const w=(st&&st.pic_shift_warn)||(st&&st.settings&&st.settings.pic_shift_warn)||'';
+  if(!w){ el.style.display='none'; el.textContent=''; return; }
+  el.style.display='';
+  el.textContent='⚠ '+w;
+}
 function renderCards(st){
   const g=$('#grid'); g.innerHTML=''; $('#segCount').textContent='共 '+st.segments.length+' 段';
   st.segments.forEach((s,i)=>{
@@ -1580,7 +1624,7 @@ function renderCards(st){
     const thumbKind=(s.first_override&&s.first_override!=='source')?'firstov':'first';
     const c=document.createElement('div'); c.className='card';
     c.innerHTML=`
-      <div class="thumbwrap">
+      <div class="thumbwrap" data-act="ffview" data-i="${idx}" title="点开看首帧大图（原始分辨率），可下载去外部换人物">
         <img class="thumb" src="/api/media?film=${encodeURIComponent(FILM)}&kind=${thumbKind}&idx=${idx}&t=${s.first_override_at||0}" alt="段${idx}首帧">
         ${fovTag(s)}
       </div>
@@ -1595,6 +1639,7 @@ function renderCards(st){
           <button data-act="log" data-i="${idx}">日志</button>
         </div>
         <div class="ops" style="margin-top:6px">
+          <button data-act="ffsrc" data-i="${idx}" class="fo" ${s.status==='running'?'disabled':''} title="把源视频该段的第一帧作为本段首帧（构图与源片一致；第 1 段也可用）">⤓ 抽源首帧</button>
           ${idx>1?`<button data-act="ffprev" data-i="${idx}" class="fo" ${s.status==='running'?'disabled':''} title="把上一段成片的最后一帧抽出来，作为本段首帧">⤓ 抽上段尾帧</button>`:''}
           <button data-act="ffup" data-i="${idx}" class="fo" ${s.status==='running'?'disabled':''} title="上传一张图作为本段首帧（第 1 段也可用）">⤒ 上传首帧</button>
           ${s.first_override?`<button data-act="ffclear" data-i="${idx}" ${s.status==='running'?'disabled':''} title="解除首帧锁定，回到自动承接上段尾帧">✕ 清除首帧</button>`:''}
@@ -1602,7 +1647,8 @@ function renderCards(st){
       </div>`;
     g.appendChild(c);
   });
-  g.querySelectorAll('button[data-act]').forEach(b=>b.onclick=()=>onCard(b.dataset.act,+b.dataset.i));
+  // 缩略图是 div（不是 button），单独一起绑；否则点大图没反应
+  g.querySelectorAll('button[data-act],[data-act].thumbwrap').forEach(b=>b.onclick=()=>onCard(b.dataset.act,+b.dataset.i));
 }
 function onCard(act,i){
   if(act==='gen'){
@@ -1617,6 +1663,10 @@ function onCard(act,i){
     openPromptEditor(i);
   }else if(act==='ffprev'){
     takePrevLastAsFirst(i);
+  }else if(act==='ffsrc'){
+    takeSourceFirst(i);
+  }else if(act==='ffview'){
+    openFirstFrameViewer(i);
   }else if(act==='ffup'){
     pickFirstFrameUpload(i);
   }else if(act==='ffclear'){
@@ -1625,6 +1675,49 @@ function onCard(act,i){
 }
 
 // ---- 段首帧：抽上一段尾帧 / 上传 / 清除 ----
+function takeSourceFirst(i){
+  if(!FILM)return;
+  fetch('/api/seg-first-from-source',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,idx:i})}).then(r=>r.json()).then(j=>{
+    if(!j.ok){alert('抽源首帧失败：'+(j.error||'未知错误'));return}
+    SIG=''; pollNow(); refreshLog();
+  }).catch(e=>alert('请求失败：'+e));
+}
+// ---- 首帧大图预览：看原始分辨率 → 下载去外部换人物 → 或直接用作本段首帧 ----
+function openFirstFrameViewer(i){
+  if(!FILM)return;
+  FF_IDX=i;
+  const st=LAST_ST, s=st&&st.segments?st.segments[i-1]:null;
+  // 有手动锁定的首帧就显示那张（那才是真正会用的），否则显示源段首帧
+  FF_KIND=(s&&s.first_override&&s.first_override!=='source')?'firstov':'first';
+  $('#ffTitle').textContent=`段 ${i} 首帧`;
+  $('#ffInfo').textContent=(s&&s.first_override?'当前锁定：'+({prev_last:'上段尾帧',upload:'上传图',source:'源片首帧'}[s.first_override]||s.first_override):'未锁定（自动承接）')
+    +` · 点「下载原图」拿原始分辨率去外部换人物`;
+  $('#ffImg').src=`/api/media?film=${encodeURIComponent(FILM)}&kind=${FF_KIND}&idx=${i}&t=${(s&&s.first_override_at)||Date.now()}`;
+  $('#ffUseAsFirst').textContent=(FF_KIND==='first')?'用源首帧作本段首帧':'用这张作本段首帧';
+  $('#ffMask').classList.add('on');
+}
+function closeFirstFrameViewer(){$('#ffMask').classList.remove('on');FF_IDX=null}
+$('#ffClose').onclick=closeFirstFrameViewer;
+$('#ffMask').onclick=e=>{if(e.target===$('#ffMask'))closeFirstFrameViewer()};
+$('#ffDownload').onclick=()=>{
+  if(!FILM||!FF_IDX)return;
+  // dl=1 → 服务端带 Content-Disposition，中文名不乱码
+  const url=`/api/media?film=${encodeURIComponent(FILM)}&kind=${FF_KIND}&idx=${FF_IDX}&dl=1`;
+  const a=document.createElement('a'); a.href=url; a.download=''; document.body.appendChild(a);
+  a.click(); a.remove();
+};
+$('#ffUseAsFirst').onclick=()=>{
+  if(!FILM||!FF_IDX)return;
+  // 源片首帧走 from-source（后端会写 source 来源，可清除）；其余（上传图）已是锁定态，无需重复
+  if(FF_KIND!=='first'){alert('这张已经是本段锁定的首帧了，无需再设置');return}
+  const i=FF_IDX;
+  fetch('/api/seg-first-from-source',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,idx:i})}).then(r=>r.json()).then(j=>{
+    if(!j.ok){alert('设置失败：'+(j.error||'未知错误'));return}
+    closeFirstFrameViewer(); SIG=''; pollNow(); refreshLog();
+  }).catch(e=>alert('请求失败：'+e));
+};
 function takePrevLastAsFirst(i){
   if(!FILM)return;
   fetch('/api/seg-first-from-prev',{method:'POST',headers:{'Content-Type':'application/json'},

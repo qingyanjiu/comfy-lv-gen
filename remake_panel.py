@@ -94,6 +94,49 @@ def bc_mp_cap_for(scale):
     """二采显存按倍数平方增长：cap = 0.4 × (1.5 / scale)²，见 run_selflift 同名函数。"""
     s = max(float(scale or BC_DEFAULT_UPSCALE), 1.0)
     return round(max(0.1, min(BC_MP_CAP * (BC_DEFAULT_UPSCALE / s) ** 2, BC_MP_CAP)), 3)
+
+
+def pic_shift_warning(cfg):
+    """SelfLift 下接了首帧会让 <Picture N> 整体后移 1 —— 只在提示词写死了字面编号时才算问题。
+
+    根因（run_selflift.pic_numbers）：SelfLift 的 238 把 first_frame 也喂给 Qwen，
+    所以首帧占 <Picture 1>，人物参考图顺延成 <Picture 2>；黑鹤走 AddGuide 只锚
+    latent keyframe、不喂图给 Qwen，编号不动。
+
+    这里**只做检测、不改用户的提示词**：正文里写的是字面 `<Picture 1>`（指人物参考）
+    还是占位符 `{pic:1}`，语义只有作者知道，自动改写会把「指首帧」的句子改错。
+    返回一句给前端显示的警告文案，没问题时返回 None。
+    """
+    if engine_of(cfg.get("workflow")) != "selflift":
+        return None
+    segs = cfg.get("segments") or []
+    if not segs:
+        return None
+    # 有没有哪一段真的接了首帧（锁定 or 链式承接上段尾帧）
+    has_first = any(s.get("first_frame_override") for s in segs) or len(segs) > 1
+    if not has_first:
+        return None
+    # 提示词里有没有「字面」编号 —— 用了 {pic:N} 占位符的会被自动换算，不算风险
+    import re as _re
+    lit = _re.compile(r"<Picture\s+\d+\s*>")
+    tpl = _re.compile(r"\{pic")
+    texts = [cfg.get("head") or "", cfg.get("tail") or ""]
+    for s in segs:
+        texts += [s.get("head") or "", s.get("tail") or "",
+                  s.get("body") or "", s.get("cast") or "",
+                  s.get("optimized_body") or ""]
+    has_literal = any(lit.search(t or "") for t in texts)
+    has_placeholder = any(tpl.search(t or "") for t in texts)
+    if not has_literal:
+        return None
+    if has_placeholder:
+        # 混用：占位符那部分自动换算没问题，字面那部分仍会指错
+        return ("提示词里同时有 {pic:N} 占位符和写死的 <Picture N>。"
+                "SelfLift 下接首帧会让编号整体后移 1，写死的那几个会指到别的图；"
+                "建议把写死的也改成 <Picture {pic:1}> 这种写法。")
+    return ("当前是 SelfLift 链路且已接首帧：首帧会占 <Picture 1>，"
+            "人物参考图顺延为 <Picture 2>。提示词里写死的 <Picture 1> 会指到首帧图上，"
+            "建议改成 <Picture {pic:1}>（人物）/ <Picture {pic?:first}>（首帧）让编号自动换算。")
 # 项目根目录：本面板的项目一律放这里，和 output/ 里其它流水线产物分开
 ROOT = "D:/Comfy-Desktop/video-clone"
 # 老根目录：早期版本把项目建在 output/ 下，仍要能读、能一键迁移
@@ -113,7 +156,7 @@ FPS = 24
 # 合并模式下由 tools/serve_app.py 覆盖成实际监听端口（8900），
 # /api/version 靠它报真实端口；--standalone 时才用这里的 8901。
 PORT = 8901
-UI_BUILD = "2026-11-18d-aspect"
+UI_BUILD = "2026-11-18f-picwarn"
 COMFY = "http://127.0.0.1:8188"
 
 os.makedirs(ROOT, exist_ok=True)
@@ -593,6 +636,10 @@ def build_project(wd):
             "aspect_ratio": _res.get("aspect_ratio"),
             # SelfLift 没有二采 → 这里是 None，前端据此隐藏倍数输入框
             "upscale": _res.get("bc_upscale"),
+            # <Picture N> 编号后移风险提示（只读检测，无风险时 None）。
+            # 必须和 /api/state 同时给：页面 openProject 拿一次、轮询再拿一次，
+            # 少一边就会「警告时有时无」。
+            "pic_shift_warn": pic_shift_warning(cfg),
         },
         "prompt": prompt,
         "refs": st.get("user_refs") or [],
@@ -803,6 +850,35 @@ def seg_last_png(wd, idx):
 def seg_first_override_png(wd, idx):
     """手动指定的首帧图（上传 / 抽帧都落到这里，独立于源段首帧 refs/first_NN.png）。"""
     return os.path.join(wd, "refs", f"override_first_{idx:02d}.png")
+
+
+def source_first_png(wd, idx):
+    """源段首帧（切段时 ffmpeg 抽出来的 refs/first_NN.png，原始分辨率）。
+
+    这是「复刻基准」，与 override_first_NN.png（人工锁定后的成品首帧）分开存：
+    前者永不被覆盖，用户可以反复拿它重新做图再上传。
+    """
+    return os.path.join(wd, "refs", f"first_{idx:02d}.png")
+
+
+def ensure_source_first(wd, idx):
+    """确保 refs/first_NN.png 存在；被删/老项目缺失时从源段视频重抽。
+
+    返回 (ok, path_or_err)。
+    """
+    dst = source_first_png(wd, idx)
+    if os.path.exists(dst) and os.path.getsize(dst) > 0:
+        return True, dst
+    clip = os.path.join(wd, "source_segments", f"clip_{idx:02d}.mp4")
+    if not os.path.exists(clip):
+        return False, f"源段视频不存在：clip_{idx:02d}.mp4"
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    r = subprocess.run([FFMPEG, "-y", "-loglevel", "error", "-i", clip,
+                        "-frames:v", "1", dst],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or not os.path.exists(dst):
+        return False, "抽源段首帧失败：" + (r.stderr or "")[-200:]
+    return True, dst
 
 
 def set_seg_first_frame(wd, idx, png_path, source):
@@ -1520,6 +1596,10 @@ def media_path(wd, kind, idx=1):
         return os.path.join(wd, "segments", f"{st.get('prefix') or ''}_r{idx:02d}.mp4")
     if kind == "first":
         return os.path.join(wd, "refs", f"first_{idx:02d}.png")
+    if kind == "srcfirst":
+        # 源段首帧（复刻基准，原始分辨率）。用户拿去自己换人物后再上传回来。
+        # 与 first 同文件，但单独一个 kind 是为了让前端语义清楚、下载名可区分。
+        return os.path.join(wd, "refs", f"first_{idx:02d}.png")
     if kind == "firstov":
         # 手动锁定的段首帧（上传 / 抽上段尾帧）
         return seg_first_override_png(wd, idx)
@@ -1540,6 +1620,8 @@ def media_download_name(wd, kind, idx=1):
         return f"{film}_源段{idx:02d}.mp4"
     if kind in ("first", "firstov"):
         return f"{film}_段{idx:02d}_首帧.png"
+    if kind == "srcfirst":
+        return f"{film}_段{idx:02d}_源首帧.png"
     return f"{film}_段{idx:02d}_尾帧.png"
 
 
@@ -1673,6 +1755,9 @@ class H(BaseHTTPRequestHandler):
                     else:
                         st["upscale"] = None
                         st["bc_mp_cap"] = None
+                    # <Picture N> 编号后移风险（SelfLift + 接首帧 + 写死字面编号）
+                    # 只读检测，不落盘、不改提示词；没有风险时给 None
+                    st["pic_shift_warn"] = pic_shift_warning(j)
                 except Exception:
                     pass
             # 源宽高：新片切段时就存进 state 了，老片（2026-11-18 之前）没有这字段，
@@ -2041,6 +2126,32 @@ class H(BaseHTTPRequestHandler):
             skip = bool(data.get("skip_done", True))
             ok, msg = run_all_proc(work_dir(film), skip_done=skip)
             return jresp(self, {"ok": ok, "msg": msg})
+        if p == "/api/seg-first-from-source":
+            # 抽「源视频该段的第一帧」锁成本段首帧。任意段可用，第 1 段也支持。
+            # 与 from-prev 的区别：from-prev 承接上段成片尾帧（链式），
+            # 这里是纯复刻基准——构图/取景与源片一致，人物可另用参考图替换。
+            film = data.get("film"); idx = int(data.get("idx", 0))
+            wd = work_dir(film)
+            if not os.path.exists(cfg_path(wd)):
+                return jresp(self, {"ok": False, "error": "未切段"}, 400)
+            j = json.load(open(cfg_path(wd), encoding="utf-8"))
+            n = len(j.get("segments") or [])
+            if not (1 <= idx <= n):
+                return jresp(self, {"ok": False,
+                                    "error": f"段号越界（1~{n}）"}, 400)
+            if project_running(wd):
+                return jresp(self, {"ok": False, "error": "有任务在跑，先停下再改首帧"}, 400)
+            ok, res = ensure_source_first(wd, idx)
+            if not ok:
+                return jresp(self, {"ok": False, "error": res}, 400)
+            try:
+                ok, msg = set_seg_first_frame(wd, idx, res, "source")
+            except Exception:
+                return jresp(self, {"ok": False, "error": traceback.format_exc()[-800:]}, 500)
+            if not ok:
+                return jresp(self, {"ok": False, "error": msg}, 400)
+            append_log(log_path(wd), f"\n[first-frame] 段{idx} 首帧 ← 源片该段首帧（{msg}）\n")
+            return jresp(self, {"ok": True, "from": "源片首帧", "comfy_name": msg})
         if p == "/api/seg-first-from-prev":
             # 抽上一段成片的尾帧，锁成本段首帧（第 1 段没有上一段，前端不给按钮）
             film = data.get("film"); idx = int(data.get("idx", 0))
