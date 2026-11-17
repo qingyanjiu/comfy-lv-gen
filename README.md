@@ -109,8 +109,7 @@ h3-long-video-repo/
 ├── api_workflows/               API 格式工作流（一采 / 二采）
 ├── example_workflows/           可直接拖进 ComfyUI 的示例
 │   ├── H3-Long-Video-Director.json   Director 节点用的示例
-│   ├── deprecated/                  已废弃（Qwen2.1 系列，仅存档）
-│   └── lab/                         实验性工作流
+│   └── lab/                         实验性工作流（`lab_posefix.py` 仍在用）
 ├── docs/                        规范文档（见文末索引）
 ├── tests/                       pytest（图结构 / 面板单元）
 └── _trash/                      手动清理出来的旧备份（已 gitignore，可随时挪回）
@@ -253,7 +252,8 @@ python remake_panel.py --standalone
 | [`docs/参数配置.md`](docs/参数配置.md) | 调参的人 | 四层配置（节点控件 / 故事板 JSON / `config.json` / `advanced_overrides`）的优先级 |
 | [`docs/模型手册/`](docs/模型手册/) | 维护者 | 模型提示词与配置手册、采样器组合指南、H3 提示词案例库 |
 | [`skill/SKILL.md`](skill/SKILL.md) | agent | 流水线作业手册：三层结构、三道人工确认点、失败码与修法 |
-| [`docs/deprecated/`](docs/deprecated/) | — | 旧链路文档，仅作历史参考 |
+| [`docs/工作台服务架构.md`](docs/工作台服务架构.md) | 改面板的人 | 单端口三入口、资产双份、同步机制 |
+| [`docs/experiments/`](docs/experiments/) | 维护者 | 未验证的探索性规范（**不要当定论用**） |
 
 分镜体检：
 

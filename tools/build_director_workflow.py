@@ -359,16 +359,12 @@ def main():
         json.dumps(workflow, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    single_clip = build_single_clip_workflow(config)
-    single_clip_output = (
-        ROOT / "example_workflows" / "deprecated" / "H3-Single-Clip-FirstLastRefs.json"
-    )
-    single_clip_output.write_text(
-        json.dumps(single_clip, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    # 单镜头首尾帧工作流（H3-Single-Clip-FirstLastRefs）已于 2026-11-17 随
+    # example_workflows/deprecated/ 一起删除：那条链路只做固定机位端点形变，
+    # 早已被 SelfLift 逐段接续取代，文件本身也不再进版本库。
+    # build_single_clip_workflow() 保留 —— tests/test_graph.py 仍用它断言图结构，
+    # 只是不再往磁盘写文件（写了就会把刚删掉的 deprecated/ 目录重新长出来）。
     print(output)
-    print(single_clip_output)
 
 
 if __name__ == "__main__":

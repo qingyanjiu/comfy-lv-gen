@@ -49,9 +49,12 @@ agent   ：跑工序 · 读质检 · 按失败码修参数重跑
 禁坏种子 100000、`push → resume` 出片。**不存在「纯文本专用出帧链路」**。
 **这条链路现在只在需要逐像素锁死背景时用**；普通长视频不要绕回它。
 
-**旧链路工作流 / 文档已归档弃用（2026-11-11 清理）**：Qwen2.1 / Qwen2.5 双图关键帧系列、
-`H3-Single-Clip-FirstLastRefs.json`、以及对应的旧文档，已全部移到
-`h3-long-video-repo/example_workflows/deprecated/` 与 `docs/deprecated/` 并标记弃用；
+**旧链路工作流 / 文档已彻底删除（2026-11-11 归档 → 2026-11-17 清出仓库）**：
+Qwen2.1 / Qwen2.5 双图关键帧系列、`H3-Single-Clip-FirstLastRefs.json`、以及对应的旧文档
+（原 `example_workflows/deprecated/` 与 `docs/deprecated/`）已不再进版本库。
+删前确认过：`pipeline.py` 里那 7 处引用拼的都是 `example_workflows/` 根目录路径，
+而这些文件只在 `deprecated/` 下 —— 也就是说那条链路**早就断链跑不通了**，删掉不影响任何活路径。
+想找回旧文件看 `_trash/cleanup-20261117/`（本地，已 gitignore）。
 `.bak` 本地备份按 `.gitignore`（`*.bak` / `*.bak-*` / `*.capsule-bak`）规则已删除。
 用户 UI 里的旧工作流（含「`minimax h3二采工作流（改自黑鹤大佬）.json`」）也一并移到
 `user/default/workflows/deprecated/`。
