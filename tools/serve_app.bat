@@ -23,9 +23,11 @@ if not defined PY goto nopy
 if not exist "%SERVE%" goto noserve
 
 echo.
-echo   SelfLift studio  (standalone service)
+echo   H3 studio  (standalone service, ONE port for both panels)
 echo   python : %PY%
-echo   url    : http://127.0.0.1:8900/   (override: --port 8901)
+echo   entry  : http://127.0.0.1:8900/                    (launcher, pick one)
+echo            http://127.0.0.1:8900/remake               (remake director)
+echo            http://127.0.0.1:8900/h3-long-video/app    (SelfLift)
 echo   ComfyUI is used as the renderer only (default 127.0.0.1:8188).
 echo   Close this window or press Ctrl+C to stop.
 echo.

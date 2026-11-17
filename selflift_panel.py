@@ -52,7 +52,7 @@ LOCAL_PARAM_KEYS = ("aspect_ratio", "megapixels", "quality", "seconds", "audio",
 
 # 改了路由/参数（比如新增 --cast）就把这个标记一起改掉，并且**重启出片服务**。
 # 前端 web/selflift_app.html 里的 UI_BUILD 必须写成同一个值，否则页面会提示进程是旧版。
-_PANEL_BUILD = "2026-11-15c-engine"
+_PANEL_BUILD = "2026-11-17r-singleport"
 
 
 def _has_local(v):
@@ -1441,23 +1441,6 @@ def register_routes(routes, web):
                 headers={"Content-Disposition":
                          'attachment; filename="selflift_content.json"; '
                          f"filename*=UTF-8''{quote(name + '_内容.json')}"})
-        except Exception as exc:  # noqa: BLE001
-            return web.json_response(
-                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)
-
-    @routes.get("/h3-long-video/selflift/global")
-    async def selflift_global_get(request):
-        """查看唯一一份全局约束配置（head/tail 全文 + 参数），网页只读展示。"""
-        try:
-            cfg = _global_cfg()
-            return web.json_response({
-                "ok": True,
-                "path": str(_schema_module().GLOBAL_CFG_PATH),
-                "params": {k: v for k, v in cfg.items()
-                           if k not in ("head", "tail", "workflow")},
-                "workflow": cfg.get("workflow", ""),
-                "head": cfg["head"], "tail": cfg["tail"],
-            })
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=400)

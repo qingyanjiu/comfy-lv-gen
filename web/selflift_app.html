@@ -188,6 +188,7 @@
   <span id="filmUpdated" title="本片最近改动时间"></span>
   <div class="cfg" id="cfgLabel">未选择片</div>
   <button id="manualBtn" title="打开完整使用手册（新窗口）">使用手册</button>
+  <a href="/remake" style="text-decoration:none"><button title="切到视频复刻导演台（同一个服务，不同端口都不用）">复刻台</button></a>
   <button id="reload">刷新</button>
 </header>
 
@@ -2813,7 +2814,7 @@ $("mOk").addEventListener("click", async () => {
 });
 
 /* 版本对齐：Python 路由改了不重启就等于没改，这里让旧进程自己暴露出来 */
-const UI_BUILD = "2026-11-15c-engine";
+const UI_BUILD = "2026-11-17r-singleport";
 (async function checkBackendBuild() {
   try {
     const r = await getJSON("/h3-long-video/selflift/build");

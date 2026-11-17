@@ -1,14 +1,19 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-remake_panel.py — 视频复刻导演台（独立服务，端口 8901）
+remake_panel.py — 视频复刻导演台（黑鹤二采 · 切段 · 链式首帧）
 
-完全独立于原 selflift_panel.py（8900）；不读写原面板任何文件。
 功能：上传视频 → 切段自动出卡片 → 每段单独生成 / 一键全片 / 单段重生成 → 拼接。
 段间用链式首帧：前一段生成的尾帧自动当下一段首帧（黑鹤 AddGuide frame0 硬锚）。
 
-启动：python remake_panel.py        （默认 0.0.0.0:8901）
-页面：http://127.0.0.1:8901/
+**启动方式**：本文件已并入 H3 工作台，不再单独占一个端口。
+    <ComfyUI venv>/python.exe tools/serve_app.py --port 8900
+    → http://127.0.0.1:8900/remake
+
+挂载方式见 `tools/remake_bridge.py`：那里用伪 handler 把 aiohttp 的 request
+适配成本文件 `H` 期望的形状，所以下面 600 行业务代码一行都不用改。
+直接 `python remake_panel.py` 只会打印提示并退出；确实要单开本服务调试时加
+`--standalone`（此时才用 0.0.0.0:8901）。
 """
 import os, sys, json, time, shutil, subprocess, threading, traceback, re
 import urllib.request
@@ -37,8 +42,10 @@ FFMPEG = "D:/Comfy-Desktop/tools/ffmpeg/bin/ffmpeg"
 FFPROBE = "D:/Comfy-Desktop/tools/ffmpeg/bin/ffprobe"
 PY = sys.executable
 FPS = 24
+# 合并模式下由 tools/serve_app.py 覆盖成实际监听端口（8900），
+# /api/version 靠它报真实端口；--standalone 时才用这里的 8901。
 PORT = 8901
-UI_BUILD = "2026-11-17p-videoclone"
+UI_BUILD = "2026-11-17r-singleport"
 COMFY = "http://127.0.0.1:8188"
 
 os.makedirs(ROOT, exist_ok=True)
@@ -1322,6 +1329,7 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
         if p == "/api/version":
+            # PORT 在合并模式下由 serve_app 覆盖成实际监听端口（见 tools/serve_app.py）
             return jresp(self, {"build": UI_BUILD, "runner": RUNNER, "port": PORT})
         if p == "/api/films":
             films = []
@@ -1956,7 +1964,19 @@ def reconcile_stale_jobs():
 
 
 if __name__ == "__main__":
-    print(f"[remake-panel] http://127.0.0.1:{PORT}/  build={UI_BUILD}", flush=True)
+    # 默认不再单开一个端口：复刻台已经并进出片台（tools/serve_app.py），
+    # 一个服务 8900 同时提供 /remake 和 /h3-long-video/app。
+    # 需要单独调试本文件时才加 --standalone。
+    if "--standalone" not in sys.argv:
+        print(
+            "[remake-panel] 已并入 H3 工作台，请启动：\n"
+            "    <ComfyUI venv>/python.exe tools/serve_app.py --port 8900\n"
+            "  然后打开 http://127.0.0.1:8900/remake\n"
+            "  （确实要单开本服务调试，加 --standalone）", flush=True)
+        raise SystemExit(0)
+
+    print(f"[remake-panel] standalone http://127.0.0.1:{PORT}/  build={UI_BUILD}",
+          flush=True)
     try:
         reconcile_stale_jobs()
     except Exception:
