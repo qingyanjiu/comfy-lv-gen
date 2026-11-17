@@ -132,6 +132,10 @@ header .nav{font-size:12px;color:#a0aec0}
 .sel-wide{min-width:280px}
 .in-mid{width:230px}
 .in-num{width:70px}
+/* 画质行（一采 MP / 二采倍数）：两个数字框 + 预估，桌面一行，手机上分两行不挤 */
+.qrow{gap:8px;margin:0 0 6px;padding:8px 10px;background:#f7fafc;border:1px solid var(--bd);border-radius:6px}
+.qrow input.in-num{width:76px}
+#resEst{font-weight:600;color:var(--acc)}
 /* 下载成片：和「打开成片」并排的主操作（样式见上面 a.dlbtn） */
 .tlstrip{touch-action:pan-y}   /* 手机上横向拖动=拖时间轴，纵向仍然滚页面 */
 
@@ -224,6 +228,17 @@ header .nav{font-size:12px;color:#a0aec0}
   .hint{word-break:break-word}
   .hint code{word-break:break-all}
   #drop{padding:20px}
+
+  /* 画质行：上面的通用规则 `.row>label{flex:1 1 100%}` 会把「画质 / 一采 /
+     MP / 二采放大 / 倍 / 预估」拆成 6 行竖排，一个数字框占一整行太蠢。
+     这里整行改成 flex-wrap 的自适应：两个 label+input 各占一半宽度，
+     预估文字单独占一行（它最长，挤在半行里会折成 3 行）。
+     min-width:0 是必须的 —— input 默认 min-width:auto，flex 子项不肯缩到
+     内容宽以下，960px 撑不下就会横向溢出（安卓上表现为整页左右晃动）。 */
+  .qrow{flex-wrap:wrap;gap:6px 8px}
+  .qrow>label{flex:0 0 auto;margin:0;font-size:13px}
+  .qrow input.in-num{flex:1 1 0;width:0;min-width:52px;max-width:110px}
+  .qrow #resEst{flex:1 1 100%;order:9;font-size:12px;line-height:1.5}
 }
 /* 只有真正超窄的屏（SE/mini 一代 320、安卓小屏 360）才让卡片按钮各占一行。
    断点别设 400 —— iPhone 12/13/14/15 都是 390、Pro 是 393，全都落在 400 以内，
@@ -309,6 +324,20 @@ header .nav{font-size:12px;color:#a0aec0}
     </div>
     <div class="hint" id="splitTarget" style="margin:-4px 0 10px"></div>
 
+    <!-- 画质：一采 MP + 二采放大倍数。放两个 tab 之外，因为两套切段方式共用同一组
+         画质参数（切段时写进 segments.json，之后 build_wf 覆盖到 8/151 号节点）。 -->
+    <div class="row qrow">
+      <label style="font-weight:600;color:#2d3748">画质</label>
+      <label for="mpIn">一采</label>
+      <input type="number" id="mpIn" class="in-num" value="0.3" min="0.05" max="2" step="0.05">
+      <span class="sel">MP</span>
+      <label for="upIn">二采放大</label>
+      <input type="number" id="upIn" class="in-num" value="1.5" min="1" max="3" step="0.1">
+      <span class="sel">倍</span>
+      <span class="sel" id="resEst"></span>
+    </div>
+    <div class="hint" id="resHint" style="margin-top:0"></div>
+
     <div class="tabpane on" id="paneEven">
       <div class="row">
         <label>每段秒数</label><input type="number" id="segsec" class="in-num" value="5" min="2" max="30" step="0.5">
@@ -318,8 +347,6 @@ header .nav{font-size:12px;color:#a0aec0}
         <button id="btnSplit" class="pri" disabled>切段并建片</button>
       </div>
       <div class="hint" id="splitinfo"></div>
-      <div class="hint" style="color:#975a16">二采：一采 0.2MP → 放大 2 倍 → 精修（质量高、约 3 分钟/段，成片 ~736×416）。
-        关闭则直接出一采低清（约 368×208，快很多），适合先跑一遍看构图/动作对不对。</div>
       <div class="hint" style="color:#2c5282">保留原音：切段时把源视频音轨留在源段里，每段出片后由 ffmpeg 把该段原音贴回（人声/音乐/音效全保留）。
         音频从段首开始播，H3 比源段多出的约 0.28s 补静音，音调不变、不累积偏移。不走工作流，模型照旧只出画面。</div>
     </div>
@@ -531,6 +558,99 @@ function resetEvenParams(){
   $('#exact').checked=false;
 }
 
+// ---- 画质：一采 MP / 二采放大倍数 ----
+// 与 run_selflift.py 的 BC_MP_CAP / BC_DEFAULT_UPSCALE 保持同步。
+// 这里只算「页面上给用户看的预估」，真正夹取在 runner 的 build_wf 里做，
+// 所以即使这里漂移也只影响提示文字，不会让片子跑错。
+const RES_MP_CAP=0.4, RES_UP_BASE=1.5;
+// 后端算好的上限（/api/state 的 bc_mp_cap），按倍数缓存。本地 mpCapFor 只是为了
+// 「用户还没松手就即时显示」，一旦后端给过同倍数的值，就以它为准 —— 两份公式
+// 迟早漂移，页面上的「会不会被压」必须跟真正跑片的那份一致。
+let SRV_CAP={scale:null, cap:null};
+function mpCapFor(scale){
+  const s=Math.max(Number(scale)||RES_UP_BASE,1);
+  if(SRV_CAP.cap!=null&&Math.abs((SRV_CAP.scale||0)-s)<1e-6)return SRV_CAP.cap;
+  // 二采显存按倍数平方涨：cap = 0.4 × (1.5/scale)²，1.5 倍时正好回到 0.4（老片行为不变）
+  return Math.max(0.1,Math.min(RES_MP_CAP*Math.pow(RES_UP_BASE/s,2),RES_MP_CAP));
+}
+// 分辨率预估：w=sqrt(mp*1e6*ratio)，再按 32 对齐（节点 8 的 alignment=32）
+function estRes(mp,scale){
+  const ratio=16/9;
+  let w=Math.sqrt(Math.max(0,mp)*1e6*ratio), h=w/ratio;
+  const a1w=Math.round(w/32)*32, a1h=Math.round(h/32)*32;
+  const a2w=Math.round(w*scale/32)*32, a2h=Math.round(h*scale/32)*32;
+  return {a1w,a1h,a2w,a2h};
+}
+function updateResEst(){
+  const mp=parseFloat($('#mpIn').value)||0.3;
+  const up=parseFloat($('#upIn').value)||1.5;
+  const cap=mpCapFor(up);
+  const eff=Math.min(mp,cap);
+  const r=estRes(eff,up);
+  // 实际生效值可能被压：页面上必须同时给出「你配的」和「实际会用的」，否则
+  // 用户设了 0.4 却得到 0.225 会以为设置没生效（2026-11-18 踩过）。
+  $('#resEst').textContent=`→ 成片约 ${r.a2w}×${r.a2h}（一采 ${r.a1w}×${r.a1h}）`;
+  const clamped=eff<mp-1e-9;
+  const h=$('#resHint');
+  if(clamped){
+    h.textContent=`⚠ ${up} 倍时一采安全上限是 ${cap}MP（二采显存按倍数平方涨），`
+      +`你配的 ${mp}MP 跑片时会自动压到 ${cap}MP。`;
+    h.style.color='#975a16';
+  }else{
+    h.textContent=`二采：一采 ${eff}MP → 放大 ${up} 倍 → 精修（约 3 分钟/段）。`
+      +`关掉二采只出一采低清（${r.a1w}×${r.a1h}，快很多），适合先跑一遍看构图/动作对不对。`;
+    h.style.color='';
+  }
+  // 关键事实：安全上限是 cap = 0.4×(1.5/scale)²，所以 cap×scale² 恒等于 0.9MP。
+  // 也就是说 scale ≥ 1.5 时二采成片分辨率**被显存锁死在 1280×704**，再往上调
+  // 只是把重建负担从一采推给放大模型，一采反而更糊。不写清楚用户会以为
+  // 「拉到 3 倍更清晰」，实际是白等 3 倍时间换同样的分辨率。
+  // scale < 1.5 时 cap 被 BC_MP_CAP=0.4 封顶，成片反而更小，这里不提。
+  if(up>RES_UP_BASE+1e-9){
+    const base=estRes(RES_MP_CAP,RES_UP_BASE);
+    h.textContent+=`　注意：成片分辨率已被显存上限锁死（${up} 倍与 1.5 倍都约 `
+      +`${base.a2w}×${base.a2h}），调高倍数不会更清晰，只会让一采更糊、更慢。`;
+  }
+}
+$('#mpIn').oninput=updateResEst;
+$('#upIn').oninput=updateResEst;
+$('#upIn').onchange=()=>{
+  updateResEst();
+  // 已经建过片的话，改画质要落到 cfg（否则只是页面上的数字，跑片还是老值）
+  if(FILM)pushResCfg();
+};
+$('#mpIn').onchange=()=>{ updateResEst(); if(FILM)pushResCfg(); };
+function pushResCfg(){
+  if(!FILM)return;
+  const mp=parseFloat($('#mpIn').value)||0.3, up=parseFloat($('#upIn').value)||1.5;
+  fetch('/api/set-res',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,megapixels:mp,upscale:up})}).then(r=>r.json()).then(j=>{
+      if(j.error){$('#resHint').textContent='✗ '+j.error;$('#resHint').style.color='var(--err)';return}
+      // 后端返回的 cap 是跑片真正会用的上限，缓存下来供 mpCapFor 使用
+      if(j.cap!=null)SRV_CAP={scale:Number(j.upscale)||up, cap:Number(j.cap)};
+      // 后端可能夹取：把实际生效值写回输入框旁边的提示，不回写输入框（保留用户意图）
+      updateResEst();
+      // 画质变了 = 全片画面都变，后端已把已出的段全标 stale。不告诉用户的话，
+      // 卡片上突然多出一排「需重出」，会以为是 bug。
+      // changed 为空说明值没变（点一下输入框也会触发 change），这时别说「已落盘」。
+      const sn=Number(j.stale_count)||0;
+      const ch=(j.changed||[]).length;
+      if(!ch){
+        $('#resHint').textContent+=`　（值与已存一致，未改动）`;
+      }else{
+        $('#resHint').textContent+=sn
+          ?`　✓ 已落盘，${sn} 段已出成片标为需重出（画质变了）。`
+          :`　✓ 已落盘（之后出的段生效）。`;
+      }
+    }).catch(e=>{$('#resHint').textContent='✗ '+e;$('#resHint').style.color='var(--err)'});
+}
+function syncResInputs(mp,up){
+  if(mp!=null)$('#mpIn').value=mp;
+  if(up!=null)$('#upIn').value=up;
+  updateResEst();
+}
+updateResEst();
+
 fetch('/api/version').then(r=>r.json()).then(j=>$('#build').textContent=j.build).catch(()=>{});
 
 // ---- 项目列表 / 打开（持久化恢复） ----
@@ -699,6 +819,11 @@ function openProject(name){
     $('#exact').checked=!!src.exact;
     const tp=stg.two_pass!==false;
     $('#twopass').checked=tp; $('#tpSwitch').value=tp?'1':'0';
+    // 画质：从本片 cfg 回填（老片没有 bc_upscale 字段 → 用 base 的 1.5）
+    // build_project 的 settings 里没有 cap，这里按回填到的倍数先清掉旧缓存，
+    // 让 syncResInputs 用本地公式算；紧接着的第一次 /api/state 轮询会拿后端值覆盖。
+    SRV_CAP={scale:null, cap:null};
+    syncResInputs(stg.megapixels, stg.upscale);
     $('#anchorFirst').checked=!!stg.anchor_first;
     $('#pubprompt').value=pj.prompt||'';
     $('#promptSrc').textContent='（本片已保存）';
@@ -999,6 +1124,8 @@ function afterSplit(j, msg, mode){
   $('#tpSwitch').value=$('#twopass').checked?'1':'0';
   $('#tpSummary').textContent='';
   $('#projInfo').textContent=`${j.n} 段 · 配置已落盘`;
+  // 切段时带了画质参数 → 后端已写进 cfg，这里让提示文字跟上（不是只改页面数字）
+  updateResEst();
   if(MODE==='even'){
     // 按秒切完：时间轴回显实际切点（只读），但不抢 tab —— 停在哪一页由用户自己决定
     if(j.cuts&&j.cuts.length>1){CUTS=j.cuts.slice();TL_LOCK=true;renderTimeline();applyLockUI()}
@@ -1035,6 +1162,8 @@ $('#btnGenCuts').onclick=()=>{
       two_pass:$('#tlTwoPass').checked,prompt:$('#pubprompt').value,
       refs:REFS.map(r=>({path:r.path,comfy_name:r.comfy_name,label:r.label})),
       anchor_first:$('#anchorFirst').checked,
+      megapixels:parseFloat($('#mpIn').value)||0.3,
+      upscale:parseFloat($('#upIn').value)||1.5,
       keep_audio:$('#tlKeepAudio').checked})})
   .then(r=>r.json()).then(j=>{
     $('#btnGenCuts').disabled=false;
@@ -1059,6 +1188,8 @@ $('#btnSplit').onclick=()=>{
                          two_pass:$('#twopass').checked,prompt:$('#pubprompt').value,
                          refs:REFS.map(r=>({path:r.path,comfy_name:r.comfy_name,label:r.label})),
                          anchor_first:$('#anchorFirst').checked,
+                         megapixels:parseFloat($('#mpIn').value)||0.3,
+                         upscale:parseFloat($('#upIn').value)||1.5,
                          keep_audio:$('#keepAudio').checked})})
   .then(r=>r.json()).then(j=>{
     $('#btnSplit').disabled=false;
@@ -1129,6 +1260,27 @@ function pollNow(){
       $('#tlKeepAudio').checked=!!st.audio_keep;
     }
     if(st.audio_fit)$('#audioFit').value=st.audio_fit;
+    // 后端给的显存上限（bc_mp_cap）：优先于本地公式。放在回填之前，让下面的
+    // updateResEst 一上来就用后端值，避免「先显示本地算的、再跳成后端算的」。
+    if(st.bc_mp_cap!=null&&st.upscale!=null){
+      SRV_CAP={scale:Number(st.upscale), cap:Number(st.bc_mp_cap)};
+    }
+    // 画质回填：只在「输入框没被聚焦 + 值确实不一样」时才写。
+    // 每 2s 轮询一次，无条件写会把用户正在输入的数字改掉（比如刚删成空想输 0.5）。
+    if(st.megapixels!=null||st.upscale!=null){
+      const ae=document.activeElement;
+      const busy=(ae&&(ae.id==='mpIn'||ae.id==='upIn'));
+      if(!busy){
+        let dirty=false;
+        if(st.megapixels!=null&&Math.abs((parseFloat($('#mpIn').value)||0)-st.megapixels)>1e-6){
+          $('#mpIn').value=st.megapixels; dirty=true;
+        }
+        if(st.upscale!=null&&Math.abs((parseFloat($('#upIn').value)||0)-st.upscale)>1e-6){
+          $('#upIn').value=st.upscale; dirty=true;
+        }
+        if(dirty)updateResEst();
+      }
+    }
     // 二采标识汇总（按已完成段实际用的开关统计）
     const doneSegs=st.segments.filter(s=>s.status==='done');
     const onN=doneSegs.filter(s=>s.two_pass===true).length;
@@ -1205,8 +1357,8 @@ function syncFinal(st){
 }
 function statusCls(s){return s.status+(s.stale&&s.status==='done'?' stale':'')}function statusTxt(s){return s.stale&&s.status==='done'?'需重出':({pending:'待生成',running:'生成中',done:'完成',error:'失败'}[s.status]||s.status)}
 function tpTag(s){
-  if(s.two_pass===true)return '<span class="tp on" title="这一段是开启二采生成的（一采→放大2倍→精修）">二采</span>';
-  if(s.two_pass===false)return '<span class="tp off" title="这一段是关闭二采生成的（一采 368×208 低清）">一采</span>';
+  if(s.two_pass===true)return '<span class="tp on" title="这一段是开启二采生成的（一采 → 按倍数放大 → 精修），倍数见切段面板的「画质」">二采</span>';
+  if(s.two_pass===false)return '<span class="tp off" title="这一段是关闭二采生成的（只出一采低清），适合先看构图/动作对不对">一采</span>';
   if(s.status==='done')return '<span class="tp" title="这段在加标识之前生成，没记录当时的二采开关">未记录</span>';
   return '';
 }

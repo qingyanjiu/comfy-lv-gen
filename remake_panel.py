@@ -26,6 +26,26 @@ RUNNER = os.path.join(SKILL_SCRIPTS, "run_selflift.py")
 PROMPT_FILE = os.path.join(HERE, "assets", "remake_prompt.txt")
 HTML_FILE = os.path.join(HERE, "web", "remake_app.html")
 BLACKCRANE_BASE = os.path.join(os.path.dirname(SKILL_SCRIPTS), "assets", "H3-SelfLift_黑鹤二采.base.json")
+
+# 一采 MP / 二采倍数的显存约束。**与 run_selflift.py 的 BC_DEFAULT_UPSCALE /
+# BC_MP_CAP 保持同步**：这里只用于页面上的「会不会被压」预估提示，真正的夹取
+# 在 run_selflift.build_wf 里做，所以即使这里漂移也只影响提示文字，不影响跑片。
+# 不直接 import run_selflift 是因为它有模块级副作用（P_API、QA_DIR 等），
+# 面板只在 web 请求里用到这两个数，没必要为它拉起整个 runner 模块。
+BC_DEFAULT_UPSCALE = 1.5
+BC_MP_CAP = 0.4
+# 一采 MP 缺省值：**必须等于 run_selflift.BC_DEFAULT_MEGAPIXELS(0.2)**，不是 0.3。
+# build_wf 对黑鹤的兜底就是 `cfg.get("megapixels", BC_DEFAULT_MEGAPIXELS)`，
+# 老片没有 megapixels 字段时实际按 0.2 跑；面板若回 0.3，页面显示的和跑出来的
+# 就不是一个东西（2026-11-18 核对时发现两边差 0.1MP）。do_split 新片写 0.3，
+# 那是新片自己的 cfg 值，与这里的「缺失时兜底」是两回事。
+BC_DEFAULT_MEGAPIXELS = 0.2
+
+
+def bc_mp_cap_for(scale):
+    """二采显存按倍数平方增长：cap = 0.4 × (1.5 / scale)²，见 run_selflift 同名函数。"""
+    s = max(float(scale or BC_DEFAULT_UPSCALE), 1.0)
+    return round(max(0.1, min(BC_MP_CAP * (BC_DEFAULT_UPSCALE / s) ** 2, BC_MP_CAP)), 3)
 # 项目根目录：本面板的项目一律放这里，和 output/ 里其它流水线产物分开
 ROOT = "D:/Comfy-Desktop/video-clone"
 # 老根目录：早期版本把项目建在 output/ 下，仍要能读、能一键迁移
@@ -45,7 +65,7 @@ FPS = 24
 # 合并模式下由 tools/serve_app.py 覆盖成实际监听端口（8900），
 # /api/version 靠它报真实端口；--standalone 时才用这里的 8901。
 PORT = 8901
-UI_BUILD = "2026-11-17t-header-sticky"
+UI_BUILD = "2026-11-18b-res-config"
 COMFY = "http://127.0.0.1:8188"
 
 os.makedirs(ROOT, exist_ok=True)
@@ -224,6 +244,26 @@ def project_root(wd):
 
 def cfg_path(wd):
     return os.path.join(wd, "segments.json")
+
+
+def _cfg_res_of(wd):
+    """读片配置里的一采 MP / 二采倍数（返回的是**实际会生效的值**）。
+
+    state 里**不重复存**这两个值（只存 two_pass / anchor_first），因为它们是
+    run_selflift 跑片时读 cfg 的真源，存两处必然漂移。
+
+    缺省回落与 run_selflift 保持一致：老片没有 bc_upscale 字段时，实际跑的是
+    base 模板里的 1.5 倍，所以这里也返回 1.5 —— 页面上必须显示「真正会用的值」，
+    给 null 会让输入框停在别处，用户以为倍数没设。megapixels 缺省用
+    BC_DEFAULT_MEGAPIXELS(0.2)，与 build_wf 的兜底同一来源。读失败返回空 dict，
+    调用方用 .get() 拿 None。
+    """
+    try:
+        j = json.load(open(cfg_path(wd), encoding="utf-8"))
+    except Exception:
+        return {}
+    return {"megapixels": j.get("megapixels") or BC_DEFAULT_MEGAPIXELS,
+            "bc_upscale": j.get("bc_upscale") or BC_DEFAULT_UPSCALE}
 
 
 def state_path(wd):
@@ -432,6 +472,7 @@ def build_project(wd):
     mode = st.get("mode") or ("manual" if cuts else "even")
     if not cuts and mode == "manual":
         mode = "even"
+    _res = _cfg_res_of(wd)   # 一采 MP / 二采倍数只在 cfg 里，state 不重复存
     return {
         "schema": 1,
         "app": "remake_panel",
@@ -451,6 +492,9 @@ def build_project(wd):
         "settings": {
             "two_pass": bool(st.get("two_pass", True)),
             "anchor_first": bool(st.get("anchor_first", True)),
+            # 一采 MP / 二采倍数：从 cfg 现读（state 不存这两个，避免两处漂移）
+            "megapixels": _res.get("megapixels"),
+            "upscale": _res.get("bc_upscale"),
         },
         "prompt": prompt,
         "refs": st.get("user_refs") or [],
@@ -1137,7 +1181,8 @@ def h3_seconds(dur):
 
 
 def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
-             anchor_first=True, cuts=None, fps=None, keep_audio=None):
+             anchor_first=True, cuts=None, fps=None, keep_audio=None,
+             megapixels=None, upscale=None):
     """切段建片。
 
     cuts 为帧号列表（含起点与终点，如 [0, 120, 288, 336]）时按手工切点切，
@@ -1145,6 +1190,10 @@ def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
 
     keep_audio：切出的源段是否保留音轨（None=源视频有音轨就保留）。
     源段音轨是「出片后贴回原音」的唯一素材，丢了找不回来，所以默认保留。
+
+    megapixels / upscale：一采百万像素与二采放大倍数。None=用默认值。
+    两者是耦合的——二采显存按倍数平方涨，所以倍数越大一采 MP 上限越低，
+    实际夹取在 run_selflift.build_wf 里做（这里只存用户意图，不预先改写）。
 
     注意：切段/重建一律写新根目录 ROOT。老目录里同名项目不动（要搬用 migrate_project），
     避免「重建老项目」时把结果写回 output/ 造成两份。"""
@@ -1273,7 +1322,12 @@ def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
         "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
         "fps": FPS, "seconds": round(h3_seconds(actual)[0], 4),
         "length": h3_seconds(actual)[1],
-        "megapixels": 0.3, "aspect_ratio": "16:9 (Widescreen)", "quality": "high",
+        "megapixels": float(megapixels or 0.3), "aspect_ratio": "16:9 (Widescreen)",
+        "quality": "high",
+        # 二采放大倍数：以前硬编码在 base 工作流（151 号 FloatConstant=1.5），
+        # 页面上写「放大 2 倍」但其实从没生效过。现在由这里写入 cfg，
+        # build_wf 会覆盖到 151 节点上。
+        "bc_upscale": float(upscale or 1.5),
         "audio": "off", "chain_first_frame": True, "join_mode": "cut",
         # 保留原音：出片后把源段音轨贴回（用户 2026-11-17 定）。
         # audio=off 只管模型自推的声音；原音走 ffmpeg 后处理，不进工作流。
@@ -1452,6 +1506,16 @@ class H(BaseHTTPRequestHandler):
                     # 保留原音开关（片级）
                     st["audio_keep"] = bool(j.get("audio_keep"))
                     st["audio_fit"] = j.get("audio_fit") or "hold"
+                    # 画质（一采 MP / 二采倍数）：从 cfg 现读，页面用它回填输入框。
+                    # state 里不存这两个，只在这里透传，避免两处漂移。
+                    # 缺省回落与 run_selflift 一致（老片实际跑的就是 1.5 倍），
+                    # 返回 null 会让页面输入框停在别处，用户以为没设过。
+                    st["megapixels"] = j.get("megapixels") or BC_DEFAULT_MEGAPIXELS
+                    st["upscale"] = j.get("bc_upscale") or BC_DEFAULT_UPSCALE
+                    # 安全上限由后端算一份给前端用：前端虽然有一份同构的 JS 实现
+                    # （mpCapFor），但两份公式迟早漂移，页面上的「会不会被压」
+                    # 提示应该以真正跑片的这份为准。
+                    st["bc_mp_cap"] = bc_mp_cap_for(st["upscale"])
                 except Exception:
                     pass
             # 每段实际有没有音轨：卡片上标「原音已贴 / 无音轨」
@@ -1743,7 +1807,9 @@ class H(BaseHTTPRequestHandler):
                 st = do_split(name, src, seg, exact, prompt,
                               two_pass=bool(data.get("two_pass", True)),
                               user_refs=user_refs, anchor_first=anchor,
-                              keep_audio=data.get("keep_audio"))
+                              keep_audio=data.get("keep_audio"),
+                              megapixels=data.get("megapixels"),
+                              upscale=data.get("upscale"))
             except Exception:
                 return jresp(self, {"error": traceback.format_exc()[-1200:]}, 500)
             return jresp(self, {"ok": True, "film": name, "n": st["n"],
@@ -1775,7 +1841,9 @@ class H(BaseHTTPRequestHandler):
                               two_pass=bool(data.get("two_pass", True)),
                               user_refs=user_refs, anchor_first=anchor,
                               cuts=cuts, fps=data.get("fps"),
-                              keep_audio=data.get("keep_audio"))
+                              keep_audio=data.get("keep_audio"),
+                              megapixels=data.get("megapixels"),
+                              upscale=data.get("upscale"))
             except Exception:
                 return jresp(self, {"error": traceback.format_exc()[-1200:]}, 500)
             return jresp(self, {"ok": True, "film": name, "n": st["n"],
@@ -1961,6 +2029,76 @@ class H(BaseHTTPRequestHandler):
             st = load_state(wd); st["two_pass"] = tp; save_state(wd, st)
             write_project(wd)
             return jresp(self, {"ok": True, "two_pass": tp})
+        if p == "/api/set-res":
+            # 一采 MP / 二采放大倍数（写 cfg；下次生成生效，不影响已生成的段）。
+            # 两者耦合：二采显存按倍数平方涨，所以倍数越大一采上限越低。
+            # 这里只做范围校验并存用户意图，实际夹取在 run_selflift.build_wf，
+            # 返回 cap 让前端提示「配的 MP 会不会被压」。
+            film = data.get("film")
+            wd = work_dir(film)
+            cp = cfg_path(wd)
+            if not os.path.exists(cp):
+                return jresp(self, {"error": "未切段"}, 400)
+            j = json.load(open(cp, encoding="utf-8"))
+            changed = []
+            n_stale = 0
+            # 只有「值真的变了」才算改动。前端的 change 事件在「点一下输入框再
+            # 点别处」「按回车」时也会触发，值没变；若照样落盘 + 全片标 stale，
+            # 用户只是点了一下就把所有已出段变成需重出（2026-11-18 实测踩到）。
+            _old_mp = float(j.get("megapixels") or BC_DEFAULT_MEGAPIXELS)
+            _old_up = float(j.get("bc_upscale") or BC_DEFAULT_UPSCALE)
+            mp = data.get("megapixels")
+            if mp is not None:
+                try:
+                    mp = float(mp)
+                except (TypeError, ValueError):
+                    return jresp(self, {"error": "megapixels 需要数字"}, 400)
+                if not 0.05 <= mp <= 2.0:
+                    return jresp(self, {"error": "一采 MP 需在 0.05~2.0 之间"}, 400)
+                if abs(round(mp, 3) - _old_mp) > 1e-9:
+                    j["megapixels"] = round(mp, 3)
+                    changed.append(f"一采 {j['megapixels']}MP")
+            up = data.get("upscale")
+            if up is not None:
+                try:
+                    up = float(up)
+                except (TypeError, ValueError):
+                    return jresp(self, {"error": "upscale 需要数字"}, 400)
+                if not 1.0 <= up <= 3.0:
+                    return jresp(self, {"error": "二采倍数需在 1.0~3.0 之间"}, 400)
+                if abs(round(up, 2) - _old_up) > 1e-9:
+                    j["bc_upscale"] = round(up, 2)
+                    # 与 runner 的 cmd_set --bc-upscale 保持同一套时间戳：倍数单独留痕，
+                    # 便于以后区分「是改了倍数还是改了一采 MP」
+                    j["upscale_updated_at"] = time.time()
+                    changed.append(f"二采 {j['bc_upscale']}x")
+            if changed:
+                # 分辨率/倍数一变，全片画面都变了 → 打时间戳让所有段标 stale
+                j["res_updated_at"] = time.time()
+                json.dump(j, open(cp, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+                # 光写 cfg 时间戳不够：卡片上的「需重出」读的是 state 里每段的
+                # stale 标记（build_project 第 447 行），只写 cfg 会让页面看着还是
+                # 已完成、点了「续跑」也跳过这些段（run 里 skip_done 看 stale）。
+                # 一采 MP / 二采倍数改的是**全片**画面，所以所有已出段一律作废，
+                # 不像改提示词那样只标受影响的那段。
+                st = load_state(wd)
+                for s in st.get("segments") or []:
+                    if s.get("status") == "done":
+                        s["stale"] = True
+                        n_stale += 1
+                if n_stale:
+                    save_state(wd, st)
+                write_project(wd)
+            # 安全上限按新倍数重算，前端据此显示「实际会用多少」
+            scale = float(j.get("bc_upscale") or BC_DEFAULT_UPSCALE)
+            cap = bc_mp_cap_for(scale)
+            eff = min(float(j.get("megapixels") or BC_DEFAULT_MEGAPIXELS), cap)
+            return jresp(self, {"ok": True, "changed": changed,
+                                "megapixels": j.get("megapixels"),
+                                "upscale": j.get("bc_upscale"),
+                                "cap": cap, "effective_megapixels": eff,
+                                "stale_count": n_stale if changed else 0,
+                                "clamped": eff < float(j.get("megapixels") or 0)})
         if p == "/api/set-audio-keep":
             # 保留原音开关（写 cfg；下次出片生效，不影响已生成的段）
             film = data.get("film")

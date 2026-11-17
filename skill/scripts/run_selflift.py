@@ -53,6 +53,7 @@ WORKFLOW_BASES = {"selflift": DEFAULT_WORKFLOW, "blackcrane": BLACKCRANE_BASE}
 BC_PLATE = 313  # 黑鹤链路：全片空镜板挂到最后一张 ref_image 槽
 BC_FIRST = 311  # 黑鹤链路：上一段尾帧 → AddGuide 的 image
 BC_GUIDE = 320  # 核心 MiniMaxH3AddGuide：在 frame 0 追加 keyframe（不换条件节点）
+BC_UPSCALE = 151  # 黑鹤二采放大倍数：FloatConstant → 118(mode.scale) 的 scale
 BC_FIRST_FRAME = None  # build_wf 写入、_to_api_blackcrane 读取：本段是否接首帧
 # 唯一一份全局约束配置（约束层）。CLI import 与网页建片读的是同一个文件。
 GLOBAL_CFG_PATH = (
@@ -123,6 +124,20 @@ PROFILE_IDS = {
 def profile(cfg):
     """由 cfg.workflow 路径判断链路；老片没这个字段一律回落 selflift。"""
     return "blackcrane" if "黑鹤" in str(cfg.get("workflow") or "") else "selflift"
+
+
+def _bc_upscale_of(cfg):
+    """黑鹤二采放大倍数：读 cfg["bc_upscale"]，缺省回落模板值 1.5。
+
+    夹到 BC_UPSCALE_RANGE 内——这是显存约束，不是审美约束：倍数决定二采 latent
+    的 token 数（按平方涨），越界会直接 OOM，所以不允许配置文件绕过。
+    """
+    lo, hi = BC_UPSCALE_RANGE
+    try:
+        s = float(cfg.get("bc_upscale") or BC_DEFAULT_UPSCALE)
+    except (TypeError, ValueError):
+        s = BC_DEFAULT_UPSCALE
+    return round(max(lo, min(hi, s)), 2)
 
 
 def _ui2api(wf):
@@ -198,7 +213,30 @@ BC_DEFAULT_MEGAPIXELS = 0.2
 # 上限 0.4MP：0.4MP(864x480) x1.5 -> 1312x736，二采单块 N=41*23*52=49036，
 # 仍在内核 TOKEN_CEILING=74898 的 65%。再往上 0.5MP -> 1440x832 / N=60840(81%)，
 # 8GB 卡在 MiniMaxLowVRAMAttention head_chunks=4 下已到边缘，故封顶 0.4。
+# 注意这个上限是「按 1.5 倍放大」算出来的。倍数可配之后，二采的显存开销随
+# 倍数平方增长，所以真正的守门改成 _bc_mp_cap_for(scale)，见下。
 BC_MP_CAP = 0.4
+
+# 二采放大倍数：base 工作流里 151(FloatConstant) --link194--> 118(mode.scale)，
+# 也就是说 118 的 widgets_values[2] 只是占位显示，真正生效的是 151 的值。
+# 以前 build_wf 从不写这个节点，倍数一直锁死在模板里的 1.5，页面想调也调不动。
+BC_DEFAULT_UPSCALE = 1.5
+BC_UPSCALE_RANGE = (1.0, 3.0)
+
+
+def _bc_mp_cap_for(scale):
+    """给定二采倍数，返回 8GB 卡安全的一采 MP 上限。
+
+    二采 latent 的像素量 ≈ 一采像素 × scale²（3D latent 各轴同比放大），
+    单块 token 数 ≈ 像素量 / 256（patchify 1,2,2），所以显存开销随倍数**平方**增长。
+    以「0.4MP × 1.5 倍 = 1312×736 / N≈49036，占内核 74898 的 65%」为实测基准点反推：
+        cap = 0.4 × (1.5 / scale)²
+    1.5 倍时正好回到 0.4（与原先写死的 BC_MP_CAP 完全一致，老片行为不变）；
+    2 倍 → 0.225、3 倍 → 0.1。倍数越大自动压一采，避免把显存打爆。
+    """
+    s = max(float(scale or BC_DEFAULT_UPSCALE), 1.0)
+    cap = BC_MP_CAP * (BC_DEFAULT_UPSCALE / s) ** 2
+    return round(max(0.1, min(cap, BC_MP_CAP)), 3)
 DEFAULT_ASPECT_RATIO = "16:9 (Widescreen)"
 # 与 ComfyUI ResolutionSelector 节点的 options 保持一致，别自己造字符串
 ASPECT_RATIO_CHOICES = (
@@ -467,10 +505,14 @@ def build_wf(cfg, seg, out_path):
     nodes[ids["res"]]["widgets_values"][0] = cfg.get("aspect_ratio") or DEFAULT_ASPECT_RATIO
     nodes[ids["sampler"]]["widgets_values"][0] = int(seg["seed"])
     # megapixels 两条链路都写。黑鹤原注释「一采固定 0.2MP」是历史限制（模板 8 号节点
-    # 写死 0.2），不是模型限制——放开后仍受 BC_MP_CAP 兜底，避免 8GB 卡一采就爆。
+    # 写死 0.2），不是模型限制——放开后仍受显存兜底，避免 8GB 卡一采就爆。
+    # 黑鹤的兜底上限随二采倍数走：倍数越大，二采 latent 的 token 数按平方涨，
+    # 一采就得相应压低（_bc_mp_cap_for）。selflift 没有二采，直接用配置值。
+    _bc_scale = _bc_upscale_of(cfg)
     nodes[ids["res"]]["widgets_values"][1] = float(
         cfg.get("megapixels", DEFAULT_MEGAPIXELS) if prof == "selflift"
-        else min(float(cfg.get("megapixels", BC_DEFAULT_MEGAPIXELS)), BC_MP_CAP))
+        else min(float(cfg.get("megapixels", BC_DEFAULT_MEGAPIXELS)),
+                 _bc_mp_cap_for(_bc_scale)))
     if prof == "selflift":
         quality = cfg.get("quality") or DEFAULT_QUALITY
         if quality in QUALITY_PRESETS:
@@ -489,11 +531,14 @@ def build_wf(cfg, seg, out_path):
         if seg.get("last_frame_override"):
             add_load_image(wf, N_LAST, seg["last_frame_override"])
     else:
-        # 黑鹤：一采固定 0.2MP、二采 2 倍（模板节点 8 / 151）。本片「百万像素」
-        # 不参与，否则 0.5MP 一采放大 4 倍会撑爆 8GB 卡。
+        # 黑鹤：一采 MP 见上（受倍数相关上限约束），二采倍数写进 151。
+        # 151 是 FloatConstant「浮点常量」，通过 link194 接到 118 的 mode.scale；
+        # 118 自己的 widgets_values[2] 只是 UI 占位显示，写了也不生效，必须写 151。
         vw = nodes[ids["video"]]["widgets_values"]
         vw["frame_rate"] = float(cfg["fps"])
         vw["filename_prefix"] = f"{cfg['prefix']}_{seg['id']}"
+        if BC_UPSCALE in nodes:
+            nodes[BC_UPSCALE]["widgets_values"][0] = _bc_scale
         # 空镜板要接成最后一张 ref_image：全局 head 里的 {pic?:plate} 会按接线
         # 展开成 <Picture N>，不接就会留下悬空标签。
         plate = seg.get("bg_plate", cfg.get("bg_plate"))
@@ -549,6 +594,27 @@ def check_graph(cfg, seg, verbose=True):
         res = prompt[str(ids["res"])]["inputs"]
         print(f"    resolution: {res.get('aspect_ratio')} / {res.get('megapixels')} MP",
               flush=True)
+        if prof == "blackcrane":
+            # 二采实际倍数：从 API 图里读，别信 cfg —— 中间还有夹取和 base 回落。
+            # 注意 cond 的 width/height 是连线（["8", 0]），不是数字，只能按
+            # MP + 画幅比自己推：w = sqrt(mp*1e6*ratio)，再按 32 对齐。
+            _up = (prompt.get(str(BC_UPSCALE)) or {}).get("inputs", {}).get("value")
+            _mp = float(res.get("megapixels") or 0)
+            _out = ""
+            if _up and _mp > 0:
+                _ratio = 16 / 9
+                _m = re.match(r"(\d+)\s*[:：]\s*(\d+)", str(res.get("aspect_ratio") or ""))
+                if _m:
+                    _ratio = int(_m.group(1)) / int(_m.group(2))
+                _w = (_mp * 1_000_000 * _ratio) ** 0.5
+                _h = _w / _ratio
+                _ow = int(round(_w * float(_up) / 32)) * 32
+                _oh = int(round(_h * float(_up) / 32)) * 32
+                _out = (f" → 二采 {_ow}x{_oh}"
+                        f"（一采 {int(round(_w/32))*32}x{int(round(_h/32))*32}）")
+            print(f"    二采: 放大 {_up}x{_out}   一采上限 "
+                  f"{_bc_mp_cap_for(_bc_upscale_of(cfg))}MP "
+                  f"{'开' if BC_TWO_PASS else '关'}", flush=True)
         print(f"    prompt chars={len(seg_prompt(cfg, seg))}", flush=True)
     return prompt
 
@@ -731,6 +797,9 @@ def seg_status(cfg):
         edited = max(cfg["segments"][i].get("updated_at", 0),
                      cfg.get("head_updated_at", 0),
                      cfg.get("res_updated_at", 0),
+                     # 二采倍数单独打时间戳（cmd_set --bc-upscale），但效果同样是
+                     # 「全片画面变了」，不并进来会让改完倍数后老段仍标 done。
+                     cfg.get("upscale_updated_at", 0),
                      cfg.get("quality_updated_at", 0),
                      cfg.get("audio_updated_at", 0),
                      cfg.get("workflow_updated_at", 0)) > item["mtime"] + 1
@@ -762,6 +831,12 @@ def seg_status(cfg):
         "films": list_films(),
         "megapixels": float(cfg.get("megapixels", DEFAULT_MEGAPIXELS)),
         "aspect_ratio": cfg.get("aspect_ratio") or DEFAULT_ASPECT_RATIO,
+        # 二采放大倍数 + 它决定的一采上限：前端据此提示「再往上 MP 会被压」
+        "bc_upscale": _bc_upscale_of(cfg),
+        "bc_upscale_range": list(BC_UPSCALE_RANGE),
+        "bc_mp_cap": _bc_mp_cap_for(_bc_upscale_of(cfg)),
+        "upscale_updated_at": cfg.get("upscale_updated_at", 0),
+        "bc_two_pass": cfg.get("bc_two_pass") is not False,
         "quality": cfg.get("quality") or DEFAULT_QUALITY,
         "quality_updated_at": cfg.get("quality_updated_at", 0),
         "audio": cfg.get("audio") or "off",
@@ -821,6 +896,30 @@ def cmd_set(cfg, args):
         changed.append(f"aspect_ratio={ar}")
     if args.megapixels is not None or args.aspect_ratio is not None:
         cfg["res_updated_at"] = time.time()
+
+    # 二采放大倍数：只对黑鹤链路有意义，改了等于换二采分辨率，必须全片重出。
+    # 单独打 upscale_updated_at，与 res_updated_at 区分开（页面上是两个独立控件）。
+    upscale = getattr(args, "bc_upscale", None)
+    if upscale is not None:
+        lo, hi = BC_UPSCALE_RANGE
+        try:
+            s = float(upscale)
+        except (TypeError, ValueError):
+            P.die(f"bc-upscale 需要数字：{upscale!r}")
+        if not lo <= s <= hi:
+            P.die(f"bc-upscale 必须在 {lo}~{hi} 之间（二采显存按倍数平方增长）：{s}")
+        cfg["bc_upscale"] = round(s, 2)
+        changed.append(f"bc_upscale={cfg['bc_upscale']}x")
+        cfg["upscale_updated_at"] = time.time()
+        # 倍数变了，一采 MP 的上限跟着变。这里**不静默改写**用户的 megapixels ——
+        # 用户设了 0.4 却看到 0.225 会以为设置没生效。改成只警告，实际夹取在
+        # build_wf 里做（跑片时按上限压），页面上把上限和实际值都显示出来。
+        _cap = _bc_mp_cap_for(cfg["bc_upscale"])
+        _cur = float(cfg.get("megapixels") or BC_DEFAULT_MEGAPIXELS)
+        if _cur > _cap:
+            print(f"    注意：{cfg['bc_upscale']}x 的一采上限是 {_cap}MP，"
+                  f"当前配的是 {_cur}MP，跑片时会自动压到 {_cap}MP（显存保护）",
+                  flush=True)
 
     join = getattr(args, "join", None)   # 旧调用方/单测手工构造的 Namespace 可能没这个字段
     if join is not None:
@@ -1908,6 +2007,9 @@ def main():
                     help="set：全局输出分辨率（百万像素，8GB 显存建议 0.5 左右）")
     ap.add_argument("--aspect-ratio", dest="aspect_ratio", default=None,
                     help="set：全局画幅比例（如 '16:9 (Widescreen)'）")
+    ap.add_argument("--bc-upscale", dest="bc_upscale", default=None,
+                    help="set：黑鹤二采放大倍数（1.0~3.0，默认 1.5）。越大越清晰，"
+                         "二采显存按平方涨，一采 MP 会自动压到安全上限")
     a = ap.parse_args()
     if a.cmd == "import":
         cmd_import(a)
