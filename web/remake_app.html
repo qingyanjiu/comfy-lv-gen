@@ -132,9 +132,12 @@ header .nav{font-size:12px;color:#a0aec0}
 .sel-wide{min-width:280px}
 .in-mid{width:230px}
 .in-num{width:70px}
-/* 画质行（一采 MP / 二采倍数）：两个数字框 + 预估，桌面一行，手机上分两行不挤 */
+/* 画质行（链路 / 一采 MP / 二采倍数 / 画幅）：桌面一行，手机上换行不挤 */
 .qrow{gap:8px;margin:0 0 6px;padding:8px 10px;background:#f7fafc;border:1px solid var(--bd);border-radius:6px}
 .qrow input.in-num{width:76px}
+/* 画幅下拉：桌面固定一个够放下「9:16 (Portrait Widescreen)」的宽度，
+   否则 select 宽度随选中项文字跳动，整行跟着抖 */
+#arSel.ar-sel{min-width:190px}
 #resEst{font-weight:600;color:var(--acc)}
 /* 下载成片：和「打开成片」并排的主操作（样式见上面 a.dlbtn） */
 .tlstrip{touch-action:pan-y}   /* 手机上横向拖动=拖时间轴，纵向仍然滚页面 */
@@ -229,15 +232,17 @@ header .nav{font-size:12px;color:#a0aec0}
   .hint code{word-break:break-all}
   #drop{padding:20px}
 
-  /* 画质行：上面的通用规则 `.row>label{flex:1 1 100%}` 会把「画质 / 一采 /
-     MP / 二采放大 / 倍 / 预估」拆成 6 行竖排，一个数字框占一整行太蠢。
-     这里整行改成 flex-wrap 的自适应：两个 label+input 各占一半宽度，
-     预估文字单独占一行（它最长，挤在半行里会折成 3 行）。
-     min-width:0 是必须的 —— input 默认 min-width:auto，flex 子项不肯缩到
-     内容宽以下，960px 撑不下就会横向溢出（安卓上表现为整页左右晃动）。 */
+  /* 画质行：上面的通用规则 `.row>label{flex:1 1 100%}` 会把「链路 / 一采 / MP /
+     二采放大 / 倍 / 画幅 / 预估」拆成 7 行竖排，一个数字框占一整行太蠢。
+     这里整行改成 flex-wrap 的自适应：数字框各占一半宽度，预估文字单独占一行
+     （它最长，挤在半行里会折成 3 行）。
+     链路 select 和画幅 select 各占一整行（选项文字长，半行放不下会截断）。
+     min-width:0 是必须的 —— input/select 默认 min-width:auto，flex 子项不肯缩到
+     内容宽以下，撑不下就横向溢出（安卓上表现为整页左右晃动）。 */
   .qrow{flex-wrap:wrap;gap:6px 8px}
   .qrow>label{flex:0 0 auto;margin:0;font-size:13px}
   .qrow input.in-num{flex:1 1 0;width:0;min-width:52px;max-width:110px}
+  .qrow>select{flex:1 1 100%;min-width:0;max-width:100%}
   .qrow #resEst{flex:1 1 100%;order:9;font-size:12px;line-height:1.5}
 }
 /* 只有真正超窄的屏（SE/mini 一代 320、安卓小屏 360）才让卡片按钮各占一行。
@@ -324,24 +329,27 @@ header .nav{font-size:12px;color:#a0aec0}
     </div>
     <div class="hint" id="splitTarget" style="margin:-4px 0 10px"></div>
 
-    <!-- 画质：一采 MP + 二采放大倍数。放两个 tab 之外，因为两套切段方式共用同一组
-         画质参数（切段时写进 segments.json，之后 build_wf 覆盖到 8/151 号节点）。
-         链路也在这一行：它决定后面「二采放大」这一项存不存在，以及 MP 的默认值。 -->
+    <!-- 画质：链路 + 一采 MP + 二采放大 + 画幅。放两个 tab 之外，因为两套切段方式
+         共用同一组画质参数（切段时写进 segments.json，之后 build_wf 覆盖到
+         ResolutionSelector / FloatConstant 节点）。链路决定后面「二采放大」存不存在、
+         MP 的默认值是多少；画幅只改画布尺寸，与链路无关。 -->
     <div class="row qrow">
       <label for="engSel" style="font-weight:600;color:#2d3748">链路</label>
-      <select id="engSel" title="生成链路。黑鹤二采=一采+放大+精修（慢、更锐）；SelfLift 单图参考=ref2va 直出（快，无二采）">
+      <select id="engSel" title="生成链路。SelfLift 单图参考=ref2va 直出（快，无二采，默认）；黑鹤二采=一采+放大+精修（慢、更锐）">
+        <option value="selflift" selected>SelfLift 单图参考</option>
         <option value="blackcrane">黑鹤二采</option>
-        <option value="selflift">SelfLift 单图参考</option>
       </select>
       <span style="flex:0 0 10px"></span>
       <label for="mpIn">一采</label>
-      <input type="number" id="mpIn" class="in-num" value="0.2" min="0.05" max="2" step="0.05">
+      <input type="number" id="mpIn" class="in-num" value="0.5" min="0.05" max="2" step="0.05">
       <span class="sel">MP</span>
       <span id="upWrap" style="display:contents">
         <label for="upIn">二采放大</label>
         <input type="number" id="upIn" class="in-num" value="1.5" min="1" max="3" step="0.1">
         <span class="sel">倍</span>
       </span>
+      <label for="arSel">画幅</label>
+      <select id="arSel" class="ar-sel" title="画布比例（ResolutionSelector）。注意：切段与首帧抽取都按源视频原比例，选与源比例不同的画幅会把首帧拉伸到画布"></select>
       <span class="sel" id="resEst"></span>
     </div>
     <div class="hint" id="resHint" style="margin-top:0"></div>
@@ -573,7 +581,18 @@ function resetEvenParams(){
 // 所以「二采」这一整组控件（倍数输入 + 三处开关 + 徽标 + 上限提示）只在黑鹤下有意义。
 const ENGINE_DEFAULT_MP={blackcrane:0.2, selflift:0.5};   // 与后端 BC_/SL_DEFAULT_MEGAPIXELS 同步
 const ENGINE_LABEL={blackcrane:'黑鹤二采', selflift:'SelfLift 单图参考'};
-let ENGINE='blackcrane';
+let ENGINE='selflift';   // 默认 SelfLift（与后端 do_split / split 路由兜底一致）
+// 画幅预设：**必须与 comfy_extras/nodes_resolution.py 的 ASPECT_RATIOS 逐字一致**，
+// 顺序也照抄（那是 ResolutionSelector 下拉的 UI 顺序）。后端 /api/set-res 会校验，
+// 写错一个字直接 400。
+const AR_PRESETS=[
+  '1:1 (Square)','2:3 (Portrait Photo)','3:2 (Photo)','3:4 (Portrait Standard)',
+  '4:3 (Standard)','9:16 (Portrait Widescreen)','16:9 (Widescreen)','21:9 (Ultrawide)'
+];
+const AR_DEFAULT='16:9 (Widescreen)';   // 与 run_selflift.DEFAULT_ASPECT_RATIO 同步
+// 源视频原始宽高（state 的 src_w/src_h）。只用于「画幅与源比例不一致会拉伸」的
+// 提示；老片没有这字段 → null，不做比对。
+let SRC_WH=null;
 // 与 run_selflift.py 的 BC_MP_CAP / BC_DEFAULT_UPSCALE 保持同步。
 // 这里只算「页面上给用户看的预估」，真正夹取在 runner 的 build_wf 里做，
 // 所以即使这里漂移也只影响提示文字，不会让片子跑错。
@@ -588,10 +607,23 @@ function mpCapFor(scale){
   // 二采显存按倍数平方涨：cap = 0.4 × (1.5/scale)²，1.5 倍时正好回到 0.4（老片行为不变）
   return Math.max(0.1,Math.min(RES_MP_CAP*Math.pow(RES_UP_BASE/s,2),RES_MP_CAP));
 }
-// 分辨率预估：w=sqrt(mp*1e6*ratio)，再按 32 对齐（节点 8 的 alignment=32）
-function estRes(mp,scale){
-  const ratio=16/9;
-  let w=Math.sqrt(Math.max(0,mp)*1e6*ratio), h=w/ratio;
+// 画幅字符串 → [w_ratio, h_ratio]（与 ResolutionSelector 的 ASPECT_RATIOS 同一套数字）
+function arRatio(ar){
+  const m=/^(\d+)\s*[:：]\s*(\d+)/.exec(String(ar||''));
+  if(!m)return [16,9];
+  const a=parseInt(m[1],10), b=parseInt(m[2],10);
+  return (a>0&&b>0)?[a,b]:[16,9];
+}
+// 分辨率预估：必须照抄 ResolutionSelector 的算法（nodes_resolution.py:80-86），
+// 否则预估和实际出片对不上：
+//   total = mp × 1024²（**不是 1e6**，差 4.8%）
+//   scale = sqrt(total / (w_ratio × h_ratio))
+//   width = round(w_ratio × scale / 32) × 32
+function estRes(mp,scale,ar){
+  const [rw,rh]=arRatio(ar);
+  const total=Math.max(0,Number(mp)||0)*1024*1024;
+  const s=Math.sqrt(total/(rw*rh));
+  const w=rw*s, h=rh*s;
   const a1w=Math.round(w/32)*32, a1h=Math.round(h/32)*32;
   const a2w=Math.round(w*scale/32)*32, a2h=Math.round(h*scale/32)*32;
   return {a1w,a1h,a2w,a2h};
@@ -628,20 +660,25 @@ function updateResEst(){
   const bc=isBC();
   const mp=parseFloat($('#mpIn').value)||ENGINE_DEFAULT_MP[ENGINE];
   const up=parseFloat($('#upIn').value)||RES_UP_BASE;
+  const ar=($('#arSel')&&$('#arSel').value)||AR_DEFAULT;
   const h=$('#resHint');
+  // 源比例 ≠ 画幅 → 首帧会被拉伸（238 号 resize_image 的 crop 是 disabled）。
+  // 只在知道源宽高时提示（老片 state 没这字段）。偏差 <2% 视为同比例，不打扰。
+  const war=srcAspectWarn(ar);
   // ---- SelfLift：没有二采，MP 就是成片分辨率，不存在夹取/倍数 ----
   if(!bc){
-    const r=estRes(mp,1);
+    const r=estRes(mp,1,ar);
     $('#resEst').textContent=`→ 成片约 ${r.a1w}×${r.a1h}（${mp}MP 直出）`;
-    h.textContent=`SelfLift 单图参考：ref2va 直出，无二采放大。${mp}MP ≈ ${r.a1w}×${r.a1h}，`
-      +`改大更清晰但更慢、更吃显存（8GB 卡建议 ≤0.75）。`;
-    h.style.color='';
+    h.textContent=`SelfLift 单图参考：ref2va 直出，无二采放大。${mp}MP / ${ar} ≈ ${r.a1w}×${r.a1h}，`
+      +`改大更清晰但更慢、更吃显存（8GB 卡建议 ≤0.75）。`
+      +(war?`　⚠ ${war}`:'');
+    h.style.color=war?'#975a16':'';
     return;
   }
   // ---- 黑鹤：一采 → 夹取 → 放大 ----
   const cap=mpCapFor(up);
   const eff=Math.min(mp,cap);
-  const r=estRes(eff,up);
+  const r=estRes(eff,up,ar);
   // 实际生效值可能被压：页面上必须同时给出「你配的」和「实际会用的」，否则
   // 用户设了 0.4 却得到 0.225 会以为设置没生效（2026-11-18 踩过）。
   $('#resEst').textContent=`→ 成片约 ${r.a2w}×${r.a2h}（一采 ${r.a1w}×${r.a1h}）`;
@@ -656,18 +693,38 @@ function updateResEst(){
     h.style.color='';
   }
   // 关键事实：安全上限是 cap = 0.4×(1.5/scale)²，所以 cap×scale² 恒等于 0.9MP。
-  // 也就是说 scale ≥ 1.5 时二采成片分辨率**被显存锁死在 1280×704**，再往上调
-  // 只是把重建负担从一采推给放大模型，一采反而更糊。不写清楚用户会以为
+  // 也就是说 scale ≥ 1.5 时二采成片分辨率**被显存锁死在约 1280×704**（16:9 下），
+  // 再往上调只是把重建负担从一采推给放大模型，一采反而更糊。不写清楚用户会以为
   // 「拉到 3 倍更清晰」，实际是白等 3 倍时间换同样的分辨率。
   // scale < 1.5 时 cap 被 BC_MP_CAP=0.4 封顶，成片反而更小，这里不提。
   if(up>RES_UP_BASE+1e-9){
-    const base=estRes(RES_MP_CAP,RES_UP_BASE);
+    const base=estRes(RES_MP_CAP,RES_UP_BASE,ar);
     h.textContent+=`　注意：成片分辨率已被显存上限锁死（${up} 倍与 1.5 倍都约 `
       +`${base.a2w}×${base.a2h}），调高倍数不会更清晰，只会让一采更糊、更慢。`;
   }
+  if(war)h.textContent+=`　⚠ ${war}`;
+}
+// 源视频比例 vs 所选画幅：不一致时首帧会被拉伸（238 号节点 resize_image 的
+// crop 模式写死 "disabled"），只改画布不改取景。返回警告文案，无警告返回 ''。
+function srcAspectWarn(ar){
+  if(!SRC_WH||!SRC_WH.w||!SRC_WH.h)return '';
+  const [rw,rh]=arRatio(ar);
+  const src=SRC_WH.w/SRC_WH.h, dst=rw/rh;
+  if(Math.abs(src-dst)/dst<0.02)return '';   // 偏差 <2% 视为同比例
+  // 目标画幅比源宽 → 横向拉宽；比源窄 → 横向压瘦（人变瘦高）。都是等比缩放填满画布。
+  const dir=dst>src?'横向拉宽':'横向压窄';
+  return `源视频是 ${SRC_WH.w}×${SRC_WH.h}（${src.toFixed(2)}:1），与所选画幅比例不同，`
+    +`首帧会被${dir}填满画布（是拉伸，不是裁切）。想让取景不变，选与源接近的画幅，或先把源视频裁好再切段。`;
 }
 $('#mpIn').oninput=updateResEst;
 $('#upIn').oninput=updateResEst;
+// 画幅下拉：选项由 AR_PRESETS 生成（HTML 里留空，避免两处枚举漂移）
+(function(){
+  const sel=$('#arSel'); if(!sel)return;
+  sel.innerHTML=AR_PRESETS.map(a=>
+    `<option value="${a}"${a===AR_DEFAULT?' selected':''}>${a}</option>`).join('');
+})();
+$('#arSel').onchange=()=>{ updateResEst(); if(FILM)pushResCfg(); };
 $('#upIn').onchange=()=>{
   updateResEst();
   // 已经建过片的话，改画质要落到 cfg（否则只是页面上的数字，跑片还是老值）
@@ -697,6 +754,8 @@ $('#engSel').onchange=()=>{
       // 换链路后一采 MP 的默认值不同：cfg 里没显式存过就按新链路兜底回填
       if(j.megapixels!=null)$('#mpIn').value=j.megapixels;
       if(j.upscale!=null)$('#upIn').value=j.upscale;
+      // 画幅只接受后端回显值（后端会校验枚举，非法值已 400 走了 error 分支）
+      if(j.aspect_ratio!=null&&$('#arSel'))$('#arSel').value=j.aspect_ratio;
       SRV_CAP={scale:null,cap:null};
       applyEngineUI();
       pollNow();
@@ -705,7 +764,10 @@ $('#engSel').onchange=()=>{
 function pushResCfg(){
   if(!FILM)return;
   const mp=parseFloat($('#mpIn').value)||ENGINE_DEFAULT_MP[ENGINE];
-  const body={film:FILM,megapixels:mp};
+  // 画幅两条链路都吃（黑鹤 node 8 / SelfLift node 115 都是 ResolutionSelector），
+  // 所以无条件带上，不像 upscale 那样只有黑鹤发。
+  const body={film:FILM,megapixels:mp,
+    aspect_ratio:($('#arSel')&&$('#arSel').value)||AR_DEFAULT};
   // SelfLift 没有二采：不发 upscale，免得后端把它当成一次「改倍数」
   if(isBC())body.upscale=parseFloat($('#upIn').value)||RES_UP_BASE;
   fetch('/api/set-res',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -729,9 +791,11 @@ function pushResCfg(){
       }
     }).catch(e=>{$('#resHint').textContent='✗ '+e;$('#resHint').style.color='var(--err)'});
 }
-function syncResInputs(mp,up){
+function syncResInputs(mp,up,ar){
   if(mp!=null)$('#mpIn').value=mp;
   if(up!=null)$('#upIn').value=up;
+  // ar 为 null（老片没有这字段）时不动下拉，保留当前值 —— 后端 aspect_of() 会回落 16:9
+  if(ar!=null&&$('#arSel'))$('#arSel').value=ar;
   updateResEst();
 }
 applyEngineUI();
@@ -912,7 +976,9 @@ function openProject(name){
     // build_project 的 settings 里没有 cap，这里按回填到的倍数先清掉旧缓存，
     // 让 syncResInputs 用本地公式算；紧接着的第一次 /api/state 轮询会拿后端值覆盖。
     SRV_CAP={scale:null, cap:null};
-    syncResInputs(stg.megapixels, stg.upscale);
+    // 源宽高：project.json 的 source.w/h（老片没有 → null，不做比例比对）
+    SRC_WH=(src.w&&src.h)?{w:Number(src.w),h:Number(src.h)}:null;
+    syncResInputs(stg.megapixels, stg.upscale, stg.aspect_ratio);
     applyEngineUI();
     $('#anchorFirst').checked=!!stg.anchor_first;
     $('#pubprompt').value=pj.prompt||'';
@@ -929,6 +995,7 @@ function openProject(name){
     $('#splitinfo').textContent='';
     $('#projInfo').textContent=`${n} 段 · 每段 ${src.actual!=null?src.actual.toFixed(2):'?'}s · `
       +(ENGINE==='blackcrane'?`二采${tp?'开':'关'}`:ENGINE_LABEL.selflift)
+      +` · ${(stg.aspect_ratio||AR_DEFAULT).split(' (')[0]}`
       + (j.has_config?' · 配置已在硬盘':' · 还没保存过配置');
     setupTimelineFromProject(FILM, src);   // 回填时间轴/切点，支持再按帧改切
     renderModeInfo();
@@ -1218,7 +1285,9 @@ function afterSplit(j, msg, mode){
   if(j.engine)ENGINE=(j.engine==='selflift')?'selflift':'blackcrane';
   $('#engSel').value=ENGINE;
   SRV_CAP={scale:null, cap:null};
-  syncResInputs(j.megapixels, j.upscale);
+  // 切段响应里带源宽高（do_split 的 probe 结果），据此提示画幅拉伸
+  SRC_WH=(j.src_w&&j.src_h)?{w:Number(j.src_w),h:Number(j.src_h)}:null;
+  syncResInputs(j.megapixels, j.upscale, j.aspect_ratio);
   applyEngineUI();
   $('#tpSwitch').value=$('#twopass').checked?'1':'0';
   $('#tpSummary').textContent='';
@@ -1261,6 +1330,7 @@ $('#btnGenCuts').onclick=()=>{
       refs:REFS.map(r=>({path:r.path,comfy_name:r.comfy_name,label:r.label})),
       anchor_first:$('#anchorFirst').checked,
       megapixels:parseFloat($('#mpIn').value)||ENGINE_DEFAULT_MP[ENGINE],
+      aspect_ratio:($('#arSel')&&$('#arSel').value)||AR_DEFAULT,
       upscale:isBC()?(parseFloat($('#upIn').value)||RES_UP_BASE):null,
       keep_audio:$('#tlKeepAudio').checked})})
   .then(r=>r.json()).then(j=>{
@@ -1288,6 +1358,7 @@ $('#btnSplit').onclick=()=>{
                          refs:REFS.map(r=>({path:r.path,comfy_name:r.comfy_name,label:r.label})),
                          anchor_first:$('#anchorFirst').checked,
                          megapixels:parseFloat($('#mpIn').value)||ENGINE_DEFAULT_MP[ENGINE],
+                         aspect_ratio:($('#arSel')&&$('#arSel').value)||AR_DEFAULT,
                          upscale:isBC()?(parseFloat($('#upIn').value)||RES_UP_BASE):null,
                          keep_audio:$('#keepAudio').checked})})
   .then(r=>r.json()).then(j=>{
@@ -1389,6 +1460,17 @@ function pollNow(){
         }
         if(dirty)updateResEst();
       }
+    }
+    // 画幅回填：select 不存在「打字打到一半」的脏值问题（点选即终值），
+    // 所以不用判聚焦，只要值不一样就以后端为准。老片没有这字段 → 不动。
+    if(st.aspect_ratio!=null&&$('#arSel')&&$('#arSel').value!==st.aspect_ratio){
+      $('#arSel').value=st.aspect_ratio;
+      updateResEst();
+    }
+    // 源宽高（老片没有）：变了才更新，避免每 2s 重算一遍提示文字
+    const nw=(st.src_w&&st.src_h)?{w:Number(st.src_w),h:Number(st.src_h)}:null;
+    if((nw&&(!SRC_WH||SRC_WH.w!==nw.w||SRC_WH.h!==nw.h))||(!nw&&SRC_WH)){
+      SRC_WH=nw; updateResEst();
     }
     // 二采标识汇总（按已完成段实际用的开关统计）。SelfLift 没有二采，整块不显示。
     const doneSegs=st.segments.filter(s=>s.status==='done');

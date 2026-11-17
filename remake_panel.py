@@ -53,6 +53,28 @@ BC_DEFAULT_MEGAPIXELS = 0.2
 # SelfLift 没有二采，MP 就是最终采样分辨率，不受倍数约束。
 SL_DEFAULT_MEGAPIXELS = 0.5
 
+# 画幅（aspect_ratio）：**必须与 comfy_extras/nodes_resolution.py 的 ASPECT_RATIOS
+# 逐字一致**，顺序也照抄（那是 ResolutionSelector 下拉的 UI 顺序）。写错一个字
+# 节点会直接 KeyError 或回落到别的画幅，页面显示的和跑出来的不是一个东西。
+# 缺省值与 run_selflift.DEFAULT_ASPECT_RATIO 相同。
+DEFAULT_ASPECT_RATIO = "16:9 (Widescreen)"
+ASPECT_RATIOS = [
+    "1:1 (Square)",
+    "2:3 (Portrait Photo)",
+    "3:2 (Photo)",
+    "3:4 (Portrait Standard)",
+    "4:3 (Standard)",
+    "9:16 (Portrait Widescreen)",
+    "16:9 (Widescreen)",
+    "21:9 (Ultrawide)",
+]
+
+
+def aspect_of(cfg):
+    """取 cfg 里的画幅，非法值一律回落缺省（老片没有这字段）。"""
+    ar = str(cfg.get("aspect_ratio") or "")
+    return ar if ar in ASPECT_RATIOS else DEFAULT_ASPECT_RATIO
+
 
 def engine_of(wf_path):
     """由 workflow 路径判定链路，与 run_selflift.profile() 同一套规则。
@@ -91,7 +113,7 @@ FPS = 24
 # 合并模式下由 tools/serve_app.py 覆盖成实际监听端口（8900），
 # /api/version 靠它报真实端口；--standalone 时才用这里的 8901。
 PORT = 8901
-UI_BUILD = "2026-11-18c-engine-select"
+UI_BUILD = "2026-11-18d-aspect"
 COMFY = "http://127.0.0.1:8188"
 
 os.makedirs(ROOT, exist_ok=True)
@@ -185,6 +207,36 @@ def probe(path):
     v = next(s for s in d["streams"] if s["codec_type"] == "video")
     num, den = v.get("r_frame_rate", "24/1").split("/")
     return float(d["format"]["duration"]), v["width"], v["height"], float(num)/float(den or 1)
+
+
+_WH_CACHE = {}
+
+
+def video_wh(path):
+    """源视频的原始宽高，返回 (w, h)；探不到给 (None, None)。
+
+    只给「画幅与源比例不一致会拉伸首帧」的提示用。老项目的 state 里没有
+    src_w/src_h（那字段 2026-11-18 才加），这里现场探一次兜底——但不回写
+    state，免得打开项目就改磁盘文件、把全片误标 stale。
+    按 (mtime, size) 缓存：build_project 每次开项目都会问，不能每回都起 ffprobe。
+    """
+    if not path:
+        return None, None
+    try:
+        stt = os.stat(path)
+        key = (path, stt.st_mtime_ns, stt.st_size)
+    except OSError:
+        return None, None
+    if key in _WH_CACHE:
+        return _WH_CACHE[key]
+    try:
+        _dur, w, h, _fps = probe(path)
+    except Exception:
+        return None, None
+    if len(_WH_CACHE) > 256:
+        _WH_CACHE.clear()
+    _WH_CACHE[key] = (w, h)
+    return w, h
 
 
 _HA_CACHE = {}
@@ -281,6 +333,7 @@ def _cfg_res_of(wd):
     缺省回落与 run_selflift 保持一致，且**必须按链路分开**：
     - 链路：老片没 workflow 字段时 run_selflift.profile() 回落 selflift
     - MP：黑鹤兜底 BC_DEFAULT_MEGAPIXELS(0.2)，SelfLift 兜底 DEFAULT_MEGAPIXELS(0.5)
+    - 画幅：老片没 aspect_ratio 字段时回落 16:9（run_selflift 同）
     - 倍数：只有黑鹤有意义，SelfLift 没有二采，返回 None 让前端隐藏这一项
 
     页面上必须显示「真正会用的值」，给 null 会让输入框停在别处，用户以为没设。
@@ -294,6 +347,7 @@ def _cfg_res_of(wd):
     return {"engine": eng,
             "workflow": j.get("workflow"),
             "megapixels": j.get("megapixels") or default_mp_for(eng),
+            "aspect_ratio": aspect_of(j),
             "bc_upscale": ((j.get("bc_upscale") or BC_DEFAULT_UPSCALE)
                            if eng == "blackcrane" else None)}
 
@@ -505,6 +559,11 @@ def build_project(wd):
     if not cuts and mode == "manual":
         mode = "even"
     _res = _cfg_res_of(wd)   # 一采 MP / 二采倍数只在 cfg 里，state 不重复存
+    # 源宽高：新片在 state 里（切段时 ffprobe 顺手存下），老片现场探一次。
+    # 只用于前端「画幅与源比例不一致会拉伸首帧」的提示，缺失不影响出片。
+    _sw, _sh = st.get("src_w"), st.get("src_h")
+    if not (_sw and _sh):
+        _sw, _sh = video_wh(src)
     return {
         "schema": 1,
         "app": "remake_panel",
@@ -517,6 +576,8 @@ def build_project(wd):
             "exact": bool(st.get("exact")), "actual": st.get("actual"),
             "n": st.get("n", len(segs)), "prefix": st.get("prefix"),
             "fps": st.get("fps"), "total_frames": st.get("total_frames"),
+            # 源视频原始宽高（老片 state 没这字段 → 现场 ffprobe 兜底；都拿不到给 None，页面不做比对）
+            "w": _sw, "h": _sh,
             # mode: even=按秒均匀切 / manual=按帧手动切；cuts=实际切点帧号（含首尾）
             "mode": mode,
             "cuts": cuts,
@@ -528,6 +589,8 @@ def build_project(wd):
             # engine 决定页面显示「一采 MP」还是「一采 MP + 二采倍数」。
             "engine": _res.get("engine"),
             "megapixels": _res.get("megapixels"),
+            # 画幅：老片回落 16:9，前端据此回填下拉（不给 null，否则 select 停在第一项）
+            "aspect_ratio": _res.get("aspect_ratio"),
             # SelfLift 没有二采 → 这里是 None，前端据此隐藏倍数输入框
             "upscale": _res.get("bc_upscale"),
         },
@@ -1227,7 +1290,8 @@ def h3_seconds(dur):
 
 def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
              anchor_first=True, cuts=None, fps=None, keep_audio=None,
-             megapixels=None, upscale=None, engine="blackcrane"):
+             megapixels=None, upscale=None, engine="selflift",
+             aspect_ratio=None):
     """切段建片。
 
     cuts 为帧号列表（含起点与终点，如 [0, 120, 288, 336]）时按手工切点切，
@@ -1236,18 +1300,25 @@ def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
     keep_audio：切出的源段是否保留音轨（None=源视频有音轨就保留）。
     源段音轨是「出片后贴回原音」的唯一素材，丢了找不回来，所以默认保留。
 
-    engine：生成链路（blackcrane=黑鹤二采 / selflift=单图参考直出）。
-    决定写进 cfg 的 workflow 路径，run_selflift.profile() 靠路径里的「黑鹤」
-    判定走哪套节点契约。两条链路的默认画质参数不同：
+    engine：生成链路（selflift=单图参考直出 / blackcrane=黑鹤二采）。
+    **默认 selflift**（2026-11-18 用户定）。决定写进 cfg 的 workflow 路径，
+    run_selflift.profile() 靠路径里的「黑鹤」判定走哪套节点契约。两条链路的
+    默认画质参数不同：
     - 黑鹤：MP 是一采，且二采显存按倍数平方涨 → MP 受 bc_mp_cap_for 夹取
     - SelfLift：没有二采，MP 就是最终采样分辨率，不受倍数约束，默认 0.5
 
     megapixels / upscale：一采百万像素与二采放大倍数。None=用该链路默认值。
     实际夹取在 run_selflift.build_wf 里做（这里只存用户意图，不预先改写）。
 
+    aspect_ratio：画幅，必须是 ASPECT_RATIOS 里的官方字符串。None=16:9。
+    注意画幅只改画布，**不会重新裁切源段/首帧**（源段按原比例切、首帧按原比例抽），
+    所以与源视频比例不同的画幅会把首帧拉伸到画布（T8 条件节点 resize crop=disabled）。
+    要避免拉伸得先在切段前把源视频裁成目标比例。
+
     注意：切段/重建一律写新根目录 ROOT。老目录里同名项目不动（要搬用 migrate_project），
     避免「重建老项目」时把结果写回 output/ 造成两份。"""
-    eng = engine if engine in WORKFLOWS else "blackcrane"
+    eng = engine if engine in WORKFLOWS else "selflift"
+    ar = aspect_ratio if aspect_ratio in ASPECT_RATIOS else DEFAULT_ASPECT_RATIO
     wd = os.path.join(ROOT, name)
     os.makedirs(os.path.join(wd, "source_segments"), exist_ok=True)
     os.makedirs(os.path.join(wd, "refs"), exist_ok=True)
@@ -1378,7 +1449,10 @@ def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
         # 一采 MP 的默认值按链路分：黑鹤 0.2（还要跟二采倍数耦合夹取）、
         # SelfLift 0.5（没有二采，MP 就是最终采样分辨率）。
         "megapixels": float(megapixels or default_mp_for(eng)),
-        "aspect_ratio": "16:9 (Widescreen)",
+        # 画幅：以前硬编码 16:9，页面完全看不到。现在由页面下拉写入，
+        # build_wf 会覆盖到 ResolutionSelector（黑鹤 node 8 / SelfLift node 115）
+        # 的 widgets_values[0] 上。
+        "aspect_ratio": ar,
         "quality": "high",
         # 二采放大倍数：以前硬编码在 base 工作流（151 号 FloatConstant=1.5），
         # 页面上写「放大 2 倍」但其实从没生效过。现在由这里写入 cfg，
@@ -1417,11 +1491,15 @@ def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
           # 链路 + 画质：切段时定的，透传给前端做控件显隐（真源仍在 cfg 里）
           "engine": eng,
           "megapixels": cfg["megapixels"],
+          "aspect_ratio": cfg["aspect_ratio"],
           "bc_upscale": cfg.get("bc_upscale"),
           "anchor_first": bool(anchor_first),
           "mode": "manual" if manual else "even",   # 切段方式：按帧手动 / 按秒均匀
           "cuts": cut_frames,
           "fps": use_fps, "total_frames": total_frames,
+          # 源视频原始宽高：画幅可配之后，源比例与画幅不一致会把首帧拉伸
+          # （238 号节点 resize_image 的 crop 模式是 disabled），页面据此给警告。
+          "src_w": w, "src_h": h,
           "user_refs": proj_refs, "duration": dur, "n": n, "jobs": {}, "merged": False,
           "created": time.time(), "segments": seg_state}
     save_state(wd, st)
@@ -1584,6 +1662,7 @@ class H(BaseHTTPRequestHandler):
                     _eng = engine_of(j.get("workflow"))
                     st["engine"] = _eng
                     st["megapixels"] = j.get("megapixels") or default_mp_for(_eng)
+                    st["aspect_ratio"] = aspect_of(j)
                     if _eng == "blackcrane":
                         st["upscale"] = j.get("bc_upscale") or BC_DEFAULT_UPSCALE
                         # 安全上限由后端算一份给前端用：前端虽然有一份同构的 JS 实现
@@ -1596,6 +1675,14 @@ class H(BaseHTTPRequestHandler):
                         st["bc_mp_cap"] = None
                 except Exception:
                     pass
+            # 源宽高：新片切段时就存进 state 了，老片（2026-11-18 之前）没有这字段，
+            # 现场探一次补上，让轮询和 /api/project 给出同一个值 —— 否则前端
+            # openProject 拿到了、第一次 pollNow 又被空值覆盖，拉伸警告时有时无。
+            # 只改内存里这份 dict，不落盘（不能因为看一眼项目就把全片标 stale）。
+            if not (st.get("src_w") and st.get("src_h")):
+                _w, _h = video_wh(st.get("src"))
+                if _w and _h:
+                    st["src_w"], st["src_h"] = _w, _h
             # 每段实际有没有音轨：卡片上标「原音已贴 / 无音轨」
             # 注意 state 的段只有 idx，没有 cfg 里的 id（r01）
             prefix = (st.get("prefix") or "")
@@ -1888,14 +1975,18 @@ class H(BaseHTTPRequestHandler):
                               keep_audio=data.get("keep_audio"),
                               megapixels=data.get("megapixels"),
                               upscale=data.get("upscale"),
-                              engine=data.get("engine") or "blackcrane")
+                              aspect_ratio=data.get("aspect_ratio"),
+                              engine=data.get("engine") or "selflift")
             except Exception:
                 return jresp(self, {"error": traceback.format_exc()[-1200:]}, 500)
             return jresp(self, {"ok": True, "film": name, "n": st["n"],
                                 "actual": st["actual"], "mode": st.get("mode"),
                                 "engine": st.get("engine"),
                                 "megapixels": st.get("megapixels"),
+                                "aspect_ratio": st.get("aspect_ratio"),
                                 "upscale": st.get("bc_upscale"),
+                                # 源宽高：前端据此提示「画幅与源比例不一致会拉伸」
+                                "src_w": st.get("src_w"), "src_h": st.get("src_h"),
                                 "cuts": st.get("cuts"), "segments": st["segments"]})
         if p == "/api/split-at":
             # 按帧号切点建片：[0, 120, 288, 336] → 3 段
@@ -1926,7 +2017,8 @@ class H(BaseHTTPRequestHandler):
                               keep_audio=data.get("keep_audio"),
                               megapixels=data.get("megapixels"),
                               upscale=data.get("upscale"),
-                              engine=data.get("engine") or "blackcrane")
+                              aspect_ratio=data.get("aspect_ratio"),
+                              engine=data.get("engine") or "selflift")
             except Exception:
                 return jresp(self, {"error": traceback.format_exc()[-1200:]}, 500)
             return jresp(self, {"ok": True, "film": name, "n": st["n"],
@@ -1934,7 +2026,9 @@ class H(BaseHTTPRequestHandler):
                                 "mode": st.get("mode"),
                                 "engine": st.get("engine"),
                                 "megapixels": st.get("megapixels"),
+                                "aspect_ratio": st.get("aspect_ratio"),
                                 "upscale": st.get("bc_upscale"),
+                                "src_w": st.get("src_w"), "src_h": st.get("src_h"),
                                 "cuts": st.get("cuts"), "segments": st["segments"]})
         if p == "/api/gen":
             film = data.get("film"); idx = int(data.get("idx", 0)); seed = data.get("seed")
@@ -2121,6 +2215,7 @@ class H(BaseHTTPRequestHandler):
             if old == eng:
                 return jresp(self, {"ok": True, "engine": eng, "changed": [],
                                     "megapixels": j.get("megapixels") or default_mp_for(eng),
+                                    "aspect_ratio": aspect_of(j),
                                     "upscale": ((j.get("bc_upscale") or BC_DEFAULT_UPSCALE)
                                                 if eng == "blackcrane" else None)})
             j["workflow"] = WORKFLOWS[eng]
@@ -2154,6 +2249,7 @@ class H(BaseHTTPRequestHandler):
             write_project(wd)
             return jresp(self, {"ok": True, "engine": eng, "changed": changed,
                                 "stale_count": n_stale, "megapixels": mp,
+                                "aspect_ratio": aspect_of(j),
                                 "upscale": ((j.get("bc_upscale") or BC_DEFAULT_UPSCALE)
                                             if eng == "blackcrane" else None)})
         if p == "/api/set-twopass":
@@ -2184,6 +2280,8 @@ class H(BaseHTTPRequestHandler):
             #   upscale 一律忽略（不校验、不写 cfg），cap 返回 None。
             # 实际夹取在 run_selflift.build_wf，这里只存用户意图。
             film = data.get("film")
+            if not film:
+                return jresp(self, {"error": "缺 film"}, 400)
             wd = work_dir(film)
             cp = cfg_path(wd)
             if not os.path.exists(cp):
@@ -2198,6 +2296,7 @@ class H(BaseHTTPRequestHandler):
             # 兜底按链路取，否则 SelfLift 片把 0.5 和 0.2 比会误判成「改了」。
             _old_mp = float(j.get("megapixels") or default_mp_for(eng))
             _old_up = float(j.get("bc_upscale") or BC_DEFAULT_UPSCALE)
+            _old_ar = aspect_of(j)
             mp = data.get("megapixels")
             if mp is not None:
                 try:
@@ -2209,6 +2308,16 @@ class H(BaseHTTPRequestHandler):
                 if abs(round(mp, 3) - _old_mp) > 1e-9:
                     j["megapixels"] = round(mp, 3)
                     changed.append(f"一采 {j['megapixels']}MP")
+            # 画幅：只接受官方枚举里的字符串。非法值直接 400，不做静默回落 ——
+            # 静默回落会让页面显示一个画幅、跑片用另一个，排查起来极费劲。
+            ar = data.get("aspect_ratio")
+            if ar is not None:
+                ar = str(ar).strip()
+                if ar and ar not in ASPECT_RATIOS:
+                    return jresp(self, {"error": "未知画幅: " + ar}, 400)
+                if ar and ar != _old_ar:
+                    j["aspect_ratio"] = ar
+                    changed.append("画幅 " + ar.split(" (")[0])
             up = data.get("upscale")
             if up is not None and eng == "blackcrane":
                 try:
@@ -2254,6 +2363,7 @@ class H(BaseHTTPRequestHandler):
             return jresp(self, {"ok": True, "changed": changed,
                                 "engine": eng,
                                 "megapixels": j.get("megapixels"),
+                                "aspect_ratio": aspect_of(j),
                                 "upscale": (j.get("bc_upscale")
                                             if eng == "blackcrane" else None),
                                 "cap": cap, "effective_megapixels": eff,
