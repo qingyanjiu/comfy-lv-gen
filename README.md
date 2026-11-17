@@ -142,6 +142,31 @@ h3-long-video-repo/
 `segments.selflift.example*.json`。**用白名单而不是整个 `assets/`** —— 那个目录里
 混着 mp4、`*.prompts.html`、`*.state.json`、`*.bak*`，都是本机产物。
 
+### 提交时自动校验（pre-commit hook）
+
+同步器是单向覆盖，靠人记着跑就一定会漏。所以加了 hook：**提交前自动跑
+`--check`，不同步就拦下提交**。
+
+```bash
+# 每个 clone 只需启用一次（core.hooksPath 存在 .git/config，不随仓库走）
+git config core.hooksPath .githooks
+```
+
+拦下时会打印该跑的命令。三种不同步状态：
+
+| 输出 | 含义 | 处理 |
+|---|---|---|
+| `[DRIFT]` | 两边内容不同 | `--apply` 覆盖过去 |
+| `[MISSING]` | 仓库里没有 | `--apply` 补上 |
+| `[ORPHAN]` | 仓库有、活跃目录没有 | **同步器不替你删**，人工确认后 `git rm` |
+
+`[ORPHAN]` 是 2026-11-17 才补的检测。此前只做单向覆盖，「活跃目录删了、仓库里
+还留着」永远发现不了 —— `gen169.py` / `gen_neon_clean.py` / `gen_scenes_169.py` /
+`gen_walk_169.py` 四个零引用脚本就是这么在仓库里躺了很久，活跃目录磁盘上压根没有。
+
+本次提交与 skill 无关时可跳过：`git commit --no-verify`。
+活跃目录不存在时（别的机器 clone）hook 自动放行。
+
 ```
 # 改完活跃目录后，同步并校验
 python skill/scripts/sync_repo.py --apply
