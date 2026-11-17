@@ -114,11 +114,14 @@ button.sm{padding:5px 10px;font-size:12px}
     <div class="row" style="margin-top:10px">
       <label style="font-weight:600;color:#2d3748">项目名（全片唯一，只在这里改）</label>
       <input type="text" id="filmName" style="width:230px" placeholder="例如 仙剑_打苗人">
+      <button id="btnNewProj" class="pri sm">＋ 新建项目</button>
       <button id="btnRenameProj" class="sm">改名</button>
+      <button id="btnMigrateProj" class="sm" style="display:none">📦 迁移到新目录</button>
       <button id="btnDeleteProj" class="danger sm">🗑 删除项目</button>
     </div>
     <div class="hint" id="projHint">这里就是整片的名字：切段时用它建项目，改名=硬盘目录一起改（各段视频、成片、配置都跟着走）。
       切段面板里不再单独填片名。</div>
+    <div class="hint" id="projRootHint"></div>
     <div class="hint" id="projInfo"></div>
   </div>
 
@@ -262,7 +265,7 @@ button.sm{padding:5px 10px;font-size:12px}
 
 <script>
 const $=s=>document.querySelector(s);
-let SRC=null, FILM=null, SIG='', POLL=null, LOGPREV='', PM_IDX=null, REFS=[], SEED_IDX=null, LAST_ST=null, PROJECTS=[];
+let SRC=null, FILM=null, SIG='', POLL=null, LOGPREV='', PM_IDX=null, REFS=[], SEED_IDX=null, LAST_ST=null, PROJECTS=[], PROJ_ROOT='';
 // 时间轴状态
 let TOTALF=0, TLFPS=24, CUTS=[], TL_OBJ=null, TL_SEEKING=false;
 // 切段方式：MODE=当前项目已保存的方式（even 按秒 / manual 按帧）；TL_LOCK=时间轴切点只读
@@ -364,10 +367,17 @@ fetch('/api/version').then(r=>r.json()).then(j=>$('#build').textContent=j.build)
 function loadProjects(auto){
   return fetch('/api/projects').then(r=>r.json()).then(j=>{
     PROJECTS=j.projects||[];
+    PROJ_ROOT=j.root||'';
     const sel=$('#projSel'), cur=sel.value;
+    const rh=$('#projRootHint');
+    if(rh){
+      const ln=j.legacy_n||0;
+      rh.innerHTML=`项目根目录：<code>${PROJ_ROOT}</code>`
+        +(ln?`　<span style="color:#975a16">· 有 ${ln} 个项目还在老目录 <code>${j.legacy_root||'output'}</code> 里，选中后可点「迁移到新目录」</span>`:'');
+    }
     sel.innerHTML='';
     if(!PROJECTS.length){
-      const o=document.createElement('option'); o.value=''; o.textContent='（还没有项目，先上传视频切段）';
+      const o=document.createElement('option'); o.value=''; o.textContent='（还没有项目，先新建或上传视频切段）';
       sel.appendChild(o);
       if(auto)$('#projInfo').textContent='没有可打开的项目';
       return;
@@ -375,7 +385,8 @@ function loadProjects(auto){
     PROJECTS.forEach(p=>{
       const o=document.createElement('option'); o.value=p.name;
       const n=p.n||0, d=p.done||0;
-      o.textContent=`${p.name}　${d}/${n} 段${p.merged?'　已成片':''}${p.has_project?'':'　(无配置)'}`;
+      o.textContent=`${p.name}　${d}/${n} 段${p.merged?'　已成片':''}`
+        +(p.legacy?'　📦老目录':(p.has_project?'':'　(无配置)'));
       sel.appendChild(o);
     });
     if(cur&&PROJECTS.some(p=>p.name===cur))sel.value=cur;
@@ -398,14 +409,19 @@ function filmName(){return ($('#filmName').value||'').trim()}
 function updateSplitTarget(){
   const n=filmName(), el=$('#splitTarget'); if(!el)return;
   if(!n){el.textContent='↑ 先在①项目面板填「项目名」才能切段';el.style.color='#975a16';return}
-  if(FILM&&n!==FILM){
+  const legacyHit=PROJECTS.find(p=>p.name===n&&p.legacy);
+  if(legacyHit&&n!==FILM){
+    el.textContent=`⚠ 「${n}」是老目录（output）里的项目。切段会新建到 ${PROJ_ROOT}\\${n}，不会改到老那份。`
+      +`要搬过来就选中它点「📦 迁移到新目录」。`;
+    el.style.color='#975a16';
+  }else if(FILM&&n!==FILM){
     el.textContent=`⚠ 这个名字和当前打开的项目「${FILM}」不一样：切段会新建项目「${n}」，不会改到「${FILM}」。`;
     el.style.color='#975a16';
   }else if(FILM){
     el.textContent=`切段会重建当前项目「${n}」（已生成的视频文件保留，分段/进度会重置）。`;
     el.style.color='';
   }else{
-    el.textContent=`切段将创建项目「${n}」。`;
+    el.textContent=`切段将创建项目「${n}」（目录 ${PROJ_ROOT}\\${n}）。`;
     el.style.color='';
   }
   const ok=!!n&&!!SRC;
@@ -413,12 +429,55 @@ function updateSplitTarget(){
   $('#btnGenCuts').disabled=!ok||TL_LOCK||!TOTALF;
 }
 $('#filmName').addEventListener('input',updateSplitTarget);
+// ---- 新建项目（先建骨架，再上传素材；与「切段建项目」等价但更明确） ----
+$('#btnNewProj').onclick=()=>{
+  const to=filmName();
+  if(!to){alert('先在右边输入框填一个项目名');$('#filmName').focus();return}
+  if(PROJECTS.some(p=>p.name===to)){
+    alert(`已经有一个叫「${to}」的项目了，直接在「已有项目」里选它。`);return;
+  }
+  const b=$('#btnNewProj'); b.disabled=true; b.textContent='新建中…';
+  fetch('/api/new-project',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:to})}).then(r=>r.json()).then(j=>{
+    b.disabled=false; b.textContent='＋ 新建项目';
+    if(!j.ok){alert('新建失败：'+(j.error||''));return}
+    FILM=j.film; SRC=null; SIG=''; LAST_ST=null;
+    localStorage.setItem('rmk_last_film',FILM);
+    $('#filmName').value=FILM; updateSplitTarget();
+    $('#projInfo').textContent=`✓ 已新建项目「${FILM}」：${j.dir}`;
+    $('#upinfo').textContent='还没上传源视频，下一步把视频拖到②';
+    loadProjects(false).then(()=>{$('#projSel').value=FILM;syncMigrateBtn()});
+  }).catch(e=>{b.disabled=false;b.textContent='＋ 新建项目';alert('新建失败：'+e)});
+};
+// ---- 老目录项目迁移到新根目录 ----
+function syncMigrateBtn(){
+  const p=PROJECTS.find(x=>x.name===FILM);
+  const btn=$('#btnMigrateProj');
+  if(!btn)return;
+  const legacy=!!(p&&p.legacy);
+  btn.style.display=legacy?'':'none';
+  btn.title=legacy?`这个项目还在老目录 ${p.dir}，点一下整体搬到新根目录`:'';
+}
+$('#btnMigrateProj').onclick=()=>{
+  if(!FILM)return;
+  const p=PROJECTS.find(x=>x.name===FILM)||{};
+  if(!confirm(`把项目「${FILM}」从老目录搬到新根目录？\n\n从：${p.dir||'(老目录)'}\n到：${PROJ_ROOT}\\${FILM}\n\n整个目录一起搬，视频和配置都不会丢。`))return;
+  const b=$('#btnMigrateProj'); b.disabled=true; b.textContent='迁移中…';
+  fetch('/api/migrate-project',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM})}).then(r=>r.json()).then(j=>{
+    b.disabled=false; b.textContent='📦 迁移到新目录';
+    if(!j.ok){alert('迁移失败：'+(j.error||''));return}
+    $('#projInfo').textContent=`✓ 已迁移到 ${j.dir}`;
+    // 重新打开：让页面里的源视频路径指向新目录（老路径的副本已拷过去）
+    loadProjects(false).then(()=>{ $('#projSel').value=FILM; openProject(FILM); });
+  }).catch(e=>{b.disabled=false;b.textContent='📦 迁移到新目录';alert('迁移失败：'+e)});
+};
 $('#btnRenameProj').onclick=()=>{
   const to=filmName();
   if(!to){alert('先填一个项目名');return}
   if(!FILM){$('#projInfo').textContent=`✓ 新项目将命名为「${to}」`;updateSplitTarget();return}
   if(to===FILM){$('#projInfo').textContent='名字没变';return}
-  if(!confirm(`把项目「${FILM}」改名为「${to}」？\n\n硬盘上 output 里的目录会一起改名，各段视频、成片、参考图、配置都跟着走，不会丢。`))return;
+  if(!confirm(`把项目「${FILM}」改名为「${to}」？\n\n硬盘上项目目录会一起改名（还在原来的根目录里），各段视频、成片、参考图、配置都跟着走，不会丢。`))return;
   const b=$('#btnRenameProj'); b.disabled=true; b.textContent='改名中…';
   fetch('/api/rename-project',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({film:FILM,to:to})}).then(r=>r.json()).then(j=>{
@@ -451,7 +510,7 @@ $('#btnDeleteProj').onclick=()=>{
     $('#log').textContent=`项目「${gone}」已删除。`;
     $('#projInfo').textContent=`✓ 已删除「${gone}」${j.comfy_cleaned?`，清理临时副本 ${j.comfy_cleaned} 个`:''}`;
     $('#projSel').innerHTML='<option value="">— 加载中 —</option>';
-    loadProjects(false).then(()=>{ if(PROJECTS.length){$('#projSel').value=PROJECTS[0].name;} });
+    loadProjects(false).then(()=>{ if(PROJECTS.length){$('#projSel').value=PROJECTS[0].name;} syncMigrateBtn(); });
   }).catch(e=>{b.disabled=false;b.textContent='🗑 删除项目';alert('删除失败：'+e)});
 };
 
@@ -493,6 +552,7 @@ function openProject(name){
     buildLogSegs(n);
     $('#segPanel').style.display=n?'block':'none';
     $('#btnSplit').disabled=!SRC;
+    syncMigrateBtn();
     SIG=''; LAST_ST=null; LOGPREV='';
     pollNow(); refreshLog();
     if(!POLL)POLL=setInterval(pollNow,2000);

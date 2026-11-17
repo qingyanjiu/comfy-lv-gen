@@ -21,18 +21,27 @@ RUNNER = os.path.join(SKILL_SCRIPTS, "run_selflift.py")
 PROMPT_FILE = os.path.join(HERE, "assets", "remake_prompt.txt")
 HTML_FILE = os.path.join(HERE, "web", "remake_app.html")
 BLACKCRANE_BASE = os.path.join(os.path.dirname(SKILL_SCRIPTS), "assets", "H3-SelfLift_黑鹤二采.base.json")
-ROOT = "D:/Comfy-Desktop/output"
+# 项目根目录：本面板的项目一律放这里，和 output/ 里其它流水线产物分开
+ROOT = "D:/Comfy-Desktop/video-clone"
+# 老根目录：早期版本把项目建在 output/ 下，仍要能读、能一键迁移
+LEGACY_ROOT = "D:/Comfy-Desktop/output"
+# 两个根目录的「内部缓存目录」前缀，list_projects 里要跳过
+INTERNAL_PREFIX = ("_remake_", "_tmp")
 UPLOAD_DIR = os.path.join(ROOT, "_remake_uploads")
 REF_UPLOAD_DIR = os.path.join(ROOT, "_remake_refs")
+# 老版本的全局上传/参考图缓存（在 output 下）：只读兼容，不往里写
+LEGACY_UPLOAD_DIR = os.path.join(LEGACY_ROOT, "_remake_uploads")
+LEGACY_REF_DIR = os.path.join(LEGACY_ROOT, "_remake_refs")
 COMFY_INPUT = "D:/Comfy-Desktop/ComfyUI-Shared/input"
 FFMPEG = "D:/Comfy-Desktop/tools/ffmpeg/bin/ffmpeg"
 FFPROBE = "D:/Comfy-Desktop/tools/ffmpeg/bin/ffprobe"
 PY = sys.executable
 FPS = 24
 PORT = 8901
-UI_BUILD = "2026-11-17o-segfirst"
+UI_BUILD = "2026-11-17p-videoclone"
 COMFY = "http://127.0.0.1:8188"
 
+os.makedirs(ROOT, exist_ok=True)
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(REF_UPLOAD_DIR, exist_ok=True)
 
@@ -126,7 +135,26 @@ def probe(path):
 
 
 def work_dir(name):
-    return os.path.join(ROOT, name)
+    """项目目录。新项目一律建在 ROOT；老项目在 LEGACY_ROOT 里时继续原地读。
+
+    顺序：ROOT 下已存在 → 用它；否则 LEGACY_ROOT 下存在 → 用它（兼容老项目）；
+    都不存在 → 返回 ROOT 下的路径（切段时新建）。"""
+    p = os.path.join(ROOT, name)
+    if os.path.isdir(p):
+        return p
+    old = os.path.join(LEGACY_ROOT, name)
+    if os.path.isdir(old):
+        return old
+    return p
+
+
+def project_root(wd):
+    """这个项目在哪个根目录下（ROOT / LEGACY_ROOT / 其它）。"""
+    ap = os.path.abspath(wd)
+    for r in (ROOT, LEGACY_ROOT):
+        if ap == os.path.abspath(r) or ap.startswith(os.path.abspath(r) + os.sep):
+            return r
+    return os.path.dirname(ap)
 
 
 def cfg_path(wd):
@@ -200,13 +228,15 @@ def clean_comfy_copies(wd):
 
 
 def rename_project(old, new):
-    """改项目名 = 改 output 下的目录名，并同步配置里的片名/成片名。"""
+    """改项目名 = 改所在根目录下的目录名，并同步配置里的片名/成片名。"""
     new, err = check_film_name(new)
     if err:
         return False, err
-    old_wd, new_wd = work_dir(old), work_dir(new)
+    old_wd = work_dir(old)
     if not os.path.isdir(old_wd):
         return False, "项目不存在"
+    # 改名留在原根目录里（老项目在 output 下就还在 output 下，不悄悄搬家）
+    new_wd = os.path.join(project_root(old_wd), new)
     if os.path.abspath(old_wd) == os.path.abspath(new_wd):
         return False, "名字没变"
     if os.path.exists(new_wd):
@@ -272,8 +302,8 @@ def delete_project(name):
     wd = work_dir(name)
     if not os.path.isdir(wd):
         return False, "项目不存在"
-    if os.path.abspath(wd) == os.path.abspath(ROOT) or not os.path.abspath(wd).startswith(
-            os.path.abspath(ROOT) + os.sep):
+    ap = os.path.abspath(wd)
+    if not any(ap.startswith(os.path.abspath(r) + os.sep) for r in (ROOT, LEGACY_ROOT)):
         return False, "路径不合法"
     if project_running(wd):
         return False, "这个项目还有任务在跑，先「停止所有任务」再删"
@@ -377,32 +407,33 @@ def write_project(wd):
         return None
 
 
-def list_projects():
-    """列出 output 下所有可打开的项目（有 project.json 或 _panel_state.json）。"""
+def _scan_root(root, tag):
+    """扫一个根目录下所有可打开的项目（有 project.json 或 _panel_state.json）。"""
     out = []
     try:
-        names = os.listdir(ROOT)
+        names = os.listdir(root)
     except Exception:
-        names = []
+        return out
     for d in names:
-        wd = os.path.join(ROOT, d)
+        wd = os.path.join(root, d)
         if not os.path.isdir(wd):
             continue
-        if "_备份_" in d or d.startswith("_remake_"):
+        if "_备份_" in d or d.startswith(INTERNAL_PREFIX):
             continue   # 快照目录/上传缓存不算项目
         pj_p, st_p = project_path(wd), state_path(wd)
         if not (os.path.exists(pj_p) or os.path.exists(st_p)):
             continue
         item = {"name": d, "n": 0, "done": 0, "created": 0.0, "updated": 0.0,
                 "seg_sec": None, "duration": None, "merged": False,
-                "two_pass": True, "has_project": os.path.exists(pj_p)}
+                "two_pass": True, "has_project": os.path.exists(pj_p),
+                "dir": wd, "root": root, "legacy": tag == "legacy"}
         try:
             st = load_state(wd)
             item.update(n=len(st.get("segments") or []),
                         done=sum(1 for s in (st.get("segments") or [])
                                  if s.get("status") == "done"),
                         created=st.get("created") or 0,
-                        updated=os.path.getmtime(st_p),
+                        updated=os.path.getmtime(st_p) if os.path.exists(st_p) else 0,
                         seg_sec=st.get("seg_sec"), duration=st.get("duration"),
                         merged=bool(st.get("merged")),
                         two_pass=bool(st.get("two_pass", True)))
@@ -421,8 +452,123 @@ def list_projects():
             except Exception:
                 pass
         out.append(item)
+    return out
+
+
+def list_projects():
+    """列出所有项目：新根目录(ROOT) + 老根目录(LEGACY_ROOT，只读兼容)。
+
+    同名时以 ROOT 为准（老目录里那份视为已迁移的残留）。"""
+    out = _scan_root(ROOT, "new")
+    have = {p["name"] for p in out}
+    for p in _scan_root(LEGACY_ROOT, "legacy"):
+        if p["name"] not in have:
+            out.append(p)
     out.sort(key=lambda x: (x.get("updated") or x.get("created") or 0), reverse=True)
     return out
+
+
+def create_project(name, src=None):
+    """新建空项目目录（只有骨架，不切段）。用于先把项目建出来再上传素材。"""
+    name, err = check_film_name(name)
+    if err:
+        return False, err
+    wd = os.path.join(ROOT, name)
+    if os.path.exists(wd) or os.path.isdir(os.path.join(LEGACY_ROOT, name)):
+        return False, "已经有一个叫「%s」的项目了" % name
+    try:
+        os.makedirs(wd, exist_ok=False)
+        for sub in ("source_segments", "refs", "logs", "final", "user_refs"):
+            os.makedirs(os.path.join(wd, sub), exist_ok=True)
+        st = {"film": name, "src": src, "segments": [], "jobs": {},
+              "created": time.time(), "n": 0, "merged": False,
+              "two_pass": True, "anchor_first": True}
+        save_state(wd, st)
+        write_project(wd)
+    except Exception:
+        return False, traceback.format_exc()[-600:]
+    return True, wd
+
+
+def migrate_project(name):
+    """把老根目录（output）里的项目整体搬到新根目录（video-clone）。"""
+    src_wd = os.path.join(LEGACY_ROOT, name)
+    if not os.path.isdir(src_wd):
+        return False, "老目录里没有这个项目"
+    if project_running(src_wd):
+        return False, "这个项目还有任务在跑，先「停止所有任务」再迁移"
+    dst_wd = os.path.join(ROOT, name)
+    if os.path.exists(dst_wd):
+        return False, "新目录里已经有同名项目「%s」" % name
+    os.makedirs(ROOT, exist_ok=True)
+    try:
+        shutil.move(src_wd, dst_wd)
+    except Exception:
+        # 跨盘 move 可能失败，退回「拷贝 + 删源」
+        try:
+            shutil.copytree(src_wd, dst_wd)
+            _hard_rmtree(src_wd)
+        except Exception:
+            return False, traceback.format_exc()[-800:]
+    # 目录搬家后，把项目里记着的绝对路径一起改到新位置
+    try:
+        rewrite_project_paths(dst_wd, src_wd, dst_wd)
+        adopt_legacy_src(dst_wd)
+    except Exception:
+        traceback.print_exc()
+    return True, dst_wd
+
+
+def adopt_legacy_src(wd):
+    """项目源视频还在老上传缓存（output/_remake_uploads）里时，拷一份到新缓存并改指过去。"""
+    st = load_state(wd)
+    src = st.get("src")
+    if not src or not os.path.exists(src):
+        return
+    ap = os.path.abspath(src)
+    if not ap.startswith(os.path.abspath(LEGACY_UPLOAD_DIR) + os.sep):
+        return
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    dst = os.path.join(UPLOAD_DIR, os.path.basename(src))
+    try:
+        if os.path.abspath(dst) != ap:
+            shutil.copy2(src, dst)
+        st["src"] = dst
+        save_state(wd, st)
+        write_project(wd)
+    except Exception:
+        traceback.print_exc()
+
+
+def rewrite_project_paths(wd, old_prefix, new_prefix):
+    """项目搬家后，把 state/cfg/project.json 里以旧目录开头的绝对路径改到新目录。"""
+    olds = [old_prefix.replace("/", "\\"), old_prefix.replace("\\", "/"), old_prefix]
+    news = [new_prefix.replace("/", "\\"), new_prefix.replace("\\", "/"), new_prefix]
+
+    def fix(s):
+        if not isinstance(s, str):
+            return s
+        for o, n in zip(olds, news):
+            if s.startswith(o):
+                return n + s[len(o):]
+        return s
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            return {k: walk(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [walk(v) for v in obj]
+        return fix(obj)
+
+    for p in (state_path(wd), cfg_path(wd), project_path(wd)):
+        if not os.path.exists(p):
+            continue
+        try:
+            j = json.load(open(p, encoding="utf-8"))
+            json.dump(walk(j), open(p, "w", encoding="utf-8"),
+                      ensure_ascii=False, indent=2)
+        except Exception:
+            traceback.print_exc()
 
 
 def log_path(wd, seg=None):
@@ -858,8 +1004,11 @@ def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
     """切段建片。
 
     cuts 为帧号列表（含起点与终点，如 [0, 120, 288, 336]）时按手工切点切，
-    每段长度可不同；否则按 seg_sec 均匀切。"""
-    wd = work_dir(name)
+    每段长度可不同；否则按 seg_sec 均匀切。
+
+    注意：切段/重建一律写新根目录 ROOT。老目录里同名项目不动（要搬用 migrate_project），
+    避免「重建老项目」时把结果写回 output/ 造成两份。"""
+    wd = os.path.join(ROOT, name)
     os.makedirs(os.path.join(wd, "source_segments"), exist_ok=True)
     os.makedirs(os.path.join(wd, "refs"), exist_ok=True)
     os.makedirs(os.path.join(wd, "logs"), exist_ok=True)
@@ -1041,7 +1190,9 @@ class H(BaseHTTPRequestHandler):
                                   "merged": st.get("merged", False)})
             return jresp(self, {"films": films})
         if p == "/api/projects":
-            return jresp(self, {"projects": list_projects(), "root": ROOT})
+            ps = list_projects()
+            return jresp(self, {"projects": ps, "root": ROOT, "legacy_root": LEGACY_ROOT,
+                                "legacy_n": sum(1 for x in ps if x.get("legacy"))})
         if p == "/api/project":
             name = q.get("film", [None])[0]
             if not name:
@@ -1130,6 +1281,8 @@ class H(BaseHTTPRequestHandler):
             if film:
                 cands.append(os.path.join(work_dir(film), "user_refs", base))
             cands.append(os.path.join(REF_UPLOAD_DIR, base))
+            cands.append(os.path.join(LEGACY_REF_DIR, base))
+            cands.append(os.path.join(LEGACY_UPLOAD_DIR, base))
             fp = next((c for c in cands if os.path.exists(c)), None)
             if not fp:
                 return jresp(self, {"error": "文件不存在"}, 404)
@@ -1255,6 +1408,20 @@ class H(BaseHTTPRequestHandler):
             if not ok:
                 return jresp(self, {"ok": False, "error": msg}, 400)
             return jresp(self, {"ok": True, "film": msg})
+        if p == "/api/new-project":
+            # 新建空项目：只建骨架目录，之后上传视频/切段都落在这里
+            name = (data.get("film") or "").strip()
+            ok, msg = create_project(name, data.get("src") or None)
+            if not ok:
+                return jresp(self, {"ok": False, "error": msg}, 400)
+            return jresp(self, {"ok": True, "film": name, "dir": msg, "root": ROOT})
+        if p == "/api/migrate-project":
+            # 把老目录(output)里的项目搬到新根目录(video-clone)
+            name = (data.get("film") or "").strip()
+            ok, msg = migrate_project(name)
+            if not ok:
+                return jresp(self, {"ok": False, "error": msg}, 400)
+            return jresp(self, {"ok": True, "film": name, "dir": msg, "root": ROOT})
         if p == "/api/delete-project":
             name = (data.get("film") or "").strip()
             ok, msg = delete_project(name)
