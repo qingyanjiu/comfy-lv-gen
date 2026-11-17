@@ -26,6 +26,13 @@ RUNNER = os.path.join(SKILL_SCRIPTS, "run_selflift.py")
 PROMPT_FILE = os.path.join(HERE, "assets", "remake_prompt.txt")
 HTML_FILE = os.path.join(HERE, "web", "remake_app.html")
 BLACKCRANE_BASE = os.path.join(os.path.dirname(SKILL_SCRIPTS), "assets", "H3-SelfLift_黑鹤二采.base.json")
+SELFLIFT_BASE = os.path.join(os.path.dirname(SKILL_SCRIPTS), "assets", "H3-SelfLift_单图参考.base.json")
+
+# 可选生成链路：与 run_selflift.WORKFLOW_BASES 同一套 key。
+# 链路由 cfg["workflow"] 的**路径**决定（run_selflift.profile() 靠 "黑鹤" in path 判定），
+# 所以这里存的必须是真实文件路径，不能只存 "blackcrane" 这种名字。
+WORKFLOWS = {"blackcrane": BLACKCRANE_BASE, "selflift": SELFLIFT_BASE}
+ENGINE_LABELS = {"blackcrane": "黑鹤二采", "selflift": "SelfLift 单图参考"}
 
 # 一采 MP / 二采倍数的显存约束。**与 run_selflift.py 的 BC_DEFAULT_UPSCALE /
 # BC_MP_CAP 保持同步**：这里只用于页面上的「会不会被压」预估提示，真正的夹取
@@ -40,6 +47,25 @@ BC_MP_CAP = 0.4
 # 就不是一个东西（2026-11-18 核对时发现两边差 0.1MP）。do_split 新片写 0.3，
 # 那是新片自己的 cfg 值，与这里的「缺失时兜底」是两回事。
 BC_DEFAULT_MEGAPIXELS = 0.2
+# SelfLift 的 MP 缺省值：等于 run_selflift.DEFAULT_MEGAPIXELS(0.5)。
+# 两条链路的 MP 语义不同，默认值也不同，所以「缺失时兜底」必须按链路分开算：
+# 黑鹤的 MP 是一采、还要跟二采倍数耦合（受 bc_mp_cap_for 夹取）；
+# SelfLift 没有二采，MP 就是最终采样分辨率，不受倍数约束。
+SL_DEFAULT_MEGAPIXELS = 0.5
+
+
+def engine_of(wf_path):
+    """由 workflow 路径判定链路，与 run_selflift.profile() 同一套规则。
+
+    老片没有 workflow 字段时 run_selflift 回落到 selflift，这里也一样 ——
+    两边判定必须一致，否则页面显示的和实际跑的不是一条链。
+    """
+    return "blackcrane" if "黑鹤" in str(wf_path or "") else "selflift"
+
+
+def default_mp_for(engine):
+    """该链路的一采 MP 缺省值（黑鹤 0.2 / SelfLift 0.5）。"""
+    return SL_DEFAULT_MEGAPIXELS if engine == "selflift" else BC_DEFAULT_MEGAPIXELS
 
 
 def bc_mp_cap_for(scale):
@@ -65,7 +91,7 @@ FPS = 24
 # 合并模式下由 tools/serve_app.py 覆盖成实际监听端口（8900），
 # /api/version 靠它报真实端口；--standalone 时才用这里的 8901。
 PORT = 8901
-UI_BUILD = "2026-11-18b-res-config"
+UI_BUILD = "2026-11-18c-engine-select"
 COMFY = "http://127.0.0.1:8188"
 
 os.makedirs(ROOT, exist_ok=True)
@@ -247,23 +273,29 @@ def cfg_path(wd):
 
 
 def _cfg_res_of(wd):
-    """读片配置里的一采 MP / 二采倍数（返回的是**实际会生效的值**）。
+    """读片配置的链路 / 一采 MP / 二采倍数（返回的是**实际会生效的值**）。
 
-    state 里**不重复存**这两个值（只存 two_pass / anchor_first），因为它们是
+    state 里**不重复存**这几个值（只存 two_pass / anchor_first），因为它们是
     run_selflift 跑片时读 cfg 的真源，存两处必然漂移。
 
-    缺省回落与 run_selflift 保持一致：老片没有 bc_upscale 字段时，实际跑的是
-    base 模板里的 1.5 倍，所以这里也返回 1.5 —— 页面上必须显示「真正会用的值」，
-    给 null 会让输入框停在别处，用户以为倍数没设。megapixels 缺省用
-    BC_DEFAULT_MEGAPIXELS(0.2)，与 build_wf 的兜底同一来源。读失败返回空 dict，
-    调用方用 .get() 拿 None。
+    缺省回落与 run_selflift 保持一致，且**必须按链路分开**：
+    - 链路：老片没 workflow 字段时 run_selflift.profile() 回落 selflift
+    - MP：黑鹤兜底 BC_DEFAULT_MEGAPIXELS(0.2)，SelfLift 兜底 DEFAULT_MEGAPIXELS(0.5)
+    - 倍数：只有黑鹤有意义，SelfLift 没有二采，返回 None 让前端隐藏这一项
+
+    页面上必须显示「真正会用的值」，给 null 会让输入框停在别处，用户以为没设。
+    读失败返回空 dict，调用方用 .get() 拿 None。
     """
     try:
         j = json.load(open(cfg_path(wd), encoding="utf-8"))
     except Exception:
         return {}
-    return {"megapixels": j.get("megapixels") or BC_DEFAULT_MEGAPIXELS,
-            "bc_upscale": j.get("bc_upscale") or BC_DEFAULT_UPSCALE}
+    eng = engine_of(j.get("workflow"))
+    return {"engine": eng,
+            "workflow": j.get("workflow"),
+            "megapixels": j.get("megapixels") or default_mp_for(eng),
+            "bc_upscale": ((j.get("bc_upscale") or BC_DEFAULT_UPSCALE)
+                           if eng == "blackcrane" else None)}
 
 
 def state_path(wd):
@@ -492,8 +524,11 @@ def build_project(wd):
         "settings": {
             "two_pass": bool(st.get("two_pass", True)),
             "anchor_first": bool(st.get("anchor_first", True)),
-            # 一采 MP / 二采倍数：从 cfg 现读（state 不存这两个，避免两处漂移）
+            # 链路 + 画质：从 cfg 现读（state 不存这几个，避免两处漂移）。
+            # engine 决定页面显示「一采 MP」还是「一采 MP + 二采倍数」。
+            "engine": _res.get("engine"),
             "megapixels": _res.get("megapixels"),
+            # SelfLift 没有二采 → 这里是 None，前端据此隐藏倍数输入框
             "upscale": _res.get("bc_upscale"),
         },
         "prompt": prompt,
@@ -927,12 +962,15 @@ def run_seg_proc(wd, idx, seed=None, two_pass=None, prompt=None, keep_audio=None
         keep_audio = bool(json.load(open(cfg, encoding="utf-8")).get("audio_keep"))
     audio_fit = json.load(open(cfg, encoding="utf-8")).get("audio_fit") or "hold"
     # 可选换 seed / 切换二采 / 改本段提示词（重生成时可覆盖）
+    _eng = engine_of(json.load(open(cfg, encoding="utf-8")).get("workflow"))
     if seed or two_pass is not None or prompt is not None:
         j = json.load(open(cfg, encoding="utf-8"))
         if seed:
             j["segments"][idx-1]["seed"] = int(seed)
             st["segments"][idx-1]["seed"] = int(seed)  # 同步 state，供前端弹窗显示
-        if two_pass is not None:
+        # SelfLift 没有二采节点：不写 bc_two_pass（写了也不生效，还会让页面
+        # 误以为这条链有二采开关）
+        if two_pass is not None and _eng == "blackcrane":
             j["bc_two_pass"] = bool(two_pass)
             st["two_pass"] = bool(two_pass)  # 状态同步，前端显示
         if prompt is not None:
@@ -941,9 +979,14 @@ def run_seg_proc(wd, idx, seed=None, two_pass=None, prompt=None, keep_audio=None
         json.dump(j, open(cfg, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     # 跑前确保该段参考文件都在 ComfyUI input（修复"成功一段后其余失败"）
     seg_cfg = json.load(open(cfg, encoding="utf-8"))["segments"][idx-1]
-    # 本次实际用的二采开关（写进 state，页面据此标「二采/一采」）
-    eff_two_pass = json.load(open(cfg, encoding="utf-8")).get("bc_two_pass") is not False
-    st["segments"][idx-1]["two_pass"] = bool(eff_two_pass)
+    # 本次实际用的二采开关（写进 state，页面据此标「二采/一采」）。
+    # SelfLift 没有二采这个概念 → 记 None，卡片上不画「二采/一采」徽标。
+    if _eng == "blackcrane":
+        eff_two_pass = json.load(open(cfg, encoding="utf-8")).get("bc_two_pass") is not False
+        st["segments"][idx-1]["two_pass"] = bool(eff_two_pass)
+    else:
+        eff_two_pass = None
+        st["segments"][idx-1]["two_pass"] = None
     st["segments"][idx-1]["gen_at"] = time.time()
     inputs_ok, inputs_note = ensure_seg_inputs(wd, seg_cfg)
     if not inputs_ok:
@@ -969,7 +1012,9 @@ def run_seg_proc(wd, idx, seed=None, two_pass=None, prompt=None, keep_audio=None
             except Exception:
                 cur_seed = "?"
             append_log(lp, "=" * 56)
-            append_log(lp, f"  开始生成  段 {idx}/{len(st.get('segments', []))}    seed {cur_seed}    二采 {'开' if eff_two_pass else '关'}")
+            # 二采是黑鹤专属概念：SelfLift 没有二采，写「一采/二采」会让日志误导人
+            _tp_txt = "" if eff_two_pass is None else f"    二采 {'开' if eff_two_pass else '关'}"
+            append_log(lp, f"  开始生成  段 {idx}/{len(st.get('segments', []))}    seed {cur_seed}{_tp_txt}")
             append_log(lp, f"  开始时间  {time.strftime('%H:%M:%S')}")
             append_log(lp, f"  参考文件  {inputs_note}")
             append_log(lp, "=" * 56)
@@ -1182,7 +1227,7 @@ def h3_seconds(dur):
 
 def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
              anchor_first=True, cuts=None, fps=None, keep_audio=None,
-             megapixels=None, upscale=None):
+             megapixels=None, upscale=None, engine="blackcrane"):
     """切段建片。
 
     cuts 为帧号列表（含起点与终点，如 [0, 120, 288, 336]）时按手工切点切，
@@ -1191,12 +1236,18 @@ def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
     keep_audio：切出的源段是否保留音轨（None=源视频有音轨就保留）。
     源段音轨是「出片后贴回原音」的唯一素材，丢了找不回来，所以默认保留。
 
-    megapixels / upscale：一采百万像素与二采放大倍数。None=用默认值。
-    两者是耦合的——二采显存按倍数平方涨，所以倍数越大一采 MP 上限越低，
+    engine：生成链路（blackcrane=黑鹤二采 / selflift=单图参考直出）。
+    决定写进 cfg 的 workflow 路径，run_selflift.profile() 靠路径里的「黑鹤」
+    判定走哪套节点契约。两条链路的默认画质参数不同：
+    - 黑鹤：MP 是一采，且二采显存按倍数平方涨 → MP 受 bc_mp_cap_for 夹取
+    - SelfLift：没有二采，MP 就是最终采样分辨率，不受倍数约束，默认 0.5
+
+    megapixels / upscale：一采百万像素与二采放大倍数。None=用该链路默认值。
     实际夹取在 run_selflift.build_wf 里做（这里只存用户意图，不预先改写）。
 
     注意：切段/重建一律写新根目录 ROOT。老目录里同名项目不动（要搬用 migrate_project），
     避免「重建老项目」时把结果写回 output/ 造成两份。"""
+    eng = engine if engine in WORKFLOWS else "blackcrane"
     wd = os.path.join(ROOT, name)
     os.makedirs(os.path.join(wd, "source_segments"), exist_ok=True)
     os.makedirs(os.path.join(wd, "refs"), exist_ok=True)
@@ -1312,22 +1363,28 @@ def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
                           "seed": seg["seed"],
                           "clip_sec": round(this_dur, 4),
                           "seconds": round(gen_sec, 4),
-                          "two_pass": bool(two_pass),
+                          # 二采：SelfLift 没有这一步 → 记 None（与下面 st["two_pass"]
+                          # 同一套规则），否则卡片会画「二采」徽标、tpTag() 也判不出来
+                          "two_pass": (bool(two_pass) if eng == "blackcrane" else None),
                           "clip": f"source_segments/clip_{i+1:02d}.mp4",
                           "first": f"refs/first_{i+1:02d}.png"})
 
     cfg = {
         "title": name, "prefix": prefix, "film_id": prefix.split("_", 1)[-1],
-        "final_name": f"{name}_复刻成片.mp4", "workflow": BLACKCRANE_BASE,
+        "final_name": f"{name}_复刻成片.mp4", "workflow": WORKFLOWS[eng],
         "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
         "fps": FPS, "seconds": round(h3_seconds(actual)[0], 4),
         "length": h3_seconds(actual)[1],
-        "megapixels": float(megapixels or 0.3), "aspect_ratio": "16:9 (Widescreen)",
+        # 一采 MP 的默认值按链路分：黑鹤 0.2（还要跟二采倍数耦合夹取）、
+        # SelfLift 0.5（没有二采，MP 就是最终采样分辨率）。
+        "megapixels": float(megapixels or default_mp_for(eng)),
+        "aspect_ratio": "16:9 (Widescreen)",
         "quality": "high",
         # 二采放大倍数：以前硬编码在 base 工作流（151 号 FloatConstant=1.5），
         # 页面上写「放大 2 倍」但其实从没生效过。现在由这里写入 cfg，
         # build_wf 会覆盖到 151 节点上。
-        "bc_upscale": float(upscale or 1.5),
+        # SelfLift 链路没有二采节点，写了也没用 —— 干脆不写，避免以后误读成
+        # 「这条链也在放大」。
         "audio": "off", "chain_first_frame": True, "join_mode": "cut",
         # 保留原音：出片后把源段音轨贴回（用户 2026-11-17 定）。
         # audio=off 只管模型自推的声音；原音走 ffmpeg 后处理，不进工作流。
@@ -1335,6 +1392,12 @@ def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
         "bc_two_pass": bool(two_pass),  # 二采开关：False=跳过放大+二采，快速低清预览
         "head": "", "tail": "", "segments": segs,
     }
+    if eng == "blackcrane":
+        cfg["bc_upscale"] = float(upscale or BC_DEFAULT_UPSCALE)
+    else:
+        # SelfLift 没有二采，二采开关对它无意义。留着会让页面显示一个永远不生效的
+        # 选项，也会让 run_selflift 的 stale 判定把「切换二采」当成画面变化。
+        cfg.pop("bc_two_pass", None)
     # 统一记录切点帧号：两种模式都留痕，页面时间轴可回显「这一段到底从哪切到哪」
     if manual:
         cut_frames = [int(a) for a, _ in spans] + [int(spans[-1][1])]
@@ -1348,7 +1411,13 @@ def do_split(name, src, seg_sec, exact, prompt, two_pass=True, user_refs=None,
 
     json.dump(cfg, open(cfg_path(wd), "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     st = {"film": name, "src": src, "prefix": prefix, "seg_sec": round(actual, 4),
-          "actual": actual, "exact": bool(exact), "two_pass": bool(two_pass),
+          "actual": actual, "exact": bool(exact),
+          # 二采：SelfLift 没有这个概念 → 记 None，卡片不画「二采/一采」徽标
+          "two_pass": (bool(two_pass) if eng == "blackcrane" else None),
+          # 链路 + 画质：切段时定的，透传给前端做控件显隐（真源仍在 cfg 里）
+          "engine": eng,
+          "megapixels": cfg["megapixels"],
+          "bc_upscale": cfg.get("bc_upscale"),
           "anchor_first": bool(anchor_first),
           "mode": "manual" if manual else "even",   # 切段方式：按帧手动 / 按秒均匀
           "cuts": cut_frames,
@@ -1506,16 +1575,25 @@ class H(BaseHTTPRequestHandler):
                     # 保留原音开关（片级）
                     st["audio_keep"] = bool(j.get("audio_keep"))
                     st["audio_fit"] = j.get("audio_fit") or "hold"
-                    # 画质（一采 MP / 二采倍数）：从 cfg 现读，页面用它回填输入框。
-                    # state 里不存这两个，只在这里透传，避免两处漂移。
-                    # 缺省回落与 run_selflift 一致（老片实际跑的就是 1.5 倍），
-                    # 返回 null 会让页面输入框停在别处，用户以为没设过。
-                    st["megapixels"] = j.get("megapixels") or BC_DEFAULT_MEGAPIXELS
-                    st["upscale"] = j.get("bc_upscale") or BC_DEFAULT_UPSCALE
-                    # 安全上限由后端算一份给前端用：前端虽然有一份同构的 JS 实现
-                    # （mpCapFor），但两份公式迟早漂移，页面上的「会不会被压」
-                    # 提示应该以真正跑片的这份为准。
-                    st["bc_mp_cap"] = bc_mp_cap_for(st["upscale"])
+                    # 画质（链路 / 一采 MP / 二采倍数）：从 cfg 现读，页面用它回填控件。
+                    # state 里不存这几个，只在这里透传，避免两处漂移。
+                    # 缺省回落与 run_selflift 一致，且**必须按链路分**：
+                    # 黑鹤老片实际跑的就是 0.2MP + 1.5 倍；SelfLift 没有二采，
+                    # MP 就是最终分辨率，兜底 0.5。返回 null 会让输入框停在别处，
+                    # 用户以为没设过。
+                    _eng = engine_of(j.get("workflow"))
+                    st["engine"] = _eng
+                    st["megapixels"] = j.get("megapixels") or default_mp_for(_eng)
+                    if _eng == "blackcrane":
+                        st["upscale"] = j.get("bc_upscale") or BC_DEFAULT_UPSCALE
+                        # 安全上限由后端算一份给前端用：前端虽然有一份同构的 JS 实现
+                        # （mpCapFor），但两份公式迟早漂移，页面上的「会不会被压」
+                        # 提示应该以真正跑片的这份为准。
+                        # SelfLift 没有二采 → 无上限概念，给 None 让前端不画这条提示。
+                        st["bc_mp_cap"] = bc_mp_cap_for(st["upscale"])
+                    else:
+                        st["upscale"] = None
+                        st["bc_mp_cap"] = None
                 except Exception:
                     pass
             # 每段实际有没有音轨：卡片上标「原音已贴 / 无音轨」
@@ -1809,11 +1887,15 @@ class H(BaseHTTPRequestHandler):
                               user_refs=user_refs, anchor_first=anchor,
                               keep_audio=data.get("keep_audio"),
                               megapixels=data.get("megapixels"),
-                              upscale=data.get("upscale"))
+                              upscale=data.get("upscale"),
+                              engine=data.get("engine") or "blackcrane")
             except Exception:
                 return jresp(self, {"error": traceback.format_exc()[-1200:]}, 500)
             return jresp(self, {"ok": True, "film": name, "n": st["n"],
                                 "actual": st["actual"], "mode": st.get("mode"),
+                                "engine": st.get("engine"),
+                                "megapixels": st.get("megapixels"),
+                                "upscale": st.get("bc_upscale"),
                                 "cuts": st.get("cuts"), "segments": st["segments"]})
         if p == "/api/split-at":
             # 按帧号切点建片：[0, 120, 288, 336] → 3 段
@@ -1843,12 +1925,16 @@ class H(BaseHTTPRequestHandler):
                               cuts=cuts, fps=data.get("fps"),
                               keep_audio=data.get("keep_audio"),
                               megapixels=data.get("megapixels"),
-                              upscale=data.get("upscale"))
+                              upscale=data.get("upscale"),
+                              engine=data.get("engine") or "blackcrane")
             except Exception:
                 return jresp(self, {"error": traceback.format_exc()[-1200:]}, 500)
             return jresp(self, {"ok": True, "film": name, "n": st["n"],
                                 "actual": st["actual"], "frames": st["total_frames"],
                                 "mode": st.get("mode"),
+                                "engine": st.get("engine"),
+                                "megapixels": st.get("megapixels"),
+                                "upscale": st.get("bc_upscale"),
                                 "cuts": st.get("cuts"), "segments": st["segments"]})
         if p == "/api/gen":
             film = data.get("film"); idx = int(data.get("idx", 0)); seed = data.get("seed")
@@ -2016,6 +2102,60 @@ class H(BaseHTTPRequestHandler):
             film = data.get("film")
             ok, msg = run_merge_proc(work_dir(film))
             return jresp(self, {"ok": ok, "msg": msg})
+        if p == "/api/set-engine":
+            # 换生成链路（写 cfg["workflow"]；下次生成生效）。
+            # 链路的真源就是 cfg 里那条 base 工作流的**路径** —— run_selflift.profile()
+            # 靠路径里有没有「黑鹤」来判定走哪套节点契约，所以这里必须写路径，
+            # 不能写 "blackcrane" 这种 key（写错了 runner 会把它当文件打开）。
+            film = data.get("film")
+            eng = str(data.get("engine") or "").strip().lower()
+            if eng not in WORKFLOWS:
+                return jresp(self, {"error": f"未知链路：{eng}"
+                                    f"（可选：{' / '.join(WORKFLOWS)}）"}, 400)
+            wd = work_dir(film)
+            cp = cfg_path(wd)
+            if not os.path.exists(cp):
+                return jresp(self, {"error": "未切段"}, 400)
+            j = json.load(open(cp, encoding="utf-8"))
+            old = engine_of(j.get("workflow"))
+            if old == eng:
+                return jresp(self, {"ok": True, "engine": eng, "changed": [],
+                                    "megapixels": j.get("megapixels") or default_mp_for(eng),
+                                    "upscale": ((j.get("bc_upscale") or BC_DEFAULT_UPSCALE)
+                                                if eng == "blackcrane" else None)})
+            j["workflow"] = WORKFLOWS[eng]
+            # 换链路 = 换底模/条件节点/采样方式，同 seed 也不是同一个画面
+            j["workflow_updated_at"] = time.time()
+            changed = [f"链路={eng}（{os.path.basename(j['workflow'])}）"]
+            # 切到 SelfLift：二采相关字段留着只会误导（build_wf 不读、页面不显示），
+            # 但也不主动删 —— 用户可能只是想试一下再切回来，删了就找不回原倍数。
+            # 切回黑鹤时这些字段原样还在，正好复用。
+            # 一采 MP：两条链路的默认值不同（0.2 vs 0.5），但**不静默改写用户配置** ——
+            # 只在该链路本来就没有显式值时，才按新链路兜底返回给前端回填。
+            mp = j.get("megapixels") or default_mp_for(eng)
+            j["megapixels"] = mp
+            j["res_updated_at"] = time.time()
+            json.dump(j, open(cp, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+            # 全片已出段一律作废（与 set-res 同一套理由：换链路就是换画面）
+            st = load_state(wd)
+            n_stale = 0
+            for s in st.get("segments") or []:
+                if s.get("status") == "done":
+                    s["stale"] = True
+                    n_stale += 1
+            # 二采标记也要跟着链路重置：SelfLift 段没有二采概念，留着上一轮的
+            # true/false 会让卡片继续显示「二采」徽标（SelfLift 根本没有这一步）。
+            for s in st.get("segments") or []:
+                s["two_pass"] = (None if eng == "selflift"
+                                 else bool(j.get("bc_two_pass") is not False))
+            st["two_pass"] = (None if eng == "selflift"
+                              else bool(j.get("bc_two_pass") is not False))
+            save_state(wd, st)
+            write_project(wd)
+            return jresp(self, {"ok": True, "engine": eng, "changed": changed,
+                                "stale_count": n_stale, "megapixels": mp,
+                                "upscale": ((j.get("bc_upscale") or BC_DEFAULT_UPSCALE)
+                                            if eng == "blackcrane" else None)})
         if p == "/api/set-twopass":
             # 随时切换二采开关（写 cfg + state，下次生成生效；不影响已生成的段）
             film = data.get("film"); tp = bool(data.get("two_pass", True))
@@ -2024,6 +2164,12 @@ class H(BaseHTTPRequestHandler):
             if not os.path.exists(cp):
                 return jresp(self, {"error": "未切段"}, 400)
             j = json.load(open(cp, encoding="utf-8"))
+            # SelfLift 链路没有二采节点，这个开关对它没有任何作用。前端已经隐藏，
+            # 这里再兜一层：**不写 cfg**，否则 seg_status 的 stale 判定会把
+            # 「切换二采」当成画面变化，凭空作废整片已出好的段。
+            if engine_of(j.get("workflow")) != "blackcrane":
+                return jresp(self, {"ok": True, "two_pass": None, "ignored": True,
+                                    "msg": "当前链路（SelfLift）没有二采"})
             j["bc_two_pass"] = tp
             json.dump(j, open(cp, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
             st = load_state(wd); st["two_pass"] = tp; save_state(wd, st)
@@ -2031,21 +2177,26 @@ class H(BaseHTTPRequestHandler):
             return jresp(self, {"ok": True, "two_pass": tp})
         if p == "/api/set-res":
             # 一采 MP / 二采放大倍数（写 cfg；下次生成生效，不影响已生成的段）。
-            # 两者耦合：二采显存按倍数平方涨，所以倍数越大一采上限越低。
-            # 这里只做范围校验并存用户意图，实际夹取在 run_selflift.build_wf，
-            # 返回 cap 让前端提示「配的 MP 会不会被压」。
+            # **两条链路的语义不同，这里必须按链路分支**：
+            # - 黑鹤：MP 是一采，二采显存按倍数平方涨 → 倍数越大一采上限越低，
+            #   这里返回 cap 让前端提示「配的 MP 会不会被压」。
+            # - SelfLift：没有二采，MP 就是最终采样分辨率，不受倍数约束 →
+            #   upscale 一律忽略（不校验、不写 cfg），cap 返回 None。
+            # 实际夹取在 run_selflift.build_wf，这里只存用户意图。
             film = data.get("film")
             wd = work_dir(film)
             cp = cfg_path(wd)
             if not os.path.exists(cp):
                 return jresp(self, {"error": "未切段"}, 400)
             j = json.load(open(cp, encoding="utf-8"))
+            eng = engine_of(j.get("workflow"))
             changed = []
             n_stale = 0
             # 只有「值真的变了」才算改动。前端的 change 事件在「点一下输入框再
             # 点别处」「按回车」时也会触发，值没变；若照样落盘 + 全片标 stale，
             # 用户只是点了一下就把所有已出段变成需重出（2026-11-18 实测踩到）。
-            _old_mp = float(j.get("megapixels") or BC_DEFAULT_MEGAPIXELS)
+            # 兜底按链路取，否则 SelfLift 片把 0.5 和 0.2 比会误判成「改了」。
+            _old_mp = float(j.get("megapixels") or default_mp_for(eng))
             _old_up = float(j.get("bc_upscale") or BC_DEFAULT_UPSCALE)
             mp = data.get("megapixels")
             if mp is not None:
@@ -2059,7 +2210,7 @@ class H(BaseHTTPRequestHandler):
                     j["megapixels"] = round(mp, 3)
                     changed.append(f"一采 {j['megapixels']}MP")
             up = data.get("upscale")
-            if up is not None:
+            if up is not None and eng == "blackcrane":
                 try:
                     up = float(up)
                 except (TypeError, ValueError):
@@ -2089,16 +2240,25 @@ class H(BaseHTTPRequestHandler):
                 if n_stale:
                     save_state(wd, st)
                 write_project(wd)
-            # 安全上限按新倍数重算，前端据此显示「实际会用多少」
-            scale = float(j.get("bc_upscale") or BC_DEFAULT_UPSCALE)
-            cap = bc_mp_cap_for(scale)
-            eff = min(float(j.get("megapixels") or BC_DEFAULT_MEGAPIXELS), cap)
+            if eng == "blackcrane":
+                # 安全上限按新倍数重算，前端据此显示「实际会用多少」
+                scale = float(j.get("bc_upscale") or BC_DEFAULT_UPSCALE)
+                cap = bc_mp_cap_for(scale)
+                eff = min(float(j.get("megapixels") or BC_DEFAULT_MEGAPIXELS), cap)
+                clamped = eff < float(j.get("megapixels") or 0)
+            else:
+                # SelfLift 无二采：MP 就是最终值，不存在被压的可能
+                cap = None
+                eff = float(j.get("megapixels") or default_mp_for(eng))
+                clamped = False
             return jresp(self, {"ok": True, "changed": changed,
+                                "engine": eng,
                                 "megapixels": j.get("megapixels"),
-                                "upscale": j.get("bc_upscale"),
+                                "upscale": (j.get("bc_upscale")
+                                            if eng == "blackcrane" else None),
                                 "cap": cap, "effective_megapixels": eff,
                                 "stale_count": n_stale if changed else 0,
-                                "clamped": eff < float(j.get("megapixels") or 0)})
+                                "clamped": clamped})
         if p == "/api/set-audio-keep":
             # 保留原音开关（写 cfg；下次出片生效，不影响已生成的段）
             film = data.get("film")

@@ -325,15 +325,23 @@ header .nav{font-size:12px;color:#a0aec0}
     <div class="hint" id="splitTarget" style="margin:-4px 0 10px"></div>
 
     <!-- 画质：一采 MP + 二采放大倍数。放两个 tab 之外，因为两套切段方式共用同一组
-         画质参数（切段时写进 segments.json，之后 build_wf 覆盖到 8/151 号节点）。 -->
+         画质参数（切段时写进 segments.json，之后 build_wf 覆盖到 8/151 号节点）。
+         链路也在这一行：它决定后面「二采放大」这一项存不存在，以及 MP 的默认值。 -->
     <div class="row qrow">
-      <label style="font-weight:600;color:#2d3748">画质</label>
+      <label for="engSel" style="font-weight:600;color:#2d3748">链路</label>
+      <select id="engSel" title="生成链路。黑鹤二采=一采+放大+精修（慢、更锐）；SelfLift 单图参考=ref2va 直出（快，无二采）">
+        <option value="blackcrane">黑鹤二采</option>
+        <option value="selflift">SelfLift 单图参考</option>
+      </select>
+      <span style="flex:0 0 10px"></span>
       <label for="mpIn">一采</label>
-      <input type="number" id="mpIn" class="in-num" value="0.3" min="0.05" max="2" step="0.05">
+      <input type="number" id="mpIn" class="in-num" value="0.2" min="0.05" max="2" step="0.05">
       <span class="sel">MP</span>
-      <label for="upIn">二采放大</label>
-      <input type="number" id="upIn" class="in-num" value="1.5" min="1" max="3" step="0.1">
-      <span class="sel">倍</span>
+      <span id="upWrap" style="display:contents">
+        <label for="upIn">二采放大</label>
+        <input type="number" id="upIn" class="in-num" value="1.5" min="1" max="3" step="0.1">
+        <span class="sel">倍</span>
+      </span>
       <span class="sel" id="resEst"></span>
     </div>
     <div class="hint" id="resHint" style="margin-top:0"></div>
@@ -342,7 +350,7 @@ header .nav{font-size:12px;color:#a0aec0}
       <div class="row">
         <label>每段秒数</label><input type="number" id="segsec" class="in-num" value="5" min="2" max="30" step="0.5">
         <label><input type="checkbox" id="exact"> 固定秒数（尾部不足则丢弃）</label>
-        <label><input type="checkbox" id="twopass" checked> 开启二采</label>
+        <label id="twopassWrap"><input type="checkbox" id="twopass" checked> 开启二采</label>
         <label><input type="checkbox" id="keepAudio" checked title="切段时把源视频的音轨一并保留，出片后贴回"> 保留原音</label>
         <button id="btnSplit" class="pri" disabled>切段并建片</button>
       </div>
@@ -372,7 +380,7 @@ header .nav{font-size:12px;color:#a0aec0}
       </div>
       <div class="cutlist" id="cutList"></div>
       <div class="row" style="margin-top:10px">
-        <label><input type="checkbox" id="tlTwoPass" checked> 开启二采</label>
+        <label id="tlTwoPassWrap"><input type="checkbox" id="tlTwoPass" checked> 开启二采</label>
         <label><input type="checkbox" id="tlKeepAudio" checked title="切段时把源视频的音轨一并保留，出片后贴回"> 保留原音</label>
         <button id="btnGenCuts" class="pri" disabled>按切点生成</button>
         <span class="sel" id="cutInfo"></span>
@@ -390,7 +398,7 @@ header .nav{font-size:12px;color:#a0aec0}
       <button id="btnMerge">拼接成片</button>
       <button id="btnSaveProj">💾 保存项目</button>
       <button id="btnStop" class="danger">⏹ 停止所有任务</button>
-      <label class="sel">二采 <select id="tpSwitch"><option value="1">开（高质量）</option><option value="0">关（快速低清）</option></select></label>
+      <label class="sel" id="tpSwitchWrap">二采 <select id="tpSwitch"><option value="1">开（高质量）</option><option value="0">关（快速低清）</option></select></label>
       <label class="sel" title="出片后把源段原音贴回（人声/音乐/音效全保留）。改了只对之后出的段生效。">
         <input type="checkbox" id="keepAudioSw" checked> 保留原音
         <select id="audioFit" title="hold：音频从段首播，多出的视频补静音（音调不变）；fit：把音频拉长铺满整段（音调轻微变化）">
@@ -558,7 +566,14 @@ function resetEvenParams(){
   $('#exact').checked=false;
 }
 
-// ---- 画质：一采 MP / 二采放大倍数 ----
+// ---- 链路 + 画质：一采 MP / 二采放大倍数 ----
+// 两条链路（与 run_selflift.WORKFLOW_BASES 同一套 key）：
+//   blackcrane = 黑鹤二采，一采 → 按倍数放大 → 精修；MP 受显存上限夹取
+//   selflift   = 单图参考 ref2va 直出，**没有二采**；MP 就是最终采样分辨率
+// 所以「二采」这一整组控件（倍数输入 + 三处开关 + 徽标 + 上限提示）只在黑鹤下有意义。
+const ENGINE_DEFAULT_MP={blackcrane:0.2, selflift:0.5};   // 与后端 BC_/SL_DEFAULT_MEGAPIXELS 同步
+const ENGINE_LABEL={blackcrane:'黑鹤二采', selflift:'SelfLift 单图参考'};
+let ENGINE='blackcrane';
 // 与 run_selflift.py 的 BC_MP_CAP / BC_DEFAULT_UPSCALE 保持同步。
 // 这里只算「页面上给用户看的预估」，真正夹取在 runner 的 build_wf 里做，
 // 所以即使这里漂移也只影响提示文字，不会让片子跑错。
@@ -581,9 +596,49 @@ function estRes(mp,scale){
   const a2w=Math.round(w*scale/32)*32, a2h=Math.round(h*scale/32)*32;
   return {a1w,a1h,a2w,a2h};
 }
+// 链路切换：只切显隐和默认值，不自己发请求 —— 新片由切段时一并提交，
+// 老片由 setEngine() 显式落盘（避免只是翻下拉就把已出段全标 stale）。
+function isBC(){return ENGINE==='blackcrane'}
+// 切链路时把 MP 换成新链路的默认值 —— 但只在「当前值等于旧链路默认值」时换，
+// 用户手改过的数字不覆盖（0.6 切到 SelfLift 还是 0.6）。
+function retuneMpForEngine(prev){
+  const inp=$('#mpIn'); if(!inp)return;
+  const cur=parseFloat(inp.value);
+  if(!isFinite(cur)||Math.abs(cur-(ENGINE_DEFAULT_MP[prev]||0))<1e-9){
+    inp.value=ENGINE_DEFAULT_MP[ENGINE];
+  }
+}
+function applyEngineUI(prevEngine){
+  const bc=isBC();
+  if(prevEngine&&prevEngine!==ENGINE)retuneMpForEngine(prevEngine);
+  // 二采倍数组：整组显示/隐藏（display:contents 的包裹层不占布局，隐藏即全消失）
+  const uw=$('#upWrap'); if(uw)uw.style.display=bc?'contents':'none';
+  // 三处二采开关：均匀切 / 手动切 / 段落工具栏
+  ['#twopassWrap','#tlTwoPassWrap','#tpSwitchWrap'].forEach(s=>{
+    const el=$(s); if(el)el.style.display=bc?'':'none';
+  });
+  // MP 输入框提示：两条链路语义完全不同，别让用户以为黑鹤的「会被压」也适用于 SelfLift
+  const mp=$('#mpIn');
+  if(mp)mp.title=bc
+    ?'一采百万像素。二采显存按倍数平方涨，实际会被压到上限以内（见下方提示）'
+    :'百万像素 = 最终采样分辨率（SelfLift 没有二采，不会被压）';
+  updateResEst();
+}
 function updateResEst(){
-  const mp=parseFloat($('#mpIn').value)||0.3;
-  const up=parseFloat($('#upIn').value)||1.5;
+  const bc=isBC();
+  const mp=parseFloat($('#mpIn').value)||ENGINE_DEFAULT_MP[ENGINE];
+  const up=parseFloat($('#upIn').value)||RES_UP_BASE;
+  const h=$('#resHint');
+  // ---- SelfLift：没有二采，MP 就是成片分辨率，不存在夹取/倍数 ----
+  if(!bc){
+    const r=estRes(mp,1);
+    $('#resEst').textContent=`→ 成片约 ${r.a1w}×${r.a1h}（${mp}MP 直出）`;
+    h.textContent=`SelfLift 单图参考：ref2va 直出，无二采放大。${mp}MP ≈ ${r.a1w}×${r.a1h}，`
+      +`改大更清晰但更慢、更吃显存（8GB 卡建议 ≤0.75）。`;
+    h.style.color='';
+    return;
+  }
+  // ---- 黑鹤：一采 → 夹取 → 放大 ----
   const cap=mpCapFor(up);
   const eff=Math.min(mp,cap);
   const r=estRes(eff,up);
@@ -591,7 +646,6 @@ function updateResEst(){
   // 用户设了 0.4 却得到 0.225 会以为设置没生效（2026-11-18 踩过）。
   $('#resEst').textContent=`→ 成片约 ${r.a2w}×${r.a2h}（一采 ${r.a1w}×${r.a1h}）`;
   const clamped=eff<mp-1e-9;
-  const h=$('#resHint');
   if(clamped){
     h.textContent=`⚠ ${up} 倍时一采安全上限是 ${cap}MP（二采显存按倍数平方涨），`
       +`你配的 ${mp}MP 跑片时会自动压到 ${cap}MP。`;
@@ -620,14 +674,45 @@ $('#upIn').onchange=()=>{
   if(FILM)pushResCfg();
 };
 $('#mpIn').onchange=()=>{ updateResEst(); if(FILM)pushResCfg(); };
+// 链路切换：**必须落盘**（cfg["workflow"] 才是跑片真源），且 run_selflift 会把
+// workflow_updated_at 并入 stale 判定 —— 换链路 = 换底模/条件节点/采样方式，
+// 同 seed 也不是同一个画面，全片确实要重出。所以先确认再发。
+$('#engSel').onchange=()=>{
+  const next=$('#engSel').value;
+  if(next===ENGINE){return}
+  const prev=ENGINE;
+  if(!FILM){ ENGINE=next; applyEngineUI(prev); return }
+  const lbl=ENGINE_LABEL[next]||next;
+  if(!confirm(`把本片生成链路切成「${lbl}」？\n\n`
+    +`两条链路的底模、条件节点、采样方式都不同，同 seed 也不是同一个画面，`
+    +`已出的段会全部标为「需重出」。\n\n（只是想试试另一条链，建议新建一个项目。）`)){
+    $('#engSel').value=ENGINE; return;
+  }
+  // prev 必须传进去：applyEngineUI 靠它判断「当前 MP 是不是旧链路的默认值」，
+  // 是才换成新链路默认值（黑鹤 0.2 ↔ SelfLift 0.5）；用户手改过的数字不覆盖。
+  ENGINE=next; applyEngineUI(prev);
+  fetch('/api/set-engine',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({film:FILM,engine:next})}).then(r=>r.json()).then(j=>{
+      if(j.error){$('#resHint').textContent='✗ '+j.error;$('#resHint').style.color='var(--err)';return}
+      // 换链路后一采 MP 的默认值不同：cfg 里没显式存过就按新链路兜底回填
+      if(j.megapixels!=null)$('#mpIn').value=j.megapixels;
+      if(j.upscale!=null)$('#upIn').value=j.upscale;
+      SRV_CAP={scale:null,cap:null};
+      applyEngineUI();
+      pollNow();
+    }).catch(e=>{$('#resHint').textContent='✗ '+e;$('#resHint').style.color='var(--err)'});
+};
 function pushResCfg(){
   if(!FILM)return;
-  const mp=parseFloat($('#mpIn').value)||0.3, up=parseFloat($('#upIn').value)||1.5;
+  const mp=parseFloat($('#mpIn').value)||ENGINE_DEFAULT_MP[ENGINE];
+  const body={film:FILM,megapixels:mp};
+  // SelfLift 没有二采：不发 upscale，免得后端把它当成一次「改倍数」
+  if(isBC())body.upscale=parseFloat($('#upIn').value)||RES_UP_BASE;
   fetch('/api/set-res',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({film:FILM,megapixels:mp,upscale:up})}).then(r=>r.json()).then(j=>{
+    body:JSON.stringify(body)}).then(r=>r.json()).then(j=>{
       if(j.error){$('#resHint').textContent='✗ '+j.error;$('#resHint').style.color='var(--err)';return}
       // 后端返回的 cap 是跑片真正会用的上限，缓存下来供 mpCapFor 使用
-      if(j.cap!=null)SRV_CAP={scale:Number(j.upscale)||up, cap:Number(j.cap)};
+      if(j.cap!=null)SRV_CAP={scale:Number(j.upscale)||Number(body.upscale), cap:Number(j.cap)};
       // 后端可能夹取：把实际生效值写回输入框旁边的提示，不回写输入框（保留用户意图）
       updateResEst();
       // 画质变了 = 全片画面都变，后端已把已出的段全标 stale。不告诉用户的话，
@@ -649,7 +734,7 @@ function syncResInputs(mp,up){
   if(up!=null)$('#upIn').value=up;
   updateResEst();
 }
-updateResEst();
+applyEngineUI();
 
 fetch('/api/version').then(r=>r.json()).then(j=>$('#build').textContent=j.build).catch(()=>{});
 
@@ -819,11 +904,16 @@ function openProject(name){
     $('#exact').checked=!!src.exact;
     const tp=stg.two_pass!==false;
     $('#twopass').checked=tp; $('#tpSwitch').value=tp?'1':'0';
+    // 链路：决定「二采放大」这一整组控件存不存在。老片没有 engine 字段时
+    // 后端 _cfg_res_of 已按 workflow 路径判好（没有 workflow 字段 → selflift）。
+    ENGINE=(stg.engine==='selflift')?'selflift':'blackcrane';
+    $('#engSel').value=ENGINE;
     // 画质：从本片 cfg 回填（老片没有 bc_upscale 字段 → 用 base 的 1.5）
     // build_project 的 settings 里没有 cap，这里按回填到的倍数先清掉旧缓存，
     // 让 syncResInputs 用本地公式算；紧接着的第一次 /api/state 轮询会拿后端值覆盖。
     SRV_CAP={scale:null, cap:null};
     syncResInputs(stg.megapixels, stg.upscale);
+    applyEngineUI();
     $('#anchorFirst').checked=!!stg.anchor_first;
     $('#pubprompt').value=pj.prompt||'';
     $('#promptSrc').textContent='（本片已保存）';
@@ -837,7 +927,8 @@ function openProject(name){
       : '（这个项目没记录源视频路径，重新切段需先上传）';
     const n=(pj.segments||[]).length;
     $('#splitinfo').textContent='';
-    $('#projInfo').textContent=`${n} 段 · 每段 ${src.actual!=null?src.actual.toFixed(2):'?'}s · 二采${tp?'开':'关'}`
+    $('#projInfo').textContent=`${n} 段 · 每段 ${src.actual!=null?src.actual.toFixed(2):'?'}s · `
+      +(ENGINE==='blackcrane'?`二采${tp?'开':'关'}`:ENGINE_LABEL.selflift)
       + (j.has_config?' · 配置已在硬盘':' · 还没保存过配置');
     setupTimelineFromProject(FILM, src);   // 回填时间轴/切点，支持再按帧改切
     renderModeInfo();
@@ -1121,11 +1212,17 @@ function afterSplit(j, msg, mode){
   $('#splitinfo').textContent=msg;
   $('#segPanel').style.display='block';
   buildLogSegs(j.n);
+  // 切段时提交的链路/画质已经写进 cfg，这里把 UI 状态跟上（否则二采控件显隐
+  // 还是旧链路）。回填的是 cfg 里的**意图值**（夹取在 runner 的 build_wf 里做，
+  // 不改写 cfg），所以黑鹤下这里回填的可能仍是会被压的那个数 —— 提示文字会讲清。
+  if(j.engine)ENGINE=(j.engine==='selflift')?'selflift':'blackcrane';
+  $('#engSel').value=ENGINE;
+  SRV_CAP={scale:null, cap:null};
+  syncResInputs(j.megapixels, j.upscale);
+  applyEngineUI();
   $('#tpSwitch').value=$('#twopass').checked?'1':'0';
   $('#tpSummary').textContent='';
   $('#projInfo').textContent=`${j.n} 段 · 配置已落盘`;
-  // 切段时带了画质参数 → 后端已写进 cfg，这里让提示文字跟上（不是只改页面数字）
-  updateResEst();
   if(MODE==='even'){
     // 按秒切完：时间轴回显实际切点（只读），但不抢 tab —— 停在哪一页由用户自己决定
     if(j.cuts&&j.cuts.length>1){CUTS=j.cuts.slice();TL_LOCK=true;renderTimeline();applyLockUI()}
@@ -1159,11 +1256,12 @@ $('#btnGenCuts').onclick=()=>{
   $('#btnGenCuts').disabled=true; $('#cutInfo').textContent='按帧切段中…（视频越长越慢）';
   fetch('/api/split-at',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({film,src:SRC,cuts:CUTS,fps:TLFPS,seg:parseFloat($('#segsec').value)||5,
+      engine:ENGINE,
       two_pass:$('#tlTwoPass').checked,prompt:$('#pubprompt').value,
       refs:REFS.map(r=>({path:r.path,comfy_name:r.comfy_name,label:r.label})),
       anchor_first:$('#anchorFirst').checked,
-      megapixels:parseFloat($('#mpIn').value)||0.3,
-      upscale:parseFloat($('#upIn').value)||1.5,
+      megapixels:parseFloat($('#mpIn').value)||ENGINE_DEFAULT_MP[ENGINE],
+      upscale:isBC()?(parseFloat($('#upIn').value)||RES_UP_BASE):null,
       keep_audio:$('#tlKeepAudio').checked})})
   .then(r=>r.json()).then(j=>{
     $('#btnGenCuts').disabled=false;
@@ -1185,11 +1283,12 @@ $('#btnSplit').onclick=()=>{
   $('#btnSplit').disabled=true; $('#splitinfo').textContent='切段中…';
   fetch('/api/split',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({film,src:SRC,seg:parseFloat($('#segsec').value),exact:$('#exact').checked,
+                         engine:ENGINE,
                          two_pass:$('#twopass').checked,prompt:$('#pubprompt').value,
                          refs:REFS.map(r=>({path:r.path,comfy_name:r.comfy_name,label:r.label})),
                          anchor_first:$('#anchorFirst').checked,
-                         megapixels:parseFloat($('#mpIn').value)||0.3,
-                         upscale:parseFloat($('#upIn').value)||1.5,
+                         megapixels:parseFloat($('#mpIn').value)||ENGINE_DEFAULT_MP[ENGINE],
+                         upscale:isBC()?(parseFloat($('#upIn').value)||RES_UP_BASE):null,
                          keep_audio:$('#keepAudio').checked})})
   .then(r=>r.json()).then(j=>{
     $('#btnSplit').disabled=false;
@@ -1249,9 +1348,19 @@ function pollNow(){
     $('#globalStatus').innerHTML=prog;
     $('#globalStatus').style.cssText=(runningIdx>=0)?'color:var(--run);font-weight:700':'';
     if(st.two_pass!==undefined){
-      $('#tpSwitch').value=st.two_pass?'1':'0';
-      $('#twopass').checked=!!st.two_pass;
-      $('#tlTwoPass').checked=!!st.two_pass;
+      // SelfLift 时后端给 null（没有二采这个概念），别把开关写回 false
+      if(st.two_pass!=null){
+        $('#tpSwitch').value=st.two_pass?'1':'0';
+        $('#twopass').checked=!!st.two_pass;
+        $('#tlTwoPass').checked=!!st.two_pass;
+      }
+    }
+    // 链路同步：后端从 cfg["workflow"] 路径判出来的真源。用户在下拉里切了但还没
+    // 落盘成功（或别的窗口改了 cfg），这里以 cfg 为准纠正回来。
+    if(st.engine&&st.engine!==ENGINE){
+      ENGINE=st.engine;
+      $('#engSel').value=ENGINE;
+      applyEngineUI();
     }
     // 保留原音开关（片级）：切段时定的，可在段落面板改，只影响之后出的段
     if(st.audio_keep!==undefined){
@@ -1281,13 +1390,13 @@ function pollNow(){
         if(dirty)updateResEst();
       }
     }
-    // 二采标识汇总（按已完成段实际用的开关统计）
+    // 二采标识汇总（按已完成段实际用的开关统计）。SelfLift 没有二采，整块不显示。
     const doneSegs=st.segments.filter(s=>s.status==='done');
     const onN=doneSegs.filter(s=>s.two_pass===true).length;
     const offN=doneSegs.filter(s=>s.two_pass===false).length;
     const unkN=doneSegs.length-onN-offN;
     let tpTxt='';
-    if(doneSegs.length){
+    if(isBC()&&doneSegs.length){
       tpTxt=`本片已出：二采 ${onN} 段 / 一采 ${offN} 段`+(unkN?` / 未记录 ${unkN} 段`:'');
       if(offN&&!onN)tpTxt='⚠ 全部是一采（低清预览版）';
       else if(onN&&offN)tpTxt='⚠ 混用：'+tpTxt;
@@ -1357,6 +1466,8 @@ function syncFinal(st){
 }
 function statusCls(s){return s.status+(s.stale&&s.status==='done'?' stale':'')}function statusTxt(s){return s.stale&&s.status==='done'?'需重出':({pending:'待生成',running:'生成中',done:'完成',error:'失败'}[s.status]||s.status)}
 function tpTag(s){
+  // SelfLift 没有二采这一步 → 不画「二采/一采」徽标（否则会误导成「这段是低清预览」）
+  if(!isBC())return '';
   if(s.two_pass===true)return '<span class="tp on" title="这一段是开启二采生成的（一采 → 按倍数放大 → 精修），倍数见切段面板的「画质」">二采</span>';
   if(s.two_pass===false)return '<span class="tp off" title="这一段是关闭二采生成的（只出一采低清），适合先看构图/动作对不对">一采</span>';
   if(s.status==='done')return '<span class="tp" title="这段在加标识之前生成，没记录当时的二采开关">未记录</span>';
