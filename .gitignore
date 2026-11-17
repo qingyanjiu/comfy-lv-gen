@@ -24,6 +24,10 @@ prompt_lm_config.json
 *.capsule-bak
 *.orig
 
+# 手动清理出来的旧备份暂存区（可随时挪回，不永久删）
+_trash/
+
 # 本地服务运行日志（serve_app.py 控制台输出）
 _serve8900*.log
+*.log
 
