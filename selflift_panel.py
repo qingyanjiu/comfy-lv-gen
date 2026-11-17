@@ -243,8 +243,8 @@ def _optimizer_system():
 
 
 _KIND_HINT = {
-    "body": "kind=body: ONE segment's shot storyboard. Organize as 第一镜/第二镜/… (estimated_shots), each shot in this project's four-block spec (动作 / [机位] / [光线] / [场景], blank-line separated). EXPAND the action: break each motion into 3–6 ordered steps (先…然后…接着…再…最后), naming body part + direction + amplitude + where it settles — write it clearly and naturally, not a one-liner. EMOTION & POSTURE: every shot MUST describe the protagonist's body posture (weight/shoulders/spine/hands/stance) and how it changes — never wooden, blank, or statue-like. Facial detail is SHOT-SIZE GATED: medium/close shots write full micro-expression (eyes/brows/mouth/jaw); full shots only a general mood; WIDE / EXTREME-WIDE shots (subject <40% of frame height, face ≈10–20px) must NOT describe the face at all — body language, silhouette, direction, weapon/armor glints only, at most '神情沉毅'. If the audience must remember the face, give a separate medium-close or close shot; wide shots carry scale, close shots carry identity. Never try to fix a distant face with resolution. BLINK: if duration ≥5s AND the segment is not a wide/extreme-wide shot, put ONE blink for the WHOLE segment (not per shot; ≤2 only if >10s) into the 动作 block ('很快地眨了一下眼，眼睑迅速合拢又立刻睁开', ~0.5s), and you MUST literally include the sentence '眼睛正常睁开、看着前方'; never write a blink frequency ('每隔N秒眨一次') and never '缓慢闭上双眼' — H3 ignores/over-stretches those. In [机位], use PRECISE professional camera language from §2b (dolly in/out, pan, truck, crane, follow, arc, slider, handheld, dolly zoom…) with type+amplitude+speed, one primary move per shot, kept H3-achievable (slow & steady; avoid whip pan / fast dolly). Be concrete (lighting direction+quality, At 00:SS.mmm keyframes, specific physical sounds). Write as long as the content genuinely needs (soft cap ~1200 chars); no padding with empty adjectives. Use <Picture {pic:N}> (e.g. <Picture {pic:1}>), NEVER a bare {pic:N} or a hardcoded <Picture 1>; refer to characters by role/name (NOT <Subject N>). Do NOT repeat head/tail global constraints.",
-    "head": "kind=head: GLOBAL constraint (identity/scene anchors, eye/blink rules, prohibitions); constraint-style prose, preserve {pic:N}, not the six-section structure.",
+    "body": "kind=body: Rewrite one segment faithfully; do not re-direct it. Preserve the input's shot count, shot sizes, camera moves, action count, cast positions, contact states and key props. Unless the input explicitly describes multiple shots, default to ONE continuous shot regardless of duration. `estimated_shots` is a count of shots already present in the input, not a target to invent. For action detail, adapt to complexity: simple action 1–2 natural phases, ordinary 2–4, complex 3–6; never turn one gesture into mechanical body-part instructions. Keep one main action line per shot. Use timed At cues only for visible phases that already belong to that action; never add a cut or new action to fill time. Describe posture and expression only at the level visible in the chosen shot size; distant shots and back views do not get facial micro-detail. BLINK is optional: add at most one quick blink for a ≤10s segment only when the face is clearly visible and the action permits it; omit for distant shots, back views, sustained gaze or tense action. Never force gaze toward camera/front or add a periodic blink rule. Use one achievable camera move per shot, concrete lighting and relevant scene relationships. Preserve only provided <Picture {pic:N}> references; do not invent subjects. Do not repeat head/tail constraints. Output only the body.",
+    "head": "kind=head: GLOBAL constraint (identity/scene anchors, eye appearance/gaze conventions, prohibitions); do not promise a blink schedule; constraint-style prose, preserve {pic:N}, not the six-section structure.",
     "tail": "kind=tail: GLOBAL ending/style/continuity constraint; constraint-style prose, preserve {pic:N}.",
     "full": "kind=full: produce the complete structured prompt for the given mode.",
 }
@@ -261,19 +261,20 @@ async def _optimize_prompt(text, kind, mode, references, duration, api_base, mod
     """
     if not text or not str(text).strip():
         raise ValueError("待优化的提示词为空")
-    # 按秒数推导「镜头数」与「目标字数」，让模型有精确目标（时间越长字数越多、
-    # 必要则拆镜：第一镜/第二镜…），而不是只靠系统提示词的定性描述。
+    # 本字段是该 segment 内已有镜头数的提示，不按时长推算；
+    # 以时长推镜数会把 8 秒的一镜到底误导成两个镜头，迫使优化器改导演。
     try:
         _dur = float(duration or 5.0)
     except (TypeError, ValueError):
         _dur = 5.0
-    _shot_count = max(1, round(_dur / 5))          # 每 ~5s 一镜
+    _explicit_shots = re.findall(r"第[一二三四五六七八九十\d]+镜", str(text))
+    _shot_count = max(1, len(_explicit_shots))
     sys_text = _optimizer_system()
     user_lines = [
         f"kind={kind or 'body'}",
         f"mode={mode or 'T2VA'}",
         f"duration_seconds={_dur:.1f}",
-        f"estimated_shots={_shot_count}  # 拆成 第一镜/第二镜/… 共 {_shot_count} 镜；动作要逐步扩写，长度按内容自然发挥",
+        f"estimated_shots={_shot_count}  # 输入里已经明确的镜头数；不要为匹配该数字新增镜头",
     ]
     # 故事背景梗概 + 画幅/分辨率：只作参考，用来保证人物关系/场景连贯、构图贴合画幅；
     # 不要把梗概或像素数字抄进 body。story 截断，避免撑爆 4096 上下文。
