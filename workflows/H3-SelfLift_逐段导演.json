@@ -1,0 +1,708 @@
+{
+  "id": "6f3176cf-6d82-4ec5-b65f-127ae3cfd62f",
+  "revision": 0,
+  "last_node_id": 10,
+  "last_link_id": 4,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadImage",
+      "pos": [
+        -620,
+        80
+      ],
+      "size": [
+        315,
+        314
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "图像",
+          "name": "image",
+          "type": "COMBO",
+          "widget": {
+            "name": "image"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "选择文件上传",
+          "name": "upload",
+          "type": "IMAGEUPLOAD",
+          "widget": {
+            "name": "upload"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "图像",
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            1
+          ]
+        },
+        {
+          "localized_name": "遮罩",
+          "name": "MASK",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "title": "参考图 1（必选）",
+      "properties": {
+        "Node name for S&R": "LoadImage",
+        "ue_properties": {
+          "widget_ue_connectable": {
+            "image": true,
+            "upload": true
+          },
+          "version": "8.0",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "example.png",
+        "image"
+      ],
+      "widgets_values_named": {
+        "image": "image (9).png",
+        "upload": "image"
+      },
+      "_meta": {
+        "title": "参考图1：人物（身份锚）"
+      },
+      "extensions": {
+        "_meta": {
+          "title": "参考图1：人物（身份锚）"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "LoadImage",
+      "pos": [
+        -620,
+        440
+      ],
+      "size": [
+        315,
+        314
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 4,
+      "inputs": [
+        {
+          "localized_name": "图像",
+          "name": "image",
+          "type": "COMBO",
+          "widget": {
+            "name": "image"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "选择文件上传",
+          "name": "upload",
+          "type": "IMAGEUPLOAD",
+          "widget": {
+            "name": "upload"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "图像",
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            2
+          ]
+        },
+        {
+          "localized_name": "遮罩",
+          "name": "MASK",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "title": "参考图 2",
+      "properties": {
+        "Node name for S&R": "LoadImage",
+        "ue_properties": {
+          "widget_ue_connectable": {
+            "image": true,
+            "upload": true
+          },
+          "version": "8.0",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "example.png",
+        "image"
+      ],
+      "widgets_values_named": {
+        "image": "placeholder.png",
+        "upload": "image"
+      },
+      "_meta": {
+        "title": "参考图2：场景空镜（无人）"
+      },
+      "extensions": {
+        "_meta": {
+          "title": "参考图2：场景空镜（无人）"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "LoadImage",
+      "pos": [
+        -620,
+        800
+      ],
+      "size": [
+        315,
+        314
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 4,
+      "inputs": [
+        {
+          "localized_name": "图像",
+          "name": "image",
+          "type": "COMBO",
+          "widget": {
+            "name": "image"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "选择文件上传",
+          "name": "upload",
+          "type": "IMAGEUPLOAD",
+          "widget": {
+            "name": "upload"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "图像",
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            3
+          ]
+        },
+        {
+          "localized_name": "遮罩",
+          "name": "MASK",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "title": "参考图 3（可选）",
+      "properties": {
+        "Node name for S&R": "LoadImage",
+        "ue_properties": {
+          "widget_ue_connectable": {
+            "image": true,
+            "upload": true
+          },
+          "version": "8.0",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "example.png",
+        "image"
+      ],
+      "widgets_values_named": {
+        "image": "placeholder.png",
+        "upload": "image"
+      },
+      "_meta": {
+        "title": "参考图3：备用（可留占位）"
+      },
+      "extensions": {
+        "_meta": {
+          "title": "参考图3：备用（可留占位）"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "H3LongVideoDirector",
+      "pos": [
+        -83.63630814985548,
+        -643.3133167722385
+      ],
+      "size": [
+        1106.4872831348807,
+        2011.4951418898697
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "reference_1",
+          "name": "reference_1",
+          "type": "IMAGE",
+          "link": 1
+        },
+        {
+          "localized_name": "reference_2",
+          "name": "reference_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 2
+        },
+        {
+          "localized_name": "reference_3",
+          "name": "reference_3",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 3
+        },
+        {
+          "localized_name": "reference_4",
+          "name": "reference_4",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "reference_5",
+          "name": "reference_5",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "reference_6",
+          "name": "reference_6",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "reference_7",
+          "name": "reference_7",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "reference_8",
+          "name": "reference_8",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "reference_9",
+          "name": "reference_9",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "first_frame",
+          "name": "first_frame",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "storyboard",
+          "name": "storyboard",
+          "type": "STRING",
+          "widget": {
+            "name": "storyboard"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "reference_notes",
+          "name": "reference_notes",
+          "type": "STRING",
+          "widget": {
+            "name": "reference_notes"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "steps",
+          "name": "steps",
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "two_pass_steps",
+          "name": "two_pass_steps",
+          "type": "INT",
+          "widget": {
+            "name": "two_pass_steps"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "sampler",
+          "name": "sampler",
+          "type": "COMBO",
+          "widget": {
+            "name": "sampler"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "scheduler",
+          "name": "scheduler",
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "megapixels",
+          "name": "megapixels",
+          "type": "FLOAT",
+          "widget": {
+            "name": "megapixels"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "final_width",
+          "name": "final_width",
+          "type": "INT",
+          "widget": {
+            "name": "final_width"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "final_height",
+          "name": "final_height",
+          "type": "INT",
+          "widget": {
+            "name": "final_height"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "two_pass_mode",
+          "name": "two_pass_mode",
+          "type": "COMBO",
+          "widget": {
+            "name": "two_pass_mode"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "force",
+          "name": "force",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "force"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "advanced_overrides",
+          "name": "advanced_overrides",
+          "shape": 7,
+          "type": "STRING",
+          "widget": {
+            "name": "advanced_overrides"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "seed",
+          "name": "seed",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "seed"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "randomize_seed",
+          "name": "randomize_seed",
+          "shape": 7,
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "randomize_seed"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "stage",
+          "name": "stage",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "stage"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "resume_job_id",
+          "name": "resume_job_id",
+          "shape": 7,
+          "type": "STRING",
+          "widget": {
+            "name": "resume_job_id"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "job_name",
+          "name": "job_name",
+          "shape": 7,
+          "type": "STRING",
+          "widget": {
+            "name": "job_name"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "keyframe_backend",
+          "name": "keyframe_backend",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "keyframe_backend"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "resolution",
+          "name": "resolution",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "resolution"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "static_compact_hold_seconds",
+          "name": "static_compact_hold_seconds",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "static_compact_hold_seconds"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "confirm_reference_expand",
+          "name": "confirm_reference_expand",
+          "shape": 7,
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "confirm_reference_expand"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "video_backend",
+          "name": "video_backend",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "video_backend"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "job_id",
+          "name": "job_id",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "localized_name": "status",
+          "name": "status",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "h3_tab": "selflift",
+        "h3_panel_height": 560,
+        "Node name for S&R": "H3LongVideoDirector",
+        "ue_properties": {
+          "widget_ue_connectable": {
+            "storyboard": true,
+            "reference_notes": true,
+            "steps": true,
+            "two_pass_steps": true,
+            "sampler": true,
+            "scheduler": true,
+            "megapixels": true,
+            "final_width": true,
+            "final_height": true,
+            "two_pass_mode": true,
+            "force": true,
+            "keyframe_steps": true,
+            "advanced_overrides": true,
+            "seed": true,
+            "randomize_seed": true,
+            "stage": true,
+            "resume_job_id": true
+          },
+          "version": "8.0",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "{\n  \"_note\": \"这是「逐段出片」的控制台工作流，没有出片链路。真正的分镜在 segments.json（面板里填绝对路径）。出片请点面板顶部的「一键跑全片」，不要点画布上的 Run。\",\n  \"segments\": []\n}",
+        "",
+        4,
+        2,
+        "res_multistep",
+        "simple",
+        0.3,
+        832,
+        1472,
+        "全部一采",
+        false,
+        "{}",
+        684109116455697,
+        "randomize",
+        true,
+        "关键帧 → 确认 → 视频",
+        "",
+        "",
+        "H3 自己出（默认）",
+        "832x1472（9:16 默认）",
+        0.12,
+        true,
+        "本地 ComfyUI（默认）",
+        ""
+      ],
+      "widgets_values_named": {
+        "storyboard": "{\n  \"title\": \"卧室缠绵示例\",\n  \"prefix\": \"bedroom_intimate\",\n  \"final_name\": \"卧室缠绵_成片.mp4\",\n  \"workflow\": \"D:/Comfy-Desktop/.workbuddy/skills/h3-long-video/assets/H3-SelfLift_单图参考.base.json\",\n  \"ref_image\": \"D:/Comfy-Desktop/output/卧室缠绵/refs/girl_ref.png\",\n  \"comfy_ref_name\": \"bedroom_girl_ref.png\",\n  \"bg_plate\": \"bedroom_bg_plate.png\",\n  \"bg_plate_path\": \"D:/Comfy-Desktop/output/卧室缠绵/refs/bg_plate.png\",\n  \"megapixels\": 0.5,\n  \"seconds\": 5.0,\n  \"length\": 124,\n  \"fps\": 24,\n  \"join_mode\": \"dissolve\",\n  \"join_dissolve_seconds\": 0.25,\n  \"head\": \"<Picture 1> 是人物参考，完全还原图中女生的脸型、五官、发型、发色与身材比例，同一个人，全程五官、发型与服装不变。\\n\\n<Picture 2> 是全片唯一的场景空镜参考，卧室结构、床铺位置、窗帘与光源方向全程以它为准，保持不变。\",\n  \"tail\": \"写实电影摄影，35mm 镜头，柔和浅景深，真实光学散景，细腻胶片颗粒。暖色室内光，窗边柔光。画面中只有她和男人两个人，不出现文字、水印、字幕。\\n\\n[衔接] 段首约 0.5 秒人物动作与镜头保持稳定，随后开始本段动作；段尾约 0.5 秒动作收住、保持稳定。\",\n  \"segments\": [\n    {\n      \"id\": \"s01\",\n      \"title\": \"起手（无首帧：P1=人物，P2=空镜板）\",\n      \"seed\": 582101,\n      \"head\": \"<Picture 1> 是人物参考，完全还原图中女生的脸型、五官、发型、发色与身材比例，同一个人，全程五官、发型与服装不变。\\n\\n<Picture 2> 是全片唯一的场景空镜参考，卧室结构、床铺位置、窗帘与光源方向全程以它为准，保持不变。\",\n      \"body\": \"她坐在床边，侧身对着镜头，男人从身后轻轻环住她的腰。她微微转头，两人额头相抵，呼吸靠近。镜头固定中景，轻微侧拍，背景是<Picture 2>里的卧室，虚化柔和。窗外暖光从左侧洒进来。\"\n    },\n    {\n      \"id\": \"s02\",\n      \"title\": \"链式承接（P1=上段尾帧，P2=人物，P3=空镜板）\",\n      \"seed\": 582113,\n      \"link\": {\n        \"mode\": \"chain\",\n        \"transition\": \"dissolve\"\n      },\n      \"head\": \"<Picture 1> 是本段的首帧，也是上一段的最后一帧，本段必须从这一帧的构图、人物位置和姿态无缝延续，不要重新起幅。\\n\\n<Picture 2> 是人物参考，还原图中女生的脸型、五官、发型、发色与身材比例，与<Picture 1>里是同一个人。\\n\\n<Picture 3> 是全片唯一的场景空镜参考，卧室结构、床铺位置、窗帘与光源方向全程以它为准，保持不变。\",\n      \"body\": \"男人低头轻吻她的侧脸和耳廓，她闭眼，手轻轻覆上他的手臂。两人身体更贴近，动作缓慢温柔。镜头保持机位，只做极缓慢的推近。光线与上一段一致。\"\n    },\n    {\n      \"id\": \"s03\",\n      \"title\": \"链式承接\",\n      \"seed\": 582127,\n      \"link\": {\n        \"mode\": \"chain\",\n        \"transition\": \"dissolve\"\n      },\n      \"head\": \"<Picture 1> 是本段的首帧，也是上一段的最后一帧，本段必须从这一帧的构图、人物位置和姿态无缝延续，不要重新起幅。\\n\\n<Picture 2> 是人物参考，还原图中女生的脸型、五官、发型、发色与身材比例，与<Picture 1>里是同一个人。\\n\\n<Picture 3> 是全片唯一的场景空镜参考，卧室结构、床铺位置、窗帘与光源方向全程以它为准，保持不变。\",\n      \"body\": \"她转身面对男人，双手环上他的脖子，两人嘴唇轻触后加深亲吻。她微微仰头，睫毛轻颤。镜头缓慢推成近景，背景继续虚化。\"\n    },\n    {\n      \"id\": \"s04\",\n      \"title\": \"链式承接\",\n      \"seed\": 582141,\n      \"link\": {\n        \"mode\": \"chain\",\n        \"transition\": \"dissolve\"\n      },\n      \"head\": \"<Picture 1> 是本段的首帧，也是上一段的最后一帧，本段必须从这一帧的构图、人物位置和姿态无缝延续，不要重新起幅。\\n\\n<Picture 2> 是人物参考，还原图中女生的脸型、五官、发型、发色与身材比例，与<Picture 1>里是同一个人。\\n\\n<Picture 3> 是全片唯一的场景空镜参考，卧室结构、床铺位置、窗帘与光源方向全程以它为准，保持不变。\",\n      \"body\": \"亲吻结束后，她把头靠在男人肩上，他轻抚她的后背和发丝。两人相拥，呼吸渐渐平稳。镜头保持近景，轻微左右摇移，动作克制而亲密。\"\n    },\n    {\n      \"id\": \"s05\",\n      \"title\": \"链式承接\",\n      \"seed\": 582155,\n      \"link\": {\n        \"mode\": \"chain\",\n        \"transition\": \"dissolve\"\n      },\n      \"head\": \"<Picture 1> 是本段的首帧，也是上一段的最后一帧，本段必须从这一帧的构图、人物位置和姿态无缝延续，不要重新起幅。\\n\\n<Picture 2> 是人物参考，还原图中女生的脸型、五官、发型、发色与身材比例，与<Picture 1>里是同一个人。\\n\\n<Picture 3> 是全片唯一的场景空镜参考，卧室结构、床铺位置、窗帘与光源方向全程以它为准，保持不变。\",\n      \"body\": \"她抬起头，再次与男人对视，嘴角带着浅笑，然后主动再一次轻轻吻他。男人回应，手掌贴在她腰侧。镜头缓慢后拉回中近景，房间细节重新隐约可见。\"\n    },\n    {\n      \"id\": \"s06\",\n      \"title\": \"收尾\",\n      \"seed\": 582169,\n      \"link\": {\n        \"mode\": \"chain\",\n        \"transition\": \"dissolve\"\n      },\n      \"head\": \"<Picture 1> 是本段的首帧，也是上一段的最后一帧，本段必须从这一帧的构图、人物位置和姿态无缝延续，不要重新起幅。\\n\\n<Picture 2> 是人物参考，还原图中女生的脸型、五官、发型、发色与身材比例，与<Picture 1>里是同一个人。\\n\\n<Picture 3> 是全片唯一的场景空镜参考，卧室结构、床铺位置、窗帘与光源方向全程以它为准，保持不变。\",\n      \"body\": \"两人额头相抵，安静对视片刻，随后一起缓缓倒向床铺，侧身相拥。镜头固定中景，动作收住，画面稳定结束。光线温暖，氛围安静亲密。\"\n    }\n  ]\n}",
+        "reference_notes": "",
+        "steps": 4,
+        "two_pass_steps": 2,
+        "sampler": "res_multistep",
+        "scheduler": "simple",
+        "megapixels": 0.3,
+        "final_width": 832,
+        "final_height": 1472,
+        "two_pass_mode": "全部一采",
+        "force": false,
+        "advanced_overrides": "{}",
+        "seed": 684109116455697,
+        "control_after_generate": "randomize",
+        "randomize_seed": true,
+        "stage": "关键帧 → 确认 → 视频",
+        "resume_job_id": "20261101_151717_929d8592",
+        "job_name": "",
+        "keyframe_backend": "H3 自己出（默认）",
+        "resolution": "832x1472（9:16 默认）",
+        "static_compact_hold_seconds": 0.12,
+        "confirm_reference_expand": true,
+        "video_backend": "本地 ComfyUI（默认）",
+        "h3_director_preview": ""
+      }
+    },
+    {
+      "id": 10,
+      "type": "MarkdownNote",
+      "pos": [
+        40,
+        60
+      ],
+      "size": [
+        520,
+        420
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "Note: Size Settings Reference",
+      "properties": {
+        "ue_properties": {
+          "version": "8.0",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "## 这是逐段出片的「控制台」，不是出片工作流\n\n**不要点画布上方的「运行 / Run」**：那会走旧 Director 链路（关键帧 → 二拍），\n和逐段面板无关，还会因为参考图/分镜对不上而报错。\n\n正确用法：\n\n1. 点节点上的 **SelfLift 逐段** tab（默认已打开）\n2. 填分镜 json 绝对路径，或输入标题点 **新建片**\n3. 点 **打开 / 刷新** 拉出分段卡片\n4. 每段点 **运行** 出片；全部就绪后点 **拼接成片**\n\n真正出片用的是 `segments.json` 里的 `workflow`\n（`assets/H3-SelfLift_单图参考.base.json`），走 `run_selflift.py`。\n本图里那 3 张参考图只服务旧链路，逐段流程不读它们。"
+      ],
+      "widgets_values_named": {
+        "text": "| megapixels | Aspect | Output (multiple=32) |\n|---|---|---|\n| 0.2 | 16:9 | 608 x 352 |\n| 0.3 | 16:9 | 736 x 416 |\n| 0.4 | 16:9 | 864 x 480 |\n| 0.5 | 16:9 | 960 x 544 |\n| 0.6 | 16:9 | 1056 x 608 |\n| 0.7 | 16:9 | 1152 x 640 |\n| 0.8 | 16:9 | 1216 x 672 |\n| 0.9 | 16:9 | 1280 x 736 |\n| 0.98 | 16:9 | 1344 x 768 |\n| 1.0 | 16:9 | 1376 x 768 |\n| 1.2 | 16:9 | 1504 x 832 |\n| 1.5 | 16:9 | 1664 x 928 |\n| 1.8 | 16:9 | 1824 x 1024 |\n| 2.0 | 16:9 | 1920 x 1088 |\n"
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      4,
+      0,
+      "IMAGE"
+    ],
+    [
+      2,
+      2,
+      0,
+      4,
+      1,
+      "IMAGE"
+    ],
+    [
+      3,
+      3,
+      0,
+      4,
+      2,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.8800000000000273,
+      "offset": [
+        832.954049418091,
+        106.50619797371714
+      ]
+    },
+    "ue_links": [],
+    "links_added_by_ue": [],
+    "title": "H3-SelfLift 逐段导演"
+  },
+  "version": 0.4
+}

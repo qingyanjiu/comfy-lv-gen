@@ -1,0 +1,614 @@
+{
+ "id": "6f3176cf-6d82-4ec5-b65f-127ae3cfd62f",
+ "revision": 0,
+ "last_node_id": 4,
+ "last_link_id": 4,
+ "nodes": [
+  {
+   "id": 1,
+   "type": "LoadImage",
+   "pos": [
+    -620,
+    80
+   ],
+   "size": [
+    315,
+    314
+   ],
+   "flags": {},
+   "order": 0,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "图像",
+     "name": "image",
+     "type": "COMBO",
+     "widget": {
+      "name": "image"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "选择文件上传",
+     "name": "upload",
+     "type": "IMAGEUPLOAD",
+     "widget": {
+      "name": "upload"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "图像",
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      1
+     ]
+    },
+    {
+     "localized_name": "遮罩",
+     "name": "MASK",
+     "type": "MASK",
+     "links": []
+    }
+   ],
+   "title": "参考图 1（必选）",
+   "properties": {
+    "Node name for S&R": "LoadImage",
+    "ue_properties": {
+     "widget_ue_connectable": {
+      "image": true,
+      "upload": true
+     },
+     "version": "8.0",
+     "input_ue_unconnectable": {}
+    }
+   },
+   "widgets_values": [
+    "placeholder.png",
+    "image"
+   ],
+   "widgets_values_named": {
+    "image": "image (1).png",
+    "upload": "image"
+   },
+   "_meta": {
+    "title": "参考图1：人物（身份锚）"
+   }
+  },
+  {
+   "id": 2,
+   "type": "LoadImage",
+   "pos": [
+    -620,
+    440
+   ],
+   "size": [
+    315,
+    314
+   ],
+   "flags": {},
+   "order": 1,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "图像",
+     "name": "image",
+     "type": "COMBO",
+     "widget": {
+      "name": "image"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "选择文件上传",
+     "name": "upload",
+     "type": "IMAGEUPLOAD",
+     "widget": {
+      "name": "upload"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "图像",
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      2
+     ]
+    },
+    {
+     "localized_name": "遮罩",
+     "name": "MASK",
+     "type": "MASK",
+     "links": []
+    }
+   ],
+   "title": "参考图 2",
+   "properties": {
+    "Node name for S&R": "LoadImage",
+    "ue_properties": {
+     "widget_ue_connectable": {
+      "image": true,
+      "upload": true
+     },
+     "version": "8.0",
+     "input_ue_unconnectable": {}
+    }
+   },
+   "widgets_values": [
+    "placeholder.png",
+    "image"
+   ],
+   "widgets_values_named": {
+    "image": "image (5).png",
+    "upload": "image"
+   },
+   "_meta": {
+    "title": "参考图2：场景空镜（无人）"
+   }
+  },
+  {
+   "id": 3,
+   "type": "LoadImage",
+   "pos": [
+    -620,
+    800
+   ],
+   "size": [
+    315,
+    314
+   ],
+   "flags": {},
+   "order": 2,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "图像",
+     "name": "image",
+     "type": "COMBO",
+     "widget": {
+      "name": "image"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "选择文件上传",
+     "name": "upload",
+     "type": "IMAGEUPLOAD",
+     "widget": {
+      "name": "upload"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "图像",
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      3
+     ]
+    },
+    {
+     "localized_name": "遮罩",
+     "name": "MASK",
+     "type": "MASK",
+     "links": []
+    }
+   ],
+   "title": "参考图 3（可选）",
+   "properties": {
+    "Node name for S&R": "LoadImage",
+    "ue_properties": {
+     "widget_ue_connectable": {
+      "image": true,
+      "upload": true
+     },
+     "version": "8.0",
+     "input_ue_unconnectable": {}
+    }
+   },
+   "widgets_values": [
+    "placeholder.png",
+    "image"
+   ],
+   "widgets_values_named": {
+    "image": "image.png",
+    "upload": "image"
+   },
+   "_meta": {
+    "title": "参考图3：备用（可留占位）"
+   }
+  },
+  {
+   "id": 4,
+   "type": "H3LongVideoDirector",
+   "pos": [
+    -83.63630814985548,
+    -643.3133167722385
+   ],
+   "size": [
+    1106.4872831348807,
+    2011.4951418898697
+   ],
+   "flags": {},
+   "order": 3,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "reference_1",
+     "name": "reference_1",
+     "type": "IMAGE",
+     "link": 1
+    },
+    {
+     "localized_name": "reference_2",
+     "name": "reference_2",
+     "shape": 7,
+     "type": "IMAGE",
+     "link": 2
+    },
+    {
+     "localized_name": "reference_3",
+     "name": "reference_3",
+     "shape": 7,
+     "type": "IMAGE",
+     "link": 3
+    },
+    {
+     "localized_name": "reference_4",
+     "name": "reference_4",
+     "shape": 7,
+     "type": "IMAGE",
+     "link": null
+    },
+    {
+     "localized_name": "reference_5",
+     "name": "reference_5",
+     "shape": 7,
+     "type": "IMAGE",
+     "link": null
+    },
+    {
+     "localized_name": "reference_6",
+     "name": "reference_6",
+     "shape": 7,
+     "type": "IMAGE",
+     "link": null
+    },
+    {
+     "localized_name": "reference_7",
+     "name": "reference_7",
+     "shape": 7,
+     "type": "IMAGE",
+     "link": null
+    },
+    {
+     "localized_name": "reference_8",
+     "name": "reference_8",
+     "shape": 7,
+     "type": "IMAGE",
+     "link": null
+    },
+    {
+     "localized_name": "reference_9",
+     "name": "reference_9",
+     "shape": 7,
+     "type": "IMAGE",
+     "link": null
+    },
+    {
+     "localized_name": "first_frame",
+     "name": "first_frame",
+     "shape": 7,
+     "type": "IMAGE",
+     "link": null
+    },
+    {
+     "localized_name": "storyboard",
+     "name": "storyboard",
+     "type": "STRING",
+     "widget": {
+      "name": "storyboard"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "reference_notes",
+     "name": "reference_notes",
+     "type": "STRING",
+     "widget": {
+      "name": "reference_notes"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "steps",
+     "name": "steps",
+     "type": "INT",
+     "widget": {
+      "name": "steps"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "two_pass_steps",
+     "name": "two_pass_steps",
+     "type": "INT",
+     "widget": {
+      "name": "two_pass_steps"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "sampler",
+     "name": "sampler",
+     "type": "COMBO",
+     "widget": {
+      "name": "sampler"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "scheduler",
+     "name": "scheduler",
+     "type": "COMBO",
+     "widget": {
+      "name": "scheduler"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "megapixels",
+     "name": "megapixels",
+     "type": "FLOAT",
+     "widget": {
+      "name": "megapixels"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "final_width",
+     "name": "final_width",
+     "type": "INT",
+     "widget": {
+      "name": "final_width"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "final_height",
+     "name": "final_height",
+     "type": "INT",
+     "widget": {
+      "name": "final_height"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "two_pass_mode",
+     "name": "two_pass_mode",
+     "type": "COMBO",
+     "widget": {
+      "name": "two_pass_mode"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "force",
+     "name": "force",
+     "type": "BOOLEAN",
+     "widget": {
+      "name": "force"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "keyframe_steps",
+     "name": "keyframe_steps",
+     "type": "INT",
+     "widget": {
+      "name": "keyframe_steps"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "advanced_overrides",
+     "name": "advanced_overrides",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "advanced_overrides"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "seed",
+     "name": "seed",
+     "shape": 7,
+     "type": "INT",
+     "widget": {
+      "name": "seed"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "randomize_seed",
+     "name": "randomize_seed",
+     "shape": 7,
+     "type": "BOOLEAN",
+     "widget": {
+      "name": "randomize_seed"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "stage",
+     "name": "stage",
+     "shape": 7,
+     "type": "COMBO",
+     "widget": {
+      "name": "stage"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "resume_job_id",
+     "name": "resume_job_id",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "resume_job_id"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "job_name",
+     "name": "job_name",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "job_name"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "job_id",
+     "name": "job_id",
+     "type": "STRING",
+     "links": []
+    },
+    {
+     "localized_name": "status",
+     "name": "status",
+     "type": "STRING",
+     "links": []
+    }
+   ],
+   "properties": {
+    "h3_tab": "keyframes",
+    "h3_panel_height": 560,
+    "Node name for S&R": "H3LongVideoDirector",
+    "h3_job_id": "20261101_151717_929d8592",
+    "ue_properties": {
+     "widget_ue_connectable": {
+      "storyboard": true,
+      "reference_notes": true,
+      "steps": true,
+      "two_pass_steps": true,
+      "sampler": true,
+      "scheduler": true,
+      "megapixels": true,
+      "final_width": true,
+      "final_height": true,
+      "two_pass_mode": true,
+      "force": true,
+      "keyframe_steps": true,
+      "advanced_overrides": true,
+      "seed": true,
+      "randomize_seed": true,
+      "stage": true,
+      "resume_job_id": true
+     },
+     "version": "8.0",
+     "input_ue_unconnectable": {}
+    }
+   },
+   "widgets_values": [
+    "\n{\n  \"segments\": [\n    {\n      \"seconds\": 6,\n      \"prompt\": \"卧室里，<女主角>坐在床边，穿着白色宽松T恤、灰色百褶裙、白色短袜，表情平静带着一点慵懒，身体微微前倾，双手自然放在膝上；窗外自然光洒进来，房间有轻微生活杂物。\\nMedium shot, slight handheld feel, natural room lighting, realistic cinematic look. Keep full body and bed edge visible, never crop head or feet.\",\n      \"end_frame_prompt\": \"<女主角>坐在床边，正面略侧向门口，表情平静慵懒，双手放在膝上；全身入镜，头顶到短袜都在画面内；床沿和窗户光影清晰。\"\n    },\n    {\n      \"seconds\": 8,\n      \"continue_from_previous\": true,\n      \"prompt\": \"穿着衬衫短裤的男人从门口走进来，走到她面前停下，低头看着她，一只手轻轻抬起<女主角>的下巴；女生慢慢抬头与他对视，表情有些害羞。\\nCamera holds a stable medium shot, slight dolly to keep both in frame at consistent size. Natural bedroom light, realistic cinematic feel. Never zoom into faces only, keep upper bodies and bed visible.\",\n      \"end_frame_prompt\": \"穿着衬衫短裤的男人站在床边低头看<女主角>，一只手托着她的下巴；<女主角>抬头与他对视，表情害羞；中景，全身与床沿都在画面内。\"\n    },\n    {\n      \"seconds\": 8,\n      \"continue_from_previous\": true,\n      \"prompt\": \"穿着衬衫短裤的男人低头吻住<女主角>，同时右手掀起她的灰色百褶裙，手掌直接摸上白色蕾丝内裤；女生身体微微一僵，双手抓住他的手臂，却没有推开。\\nSide medium shot, camera holds steady distance, slight tracking to keep both fully visible from head to mid-thigh. Soft natural light, realistic cinematic texture. Never crop heads or hands.\",\n      \"end_frame_prompt\": \"穿着衬衫短裤的男人低头吻着<女主角>，右手掀起裙摆贴在白色蕾丝内裤上；<女主角>身体微僵，双手抓着他的手臂；侧面中景，两人上半身与裙摆都清晰入镜。\"\n    },\n    {\n      \"seconds\": 8,\n      \"continue_from_previous\": true,\n      \"prompt\": \"穿着衬衫短裤的男人把<女主角>轻轻推倒在床上，另一只手掀起她的白色T恤，直接握住乳房；女生低头害羞，双手抓住他的手腕。\\nCamera follows the push-down with a soft downward tilt, keeping medium shot composition. Both remain fully visible from head to waist, natural bedroom lighting, realistic cinematic look. Never zoom into face only.\",\n      \"end_frame_prompt\": \"<女主角>仰躺在床上，白色T恤被掀起，男人一只手握住她的乳房；<女主角>低头害羞，双手抓着他的手腕；中景，两人上半身与床铺都在画面内。\"\n    }\n  ]\n}",
+    "<Subject 1>\n人物：<女主角>，成年女性，所有参考图中是同一个人。\n\n所有段落保持同一位成年<女主角>，不得混入其他人物的脸、年龄感或发型。",
+    4,
+    2,
+    "res_multistep",
+    "simple",
+    0.3,
+    832,
+    1472,
+    "全部一采",
+    false,
+    "{}",
+    684109116455697,
+    "randomize",
+    true,
+    "关键帧 → 确认 → 视频",
+    "20261101_151717_929d8592",
+    "",
+    "H3 自己出（默认）",
+    "832x1472（9:16 默认）",
+    0.12,
+    true,
+    "本地 ComfyUI（默认）"
+   ],
+   "widgets_values_named": {
+    "storyboard": "\n{\n  \"segments\": [\n    {\n      \"seconds\": 6,\n      \"prompt\": \"卧室里，<女主角>坐在床边，穿着白色宽松T恤、灰色百褶裙、白色短袜，表情平静带着一点慵懒，身体微微前倾，双手自然放在膝上；窗外自然光洒进来，房间有轻微生活杂物。\\nMedium shot, slight handheld feel, natural room lighting, realistic cinematic look. Keep full body and bed edge visible, never crop head or feet.\",\n      \"end_frame_prompt\": \"<女主角>坐在床边，正面略侧向门口，表情平静慵懒，双手放在膝上；全身入镜，头顶到短袜都在画面内；床沿和窗户光影清晰。\"\n    },\n    {\n      \"seconds\": 8,\n      \"continue_from_previous\": true,\n      \"prompt\": \"穿着衬衫短裤的男人从门口走进来，走到她面前停下，低头看着她，一只手轻轻抬起<女主角>的下巴；女生慢慢抬头与他对视，表情有些害羞。\\nCamera holds a stable medium shot, slight dolly to keep both in frame at consistent size. Natural bedroom light, realistic cinematic feel. Never zoom into faces only, keep upper bodies and bed visible.\",\n      \"end_frame_prompt\": \"穿着衬衫短裤的男人站在床边低头看<女主角>，一只手托着她的下巴；<女主角>抬头与他对视，表情害羞；中景，全身与床沿都在画面内。\"\n    },\n    {\n      \"seconds\": 8,\n      \"continue_from_previous\": true,\n      \"prompt\": \"穿着衬衫短裤的男人低头吻住<女主角>，同时右手掀起她的灰色百褶裙，手掌直接摸上白色蕾丝内裤；女生身体微微一僵，双手抓住他的手臂，却没有推开。\\nSide medium shot, camera holds steady distance, slight tracking to keep both fully visible from head to mid-thigh. Soft natural light, realistic cinematic texture. Never crop heads or hands.\",\n      \"end_frame_prompt\": \"穿着衬衫短裤的男人低头吻着<女主角>，右手掀起裙摆贴在白色蕾丝内裤上；<女主角>身体微僵，双手抓着他的手臂；侧面中景，两人上半身与裙摆都清晰入镜。\"\n    },\n    {\n      \"seconds\": 8,\n      \"continue_from_previous\": true,\n      \"prompt\": \"穿着衬衫短裤的男人把<女主角>轻轻推倒在床上，另一只手掀起她的白色T恤，直接握住乳房；女生低头害羞，双手抓住他的手腕。\\nCamera follows the push-down with a soft downward tilt, keeping medium shot composition. Both remain fully visible from head to waist, natural bedroom lighting, realistic cinematic look. Never zoom into face only.\",\n      \"end_frame_prompt\": \"<女主角>仰躺在床上，白色T恤被掀起，男人一只手握住她的乳房；<女主角>低头害羞，双手抓着他的手腕；中景，两人上半身与床铺都在画面内。\"\n    }\n  ]\n}",
+    "reference_notes": "<Subject 1>\n人物：<女主角>，成年女性，所有参考图中是同一个人。\n\n所有段落保持同一位成年<女主角>，不得混入其他人物的脸、年龄感或发型。",
+    "steps": 4,
+    "two_pass_steps": 2,
+    "sampler": "res_multistep",
+    "scheduler": "simple",
+    "megapixels": 0.3,
+    "final_width": 832,
+    "final_height": 1472,
+    "two_pass_mode": "全部一采",
+    "force": false,
+    "keyframe_steps": 2,
+    "advanced_overrides": "{}",
+    "seed": 684109116455697,
+    "control_after_generate": "randomize",
+    "randomize_seed": true,
+    "stage": "关键帧 → 确认 → 视频",
+    "resume_job_id": "20261101_151717_929d8592",
+    "job_name": "",
+    "h3_director_preview": ""
+   }
+  }
+ ],
+ "links": [
+  [
+   1,
+   1,
+   0,
+   4,
+   0,
+   "IMAGE"
+  ],
+  [
+   2,
+   2,
+   0,
+   4,
+   1,
+   "IMAGE"
+  ],
+  [
+   3,
+   3,
+   0,
+   4,
+   2,
+   "IMAGE"
+  ]
+ ],
+ "groups": [],
+ "config": {},
+ "extra": {
+  "ds": {
+   "scale": 0.6611570247934081,
+   "offset": [
+    1551.1419997936455,
+    614.2061911242025
+   ]
+  },
+  "ue_links": [],
+  "links_added_by_ue": []
+ },
+ "version": 0.4
+}

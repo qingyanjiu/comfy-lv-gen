@@ -87,6 +87,7 @@ h3-long-video-repo/
 │   ├── serve_app.bat            双击启动（纯 ASCII + CRLF，cmd 的 GBK 坑）
 │   ├── remake_bridge.py         ★ 复刻台 → aiohttp 的伪 handler 适配层
 │   ├── build_director_workflow.py  生成 Director 示例工作流
+│   ├── sync_workflows.py        ★ 界面工作流 → workflows/（白名单单向同步）
 │   ├── cleanup_comfy_assets.py  清理 ComfyUI input/output 里的中间产物
 │   └── sync_manual.py           同步 manual.html
 ├── skill/
@@ -107,6 +108,7 @@ h3-long-video-repo/
 │       ├── frame_exact.py       帧级精确切段
 │       └── …                    探针与实验脚本
 ├── api_workflows/               API 格式工作流（一采 / 二采）
+├── workflows/                   ★ 界面工作流（拖进 ComfyUI 就能跑，见「工作流在哪」）
 ├── example_workflows/           可直接拖进 ComfyUI 的示例
 │   ├── H3-Long-Video-Director.json   Director 节点用的示例
 │   └── lab/                         实验性工作流（`lab_posefix.py` 仍在用）
@@ -117,7 +119,16 @@ h3-long-video-repo/
 
 ---
 
-## 工作流在哪（`skill/assets/*.base.json`）
+## 工作流在哪（两套，别混淆）
+
+仓库里有**两套**工作流，用途完全不同：
+
+| 位置 | 是什么 | 谁在读 |
+|---|---|---|
+| `skill/assets/*.base.json` | **运行时模板**，每次出片 `json.load` 进来改参数再提交 | `run_selflift.build_wf()` |
+| `workflows/*.json` | **界面工作流**，双击/拖进 ComfyUI 就能在画布上跑 | 人（调试、复现链路） |
+
+### 第一套：运行时 base 模板
 
 **两条生成链路各有一份 base 工作流**，它们不是示例，是每次出片都要 `json.load`
 打开的模板 —— `run_selflift.build_wf()` 读进来，改几个节点的 `widgets_values`，
@@ -131,6 +142,29 @@ h3-long-video-repo/
 选哪份由 `cfg["workflow"]` 决定，面板上通过 `#engineSel` → `/set --engine` 切换；
 链路名靠文件名里的「黑鹤」二字识别（`run_selflift.profile()`）。
 
+### 第二套：界面工作流（`workflows/`）
+
+`skill/assets/` 那两份是**裁剪过的运行时子集**（37 节点的黑鹤版 vs 界面上 66 节点的
+完整调试版）。界面里那批能直接拖进 ComfyUI 的工作流是另一条线，2026-11-17 之前
+**一份都没入库**，谁 clone 下来都没法在画布上复现链路。
+
+| 文件 | 节点 | 说明 |
+|---|---|---|
+| `H3-SelfLift_单图参考.json` | 22 | 默认链路。与 base 模板逐节点相同，只差 VHS 的 UI 元数据 |
+| `H3-SelfLift_逐段导演.json` | 5 | 旧入口，控制台模式（3 参考图 + Director 节点） |
+| `H3-SelfLift_图片视频参考.json` | 24 | 单图参考 + `VHS_LoadVideo`，图片/视频混合参考 |
+| `H3-SelfLift_参考视频换动漫风.json` | 24 | 同上，风格迁移调参版 |
+| `H3-SelfLift_参考视频换动漫风_修正版.json` | 24 | 上一版的修正 |
+| `H3-Long-Video-Director.json` | 4 | Director 示例（**与 `example_workflows/` 那版不同**：这版无首帧图节点） |
+| `minimax-h3二采工作流-改自黑鹤大佬-66节点.json` | 66 | 黑鹤二采完整版，base 模板是它的 37 节点子集 |
+
+同步器：`python tools/sync_workflows.py --check / --apply`（界面目录 → 仓库，单向）。
+白名单在脚本的 `RENAMES` 里，只收 H3 链路；上游生图/编辑工作流（Qwen / MOSS /
+Krea2 共 9 个）不属于本工程代码，不收。
+
+> ⚠️ 这些工作流是**字节级原样**入库的，里面保留了本机的 `D:/Comfy-Desktop/...`
+> 绝对路径和 RunningHub 签名 URL。本机打开可直接跑；换机器需自行改路径。
+
 ### 为什么以前没入库，现在怎么保证不再漏
 
 `skill/scripts/sync_repo.py` 本来是「消除两份源码」的同步器，但它**只同步
@@ -141,6 +175,7 @@ h3-long-video-repo/
 纳入同步：`*.base.json` / `selflift.global.json` / `remake_prompt.txt` /
 `segments.selflift.example*.json`。**用白名单而不是整个 `assets/`** —— 那个目录里
 混着 mp4、`*.prompts.html`、`*.state.json`、`*.bak*`，都是本机产物。
+
 
 ### 提交时自动校验（pre-commit hook）
 
@@ -167,17 +202,28 @@ git config core.hooksPath .githooks
 本次提交与 skill 无关时可跳过：`git commit --no-verify`。
 活跃目录不存在时（别的机器 clone）hook 自动放行。
 
+hook 现在管**两条线**，两条都通过才放行：
+
 ```
-# 改完活跃目录后，同步并校验
+# 1) 改完活跃目录的源码/配置后
 python skill/scripts/sync_repo.py --apply
-python skill/scripts/sync_repo.py --check    # 应输出 ALL SYNCED
+python skill/scripts/sync_repo.py --check      # 应输出 ALL SYNCED
+
+# 2) 在 ComfyUI 画布上改完工作流并存盘后
+python tools/sync_workflows.py --apply
+python tools/sync_workflows.py --check         # 应输出 ALL SYNCED
 ```
+
+`tools/sync_workflows.py` 是 2026-11-17 新加的：界面工作流（`workflows/`）和运行时
+模板（`skill/assets/*.base.json`）是两条独立的线，前者此前完全没有同步机制。
 
 **注意活跃目录不是本仓库的 checkout**，它是个独立的本地 git 仓库（分支 `master`，
 历史与 `main` 无 merge-base）。在那里 `git commit` **永远进不了 `main`**，同步只
 靠上面的 `sync_repo.py` 搬文件。它原先挂过指向本仓库的 `origin`、推 `master` 分支，
 但 `origin/master` 与 `main/skill/` 32 个文件逐字节零差异，纯冗余 —— 2026-11-17 已
-`git remote remove origin`，从根上杜绝「push 成功 = 已同步」的错觉。
+`git remote remove origin`，从根上杜绝「push 成功 = 已同步」的错觉。远端 `master` /
+`skill` 两个分支同日删除，仓库现在**只有 `main`**（删前 bundle 备份在
+`_trash/branch-backup-20261117/`）。
 
 ### 三条纪律
 
@@ -284,6 +330,7 @@ python remake_panel.py --standalone
 | [`docs/模型手册/`](docs/模型手册/) | 维护者 | 模型提示词与配置手册、采样器组合指南、H3 提示词案例库 |
 | [`skill/SKILL.md`](skill/SKILL.md) | agent | 流水线作业手册：三层结构、三道人工确认点、失败码与修法 |
 | [`docs/工作台服务架构.md`](docs/工作台服务架构.md) | 改面板的人 | 单端口三入口、资产双份、同步机制 |
+| [`workflows/`](workflows/) | 要在画布上复现链路的人 | 7 个界面工作流（H3 全链路），拖进 ComfyUI 就能跑 |
 | [`docs/experiments/`](docs/experiments/) | 维护者 | 未验证的探索性规范（**不要当定论用**） |
 
 分镜体检：
