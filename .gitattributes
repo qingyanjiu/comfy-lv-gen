@@ -1,5 +1,27 @@
-*.py text eol=lf
-*.json text eol=lf
-*.md text eol=lf
-*.bat text eol=crlf
+# 统一行尾：跨平台协作 / 多工具编辑时避免整文件 diff 噪音
+# 2026-11-17 补 *.html / *.js —— 之前漏了，编辑 selflift_app.html 后
+# 一行的改动被算成 5665 行（CRLF→LF 全文件重写）。
+* text=auto
 
+*.py   text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.html text eol=lf
+*.js   text eol=lf
+*.css  text eol=lf
+*.txt  text eol=lf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# 二进制：别做行尾转换
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.webp binary
+*.gif  binary
+*.mp4  binary
+*.mov  binary
+*.wav  binary
+*.mp3  binary
+*.pt   binary
+*.safetensors binary
