@@ -25,9 +25,17 @@ DEFAULT_WORKFLOW / GLOBAL_CFG_PATH 仍指向活跃目录；`load_global_cfg()` �
 逻辑，活跃目录缺失时才读本脚本旁的 assets。所以「改了仓库里的工作流」不会
 影响正在跑的片子，改配置仍然只改活跃目录。
 
+2026-11-17 再补孤儿检测
+-----------------------
+单向覆盖有个盲区：活跃目录**删掉**一个文件，仓库里那份不会被删，`--check` 也照报
+ALL SYNCED —— 因为它只检查「活跃版有的文件」。于是 `gen169.py` / `gen_neon_clean.py` /
+`gen_scenes_169.py` / `gen_walk_169.py` 四个零引用脚本在仓库里躺了很久，活跃目录磁盘上
+压根没有。现在加了 ORPHAN 检测：repo 有、活跃版没有（且在同步范围内）→ 报告并返回 1。
+`--apply` **不会自动删**孤儿，删除是破坏性操作，必须人工确认后 `git rm`。
+
 用法
-  python sync_repo.py --check    # 只读，列出内容不一致的文件（忽略 CRLF/LF 差异）
-  python sync_repo.py --apply    # 把活跃版写过去（repo 侧统一 LF），repo 独有文件不动
+  python sync_repo.py --check    # 只读，列出内容不一致 / 缺失 / 孤儿（忽略 CRLF/LF 差异）
+  python sync_repo.py --apply    # 把活跃版写过去（repo 侧统一 LF），孤儿不动只报告
 
 约定：改代码只改活跃版；改完跑一次 --apply，再跑 --check 应为 ALL SYNCED。
 """
@@ -75,6 +83,26 @@ def _targets() -> list[tuple[Path, Path]]:
     return out
 
 
+def _orphans(targets: list[tuple[Path, Path]]) -> list[Path]:
+    """repo 里有、活跃版没有的文件（仅限同步范围内）。
+
+    只查同步范围：scripts/*.py、SKILL.md、assets 白名单命中的名字。
+    像 `skill/.gitignore`、`assets/三镜测试.json` 这类只在仓库里维护的文件
+    不算孤儿，否则每次 --check 都会误报。
+    """
+    live = {dst for _, dst in targets}
+    out = [p for p in sorted((DST / "scripts").glob("*.py")) if p not in live]
+    sk = DST / "SKILL.md"
+    if sk.is_file() and sk not in live:
+        out.append(sk)
+    adir = DST / "assets"
+    if adir.is_dir():
+        out += [p for p in sorted(adir.iterdir())
+                if p.is_file() and p not in live
+                and any(p.match(pat) for pat in ASSET_GLOBS)]
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
@@ -86,7 +114,8 @@ def main() -> int:
         raise SystemExit(f"目录不存在：SRC={SRC} DST={DST}")
 
     drift, missing, synced, applied = [], [], [], []
-    for src, dst in _targets():
+    targets = _targets()
+    for src, dst in targets:
         sb = _norm(src.read_bytes())
         db = _norm(dst.read_bytes()) if dst.is_file() else None
         if db is None:
@@ -103,18 +132,24 @@ def main() -> int:
         else:
             synced.append(dst)
 
+    orphans = _orphans(targets)
+
     for src, dst in drift:
         print(f"[DRIFT ] {src.name}  ->  {dst}")
     for src, dst in missing:
         print(f"[MISSING] {src.name}  ->  {dst}")
+    for p in orphans:
+        print(f"[ORPHAN] {p}  （活跃版没有，仓库独有）")
     if a.apply:
         for p in applied:
             print(f"[APPLIED] {p}")
         print(f"已同步 {len(applied)} 个文件；repo 独有文件未动。再跑 --check 确认。")
+        if orphans:
+            print(f"另有 {len(orphans)} 个孤儿文件需人工确认后 git rm（本脚本不删）。")
         return 0
-    if drift or missing:
-        print(f"共 {len(drift)} 个内容分叉 / {len(missing)} 个缺失。"
-              "改代码只改活跃版，然后 python sync_repo.py --apply")
+    if drift or missing or orphans:
+        print(f"共 {len(drift)} 个内容分叉 / {len(missing)} 个缺失 / "
+              f"{len(orphans)} 个孤儿。改代码只改活跃版，然后 python sync_repo.py --apply")
         return 1
     print(f"ALL SYNCED：{len(synced)} 个文件与 repo 一致（忽略行尾）。")
     return 0

@@ -1,0 +1,69 @@
+#!/bin/sh
+# 提交前强制检查：仓库里的 skill/ 必须与活跃目录同步。
+#
+# 为什么需要这个 hook
+# -------------------
+# 源码有两份：活跃目录 `.workbuddy/skills/h3-long-video/`（运行时真正读的那份）
+# 和本仓库 `skill/`（入库副本）。改代码只改活跃版，然后必须跑
+# `python skill/scripts/sync_repo.py --apply` 把改动搬过来。
+#
+# 这件事一直靠人记，于是反复分叉：2026-11-17 就发现两个 base 工作流
+# 从来没进过仓库，gen169 等 4 个脚本又反过来在仓库里躺了很久、活跃目录压根没有。
+#
+# hook 不替你做同步（那是写操作，可能覆盖你正在改的文件），只做两件事：
+#   1. 有分叉/缺失/孤儿 → 拦下提交，打印该跑的命令
+#   2. 一切同步 → 放行
+#
+# 启用（只需一次）：
+#   git config core.hooksPath .githooks
+#
+# 临时跳过（确实要单独提交文档等无关改动时）：
+#   git commit --no-verify
+
+set -e
+
+ROOT=$(git rev-parse --show-toplevel)
+SYNC="$ROOT/skill/scripts/sync_repo.py"
+
+# 活跃目录不在（别的机器 clone 下来、或 skill 未安装）时跳过检查：
+# 那种环境下本来就没有「两份」，无从对比。
+SRC="D:/Comfy-Desktop/.workbuddy/skills/h3-long-video"
+if [ ! -d "$SRC" ]; then
+    echo "[pre-commit] 活跃 skill 目录不存在，跳过同步检查：$SRC"
+    exit 0
+fi
+if [ ! -f "$SYNC" ]; then
+    echo "[pre-commit] 找不到同步器：$SYNC"
+    echo "[pre-commit] 请先 git checkout skill/scripts/sync_repo.py"
+    exit 1
+fi
+
+PY="D:/Comfy-Desktop/ComfyUI-Installs/ComfyUI/ComfyUI/.venv/Scripts/python.exe"
+if [ ! -x "$PY" ]; then
+    PY=python
+fi
+
+# --check 是只读的：不改任何文件，只报告 drift / missing / orphan
+if "$PY" "$SYNC" --check; then
+    exit 0
+fi
+
+cat <<'EOF'
+
+────────────────────────────────────────────────────────────
+提交被拦下：仓库 skill/ 与活跃目录不同步。
+
+先同步，再提交：
+    python skill/scripts/sync_repo.py --apply
+    python skill/scripts/sync_repo.py --check   # 应为 ALL SYNCED
+    git add -A
+
+若报 [ORPHAN]（仓库有、活跃目录没有），那是活跃版已删除的文件，
+同步器不会替你删，需人工确认后：
+    git rm <路径>
+
+若本次提交与 skill 无关、确实要跳过检查：
+    git commit --no-verify
+────────────────────────────────────────────────────────────
+EOF
+exit 1
