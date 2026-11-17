@@ -7,11 +7,31 @@
 <style>
 :root{--bg:#f5f6f8;--card:#fff;--bd:#dfe3e8;--tx:#222;--mut:#888;--acc:#2b6cb0;--ok:#2f855a;--err:#c53030;--run:#d69e2e}
 *{box-sizing:border-box}body{margin:0;font:14px/1.6 -apple-system,"Segoe UI",Microsoft YaHei,sans-serif;background:var(--bg);color:var(--tx)}
-header{background:#1a202c;color:#fff;padding:12px 20px;display:flex;align-items:center;gap:14px}
+/* 顶栏吸顶：滚到分段卡片/日志时仍能看到当前项目、预览与下载成片。
+   z-index 40 高于段落操作条、低于弹窗遮罩的 99。
+   --hdh 由 JS 用 ResizeObserver 实测写入（手机上三行比桌面高）。
+   全页只有这一层 sticky —— 段落操作条原本也吸顶，手机上两者叠起来
+   占掉 844px 屏幕的近一半，2026-11-17 已撤掉。 */
+header{background:#1a202c;color:#fff;padding:10px 20px;display:flex;align-items:center;gap:14px;
+  position:sticky;top:0;z-index:40;flex-wrap:wrap;box-shadow:0 2px 10px -4px rgba(0,0,0,.55)}
 header h1{font-size:16px;margin:0}header .bdg{font-size:11px;background:#2b6cb0;padding:2px 8px;border-radius:10px}
 header .sp{flex:1}header a{color:#90cdf4;font-size:12px;text-decoration:none}
+/* 顶栏里的项目摘要：片名 · 完成/总段 · 二采 · 是否已成片 */
+header .hdr-meta{font-size:12px;color:#a0aec0;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+header .hdr-meta b{color:#e2e8f0;font-weight:600}
+/* 成片区搬到顶栏：深色底上「预览」用描边蓝、「下载」用亮绿实心 */
+header #finalBox{display:none;gap:8px;align-items:center;flex:0 0 auto}
+header a.vlink{padding:6px 10px;border:1px solid #3b4759;border-radius:5px;
+  white-space:nowrap;color:#90cdf4}
+header a.vlink:hover{border-color:#63b3ed;color:#bee3f8}
+header a.dlbtn{background:#2f855a}
+header a.dlbtn:hover{background:#38a169}
 .wrap{max-width:1200px;margin:18px auto;padding:0 16px}
 .panel{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:16px;margin-bottom:16px}
+/* header 吸顶后 scrollIntoView(block:'start') 会把面板顶到 header 底下藏住标题，
+   留出 --hdh 的滚动边距（JS 实测写入）。多 8px 让边框也露出来。 */
+.panel{scroll-margin-top:calc(var(--hdh,0px) + 8px)}
 .panel h2{font-size:14px;margin:0 0 12px;color:#2d3748}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 label{font-size:12px;color:var(--mut)}
@@ -43,8 +63,6 @@ button.danger{color:var(--err)}
    宁可整行换行，也不要按钮变形成两行字（2026-11-17 加下载按钮后实测）。 */
 .bar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
 .bar>button{flex:0 0 auto;white-space:nowrap}
-/* 成片区在换行后独占一行时也要靠右（.sp 只在同一行时起作用） */
-#finalBox{margin-left:auto}
 .sel{font-size:12px;color:var(--mut)}select{border:1px solid var(--bd);border-radius:5px;padding:5px 8px;font-size:13px}
 a.vlink{color:var(--acc);text-decoration:none;font-size:12px}
 /* 下载成片：绿色主按钮样式的链接（a 不能套 button，用独立类） */
@@ -126,11 +144,23 @@ header .nav{font-size:12px;color:#a0aec0}
   .panel{padding:12px;margin-bottom:12px;border-radius:10px}
   .panel h2{font-size:14px;margin-bottom:10px}
 
-  /* 头部：标题一行，导航另起一行，别挤成一条 */
-  header{padding:10px 12px;gap:8px;flex-wrap:wrap}
-  header h1{font-size:15px;flex:1 1 auto}
+  /* 头部：三行——标题+徽章+导航 / 项目摘要 / 成片按钮。
+     成片区在手机上必须够大（≥38px 触摸目标），并排两半等宽。
+     吸顶后 header 太高会吃掉内容区（844px 屏上 135px 就占 16%），
+     所以窄屏必须压行数：靠 order 把 nav 提到标题行末尾，
+     否则 DOM 顺序里 nav 在 finalBox 之后，100% 宽的成片区会把它顶到第 4 行。
+     隐藏 nav 里的描述文字，只留两个链接。 */
+  header{padding:8px 10px;gap:6px 8px}
+  header h1{font-size:14px;flex:0 0 auto;order:1}
+  header .bdg{font-size:10px;padding:1px 6px;order:2;max-width:150px;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
   header .sp{display:none}
-  header .nav{flex:1 1 100%;line-height:1.9}
+  header .nav{flex:0 0 auto;margin-left:auto;font-size:10px;line-height:1.6;order:3}
+  header .navdesc{display:none}
+  header .hdr-meta{flex:1 1 100%;order:4;font-size:11px;text-align:left;line-height:1.5}
+  header #finalBox{flex:1 1 100%;order:5;gap:8px}
+  header #finalBox>a{flex:1 1 0;text-align:center;padding:10px 8px;font-size:13px;
+    min-height:38px;display:flex;align-items:center;justify-content:center}
 
   /* 表单：控件撑满一行，触摸目标 ≥38px */
   .row{gap:8px}
@@ -141,21 +171,20 @@ header .nav{font-size:12px;color:#a0aec0}
   button{padding:9px 13px;font-size:14px;min-height:38px}
   button.sm{padding:8px 11px;font-size:13px;min-height:36px}
 
-  /* 段落操作条：换行 + 吸顶（滚到卡片中间也点得到「全片生成」） */
-  /* 必须 flex-wrap：桌面一行放得下，手机上 4 个按钮 + 两个 label 一行放不下，
-     不换行时 flex-shrink 会把按钮压成竖排窄条（2026-11-17 实测）。 */
+  /* 段落操作条：换行 + 按钮两列。
+     必须 flex-wrap：桌面一行放得下，手机上 5 个按钮 + 两个 label 一行放不下，
+     不换行时 flex-shrink 会把按钮压成竖排窄条（2026-11-17 实测）。
+     **不再吸顶**：成片入口搬到顶栏后，这条 bar 光按钮+下拉就有 260px 高，
+     再 sticky 会和吸顶 header 叠成 400px（占 844px 屏幕近一半），
+     滚到卡片中间时反而挡住内容。只留 header 一层吸顶。 */
   .bar{gap:6px;flex-wrap:wrap}
   .bar .sp{display:none}
-  #segPanel .bar{position:sticky;top:0;z-index:6;background:#fff;
-    padding:8px 0;margin:-4px 0 10px;border-bottom:1px solid var(--bd);
-    box-shadow:0 4px 10px -8px rgba(0,0,0,.45)}
   /* 按钮本身不收缩（继承基础样式的 flex:0 0 auto），用 min-width 保证
      两个按钮一行、且都够宽点得中。 */
   #segPanel .bar>button{min-width:calc(50% - 3px)}
   #segPanel .bar>label{flex:1 1 100%;margin:0;display:flex;align-items:center;gap:6px;
     flex-wrap:wrap;font-size:13px;color:#4a5568}
   #segPanel .bar>label select{flex:1 1 120px;min-width:0;max-width:100%}
-  #segPanel .bar>#finalBox{flex:1 1 100%;justify-content:flex-end;gap:10px}
   a.dlbtn{padding:10px 16px;font-size:14px;min-height:38px}
   a.vlink{font-size:13px}
 
@@ -208,8 +237,13 @@ header .nav{font-size:12px;color:#a0aec0}
 <body>
 <header>
   <h1>视频复刻导演台</h1><span class="bdg" id="build">…</span>
+  <span class="hdr-meta" id="hdrMeta">还没打开项目</span>
   <span class="sp"></span>
-  <span class="nav">黑鹤二采 · 链式首帧 · <a href="/h3-long-video/app" style="color:#7cb0ff;text-decoration:none" title="切到 SelfLift 出片台（同一个服务）">出片台</a> · <a href="/" style="color:#7cb0ff;text-decoration:none" title="返回工作台入口">工作台</a></span>
+  <span id="finalBox">
+    <a class="vlink" id="finalLink" href="#" target="_blank">▶ 预览成片</a>
+    <a class="dlbtn" id="finalDl" href="#" download title="把整部成片下载到本地（手机直接存到「下载」里）">⬇ 下载成片</a>
+  </span>
+  <span class="nav"><span class="navdesc">黑鹤二采 · 链式首帧 · </span><a href="/h3-long-video/app" style="color:#7cb0ff;text-decoration:none" title="切到 SelfLift 出片台（同一个服务）">出片台</a> · <a href="/" style="color:#7cb0ff;text-decoration:none" title="返回工作台入口">工作台</a></span>
 </header>
 <div class="wrap">
   <div class="panel" id="projPanel">
@@ -340,11 +374,6 @@ header .nav{font-size:12px;color:#a0aec0}
       <button id="btnApplyAudio" title="把原音贴回所有已出片但还没有音轨的段">🎵 立即贴回</button>
       <span class="sel" id="globalStatus"></span>
       <span class="sel" id="tpSummary"></span>
-      <span class="sp" style="flex:1"></span>
-      <span id="finalBox" style="display:none;gap:8px;align-items:center;flex-wrap:wrap">
-        <a class="vlink" id="finalLink" href="#" target="_blank">▶ 打开成片</a>
-        <a class="dlbtn" id="finalDl" href="#" download title="把整部成片下载到本地（手机直接存到「下载」里）">⬇ 下载成片</a>
-      </span>
     </div>
     <div class="grid" id="grid"></div>
   </div>
@@ -394,6 +423,23 @@ let SRC=null, FILM=null, SIG='', POLL=null, LOGPREV='', PM_IDX=null, REFS=[], SE
 let TOTALF=0, TLFPS=24, CUTS=[], TL_OBJ=null, TL_SEEKING=false;
 // 切段方式：MODE=当前项目已保存的方式（even 按秒 / manual 按帧）；TL_LOCK=时间轴切点只读
 let MODE='even', TL_LOCK=false, MODE_ACTUAL=null;
+// 顶栏（成片区 / 项目摘要）的去重 key：和 SIG 一样，key 没变就不碰 DOM
+let FINAL_KEY='', HDR_KEY='';
+
+// ---- 顶栏高度实测 ----
+// header 是 sticky，手机上是三行（标题+徽章+导航 / 项目摘要 / 成片按钮），
+// 高度随宽度和成片区显隐变化。用 ResizeObserver 实测写进 --hdh：
+// .panel 的 scroll-margin-top 直接消费它，滚动落点才不会藏在顶栏底下。
+// 以后要给别的元素加 sticky，也读 var(--hdh)，别写死数字。
+(function syncHeaderHeight(){
+  const hd=document.querySelector('header'); if(!hd)return;
+  const apply=()=>document.documentElement.style.setProperty(
+    '--hdh',Math.round(hd.getBoundingClientRect().height)+'px');
+  apply();
+  if(window.ResizeObserver)new ResizeObserver(apply).observe(hd);
+  else window.addEventListener('resize',apply);
+  window.addEventListener('orientationchange',()=>setTimeout(apply,120));
+})();
 
 // ---- 折叠面板：点标题收起/展开，状态记在 localStorage ----
 // 注意：只有 h2 是 panel 直接子元素时才能折叠（否则搬动子节点会把标题一起藏掉）
@@ -566,6 +612,7 @@ $('#btnNewProj').onclick=()=>{
     b.disabled=false; b.textContent='＋ 新建项目';
     if(!j.ok){alert('新建失败：'+(j.error||''));return}
     FILM=j.film; SRC=null; SIG=''; LAST_ST=null;
+    FINAL_KEY=''; HDR_KEY=''; setFinalVisible(false); syncHdrMeta(null);
     localStorage.setItem('rmk_last_film',FILM);
     $('#filmName').value=FILM; updateSplitTarget();
     $('#projInfo').textContent=`✓ 已新建项目「${FILM}」：${j.dir}`;
@@ -627,6 +674,8 @@ $('#btnDeleteProj').onclick=()=>{
     if(!j.ok){alert('删除失败：'+(j.error||''));return}
     const gone=FILM;
     FILM=null; SRC=null; SIG=''; LAST_ST=null; CUTS=[]; TOTALF=0; TL_LOCK=false;
+    // 顶栏必须跟着清：不然 header 还挂着已删项目的「预览/下载成片」，点了 404
+    FINAL_KEY=''; HDR_KEY=''; setFinalVisible(false); syncHdrMeta(null);
     localStorage.removeItem('rmk_last_film');
     $('#splitTarget').textContent='';
     $('#splitinfo').textContent=''; $('#cutInfo').textContent='';
@@ -678,6 +727,9 @@ function openProject(name){
     $('#btnSplit').disabled=!SRC;
     syncMigrateBtn();
     SIG=''; LAST_ST=null; LOGPREV='';
+    // 换片必须让顶栏重算：FINAL_KEY/HDR_KEY 里含片名，不清会因「key 没变」跳过更新，
+    // 结果新片的成片按钮还是上一部的链接（点了下到别人的片子）。
+    FINAL_KEY=''; HDR_KEY='';
     pollNow(); refreshLog();
     if(!POLL)POLL=setInterval(pollNow,2000);
   }).catch(e=>{$('#projInfo').textContent='✗ '+e});
@@ -935,6 +987,7 @@ document.addEventListener('keydown',e=>{
 // ---- 切段（公共收尾） ----
 function afterSplit(j, msg, mode){
   FILM=j.film; SIG=''; LAST_ST=null; LOGPREV='';
+  FINAL_KEY=''; HDR_KEY='';
   MODE=mode||'even';
   MODE_ACTUAL=(j.actual!=null)?j.actual:null;
   localStorage.setItem('rmk_last_film',FILM);
@@ -1091,32 +1144,59 @@ function pollNow(){
     $('#tpSummary').style.cssText=(offN?'color:#6b46c1;font-weight:600':'');
     if(sig!==SIG){SIG=sig;renderCards(st)}
     syncFinal(st);
+    syncHdrMeta(st);
     renderModeInfo();
   }).catch(()=>{});
 }
-// ---- 成片：打开 / 下载 ----
-// 「打开成片」= 内联播放；「下载成片」= 服务端带 Content-Disposition: attachment，
+// ---- 成片：预览 / 下载（两个入口都在顶栏，吸顶常驻） ----
+// 「预览成片」= 内联播放；「下载成片」= 服务端带 Content-Disposition: attachment，
 // 手机上点一下直接落到「下载」目录（内联播放再长按保存，iOS 上常常存进相册而不是文件）。
 // 注意别在每次轮询都重新算：先比 key，只有片名 / 拼接状态变了才更新一次。
-let FINAL_KEY='';
+// 盒子本身常驻 header（不 display:none），否则顶栏会随状态抖动一行高度；
+// 没成片时只藏里面两个 <a>。
+function setFinalVisible(on){
+  const box=$('#finalBox'); if(!box)return;
+  box.style.display=on?'flex':'none';
+}
+// 顶栏项目摘要：吸顶后滚到页面任何位置都知道「现在是哪部片、跑到哪了」。
+// 只在内容真变时写 DOM（key 相同就跳过），避免每次轮询都触发重排。
+// 片名是用户输入，一律走 textContent，不拼 innerHTML。
+function syncHdrMeta(st){
+  const el=$('#hdrMeta'); if(!el)return;
+  const segs=(st&&st.segments)||[];
+  const done=segs.filter(s=>s.status==='done').length;
+  const running=segs.findIndex(s=>s.status==='running');
+  const parts=[];
+  if(FILM)parts.push(FILM);
+  if(segs.length){
+    parts.push(`${done}/${segs.length} 段`);
+    if(running>=0)parts.push(`▶ 第 ${running+1} 段生成中`);
+    else if(((st.jobs||{}).all)==='running')parts.push('全片生成中');
+  }
+  if(st&&st.merged)parts.push('已成片');
+  const key=parts.join('|');
+  if(key===HDR_KEY)return;
+  HDR_KEY=key;
+  el.textContent=parts.length?parts.join(' · '):'还没打开项目';
+  el.title=parts.length?parts.join(' · '):'';
+}
 function syncFinal(st){
-  const box=$('#finalBox');
   const merged=!!st.merged;
   const key=FILM+'|'+merged+'|'+((st.jobs||{}).merge||'');
   if(key===FINAL_KEY)return;
   FINAL_KEY=key;
-  if(!merged){box.style.display='none';return}
+  if(!merged){setFinalVisible(false);return}
   const url=`/api/media?film=${encodeURIComponent(FILM)}&kind=final&idx=1`;
   $('#finalLink').href=url;
   const dl=$('#finalDl');
   dl.href=url+'&dl=1';
   dl.setAttribute('download',`${FILM}_复刻成片.mp4`);
   dl.setAttribute('aria-disabled','false');
-  box.style.display='flex';
+  setFinalVisible(true);
   // 顺带问一下文件在不在、多大：成片被手动删掉时 state 里的 merged 仍是 true，
   // 直接给个点了 404 的按钮不如藏起来
   fetch('/api/final-info?film='+encodeURIComponent(FILM)).then(r=>r.json()).then(j=>{
-    if(!j.ok||!j.exists){box.style.display='none';return}
+    if(!j.ok||!j.exists){setFinalVisible(false);return}
     const mb=(j.size/1048576).toFixed(1);
     dl.textContent=`⬇ 下载成片 ${mb}MB`;
     dl.title=`下载整部成片 ${j.name}（${mb} MB）`;
