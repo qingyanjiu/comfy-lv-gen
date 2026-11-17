@@ -148,8 +148,10 @@ Qwen2.1 / Qwen2.5 双图关键帧系列、`H3-Single-Clip-FirstLastRefs.json`、
 `H3-SelfLift_单图参考.json` = MiniMax H3 **ref2va 直出**（视频模型自己演动作和运镜），
 + SelfLift 两段式升采样 + 音视频同出。**不过首尾帧、不过 Director、`chain` 规则一律不适用**。
 
-- 主模型 `minimax_h3_hybrid_fl2va_ref2va_b25-49-int8`；CLIP 见文末环境变化
-- Turbo 4step LoRA（1.0）；euler / simple，6 步 + SigmaRefiner 1 步，cfg 1.0，
+- 主模型 `DasiwaMinimaxH3_dasiwaHybridV2_int8`（240 UNETLoader）；CLIP 见文末环境变化
+- LoRA `TaoMate-H3-3step`（241 LoraLoaderModelOnly，strength 1.0）。注意它是 **3 步蒸馏**权重，
+  官方配套 `TaoMateHDProgressiveSampler`（steps=3）走三阶段机制；本链路不换采样器、
+  仍用 euler / simple，6 步 + SigmaRefiner 1 步，cfg 1.0（实跑 23 分钟出片正常，属「3 步 LoRA 配 6 步采样」的实验路径，未见糊片/过曝）。
   `transition_step=4`，`lowres_scale` 由画质档位决定（见下）
 - **画质档位**（`cfg["quality"]` / 面板下拉 / `--quality`）：`fast`=0.50（默认，细节偏软）、
   `standard`=0.65、`high`=0.75（细节明显更好，4 秒段实测几乎不增耗时）。
