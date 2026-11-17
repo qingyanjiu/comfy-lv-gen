@@ -91,8 +91,16 @@ h3-long-video-repo/
 │   └── sync_manual.py           同步 manual.html
 ├── skill/
 │   ├── SKILL.md                 流水线作业手册（agent 侧读这份）
+│   ├── assets/                  ★ 运行必需资产（见下节「工作流在哪」）
+│   │   ├── H3-SelfLift_单图参考.base.json   ★ 默认链路 base 工作流（22 节点）
+│   │   ├── H3-SelfLift_黑鹤二采.base.json   ★ 复刻台链路 base 工作流（37 节点）
+│   │   ├── selflift.global.json           ★ 唯一一份全局约束（head/tail/参数）
+│   │   ├── remake_prompt.txt              复刻台默认提示词模板
+│   │   └── segments.selflift.example*.json 分镜样例（单人 / 2 人 / 3 参考图）
 │   └── scripts/
 │       ├── run_selflift.py      ★ 两个面板共用的出片驱动
+│       ├── video_remake.py      复刻流水线 CLI（切段 + 抽帧 + 建 cfg）
+│       ├── sync_repo.py         把活跃 skill 同步进本仓库（含 assets 白名单）
 │       ├── pipeline.py          提交 prompt / 轮询 history
 │       ├── consistency.py       接缝 MAE、逐秒亮度 / 色偏
 │       ├── align_exposure.py    CIE Lab 对齐（喂下游前必做）
@@ -100,10 +108,57 @@ h3-long-video-repo/
 │       └── …                    探针与实验脚本
 ├── api_workflows/               API 格式工作流（一采 / 二采）
 ├── example_workflows/           可直接拖进 ComfyUI 的示例
+│   ├── H3-Long-Video-Director.json   Director 节点用的示例
+│   ├── deprecated/                  已废弃（Qwen2.1 系列，仅存档）
+│   └── lab/                         实验性工作流
 ├── docs/                        规范文档（见文末索引）
 ├── tests/                       pytest（图结构 / 面板单元）
 └── _trash/                      手动清理出来的旧备份（已 gitignore，可随时挪回）
 ```
+
+---
+
+## 工作流在哪（`skill/assets/*.base.json`）
+
+**两条生成链路各有一份 base 工作流**，它们不是示例，是每次出片都要 `json.load`
+打开的模板 —— `run_selflift.build_wf()` 读进来，改几个节点的 `widgets_values`，
+再提交给 ComfyUI。
+
+| 链路 | base 工作流 | 节点数 | 谁在用 |
+|---|---|---|---|
+| `selflift` | `H3-SelfLift_单图参考.base.json` | 22 | 出片台默认、`cfg["workflow"]` 缺省值 |
+| `blackcrane` | `H3-SelfLift_黑鹤二采.base.json` | 37 | 复刻台（`remake_panel.BLACKCRANE_BASE`） |
+
+选哪份由 `cfg["workflow"]` 决定，面板上通过 `#engineSel` → `/set --engine` 切换；
+链路名靠文件名里的「黑鹤」二字识别（`run_selflift.profile()`）。
+
+### 为什么以前没入库，现在怎么保证不再漏
+
+`skill/scripts/sync_repo.py` 本来是「消除两份源码」的同步器，但它**只同步
+`scripts/*.py` 和 `SKILL.md`，`assets/` 从未纳入** —— 结果工作流只活在本机
+`.workbuddy/skills/h3-long-video/assets/` 下，clone 仓库跑不起来，也看不出该用哪份。
+
+2026-11-17 给 `sync_repo.py` 加了 `ASSET_GLOBS` 白名单，把「运行必需」的资产
+纳入同步：`*.base.json` / `selflift.global.json` / `remake_prompt.txt` /
+`segments.selflift.example*.json`。**用白名单而不是整个 `assets/`** —— 那个目录里
+混着 mp4、`*.prompts.html`、`*.state.json`、`*.bak*`，都是本机产物。
+
+```
+# 改完活跃目录后，同步并校验
+python skill/scripts/sync_repo.py --apply
+python skill/scripts/sync_repo.py --check    # 应输出 ALL SYNCED
+```
+
+### 三条纪律
+
+1. **改配置只改活跃目录**（`.workbuddy/skills/h3-long-video/assets/`）。运行时读的是
+   那一份；仓库里的 `skill/assets/` 是入库副本，改它不影响正在跑的片子。
+   反过来，`load_global_cfg()` 有回退：活跃目录缺失时才读本仓库这份。
+2. **改工作流要另存新文件名**，别覆盖同名文件。ComfyUI 界面里打开过的同名 json，
+   保存会静默覆盖磁盘版本。
+3. **`selflift.global.json` 的 `workflow` 字段是本机绝对路径**（整个仓库都是
+   `D:/Comfy-Desktop/...` 硬编码，属本机专用工程）。换机器要连带改这一处，
+   否则全局约束会指向不存在的文件。
 
 ---
 

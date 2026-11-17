@@ -1,0 +1,50 @@
+{
+  "_template_note": "SelfLift 三图参考示例（可直接复制改成自己的片）。核心：<Picture N> 按接线顺序编号，先数 first_frame / last_frame，再数 ref_images。第1段无首帧 -> P1=人物参考(节点150)、P2=空镜板(节点152)；第2/3段链式接了上段尾帧 -> P1=首帧(节点151)、P2=人物参考、P3=空镜板。所以这里用 segments[].head 逐段覆盖全局 head，避免序号错位；若某段 head 引用了本段没连接的序号，strict_prompt_tags 会直接拒单。",
+  "title": "三图参考示例",
+  "prefix": "demo3",
+  "final_name": "三图参考示例_成片.mp4",
+  "workflow": "D:/Comfy-Desktop/.workbuddy/skills/h3-long-video/assets/H3-SelfLift_单图参考.base.json",
+  "ref_image": "D:/Comfy-Desktop/output/三图参考示例/refs/girl_ref.png",
+  "comfy_ref_name": "demo3_girl_ref.png",
+  "bg_plate": "demo3_bg_plate.png",
+  "bg_plate_path": "D:/Comfy-Desktop/output/三图参考示例/refs/bg_plate.png",
+  "megapixels": 0.5,
+  "seconds": 5.0,
+  "length": 124,
+  "fps": 24,
+  "join_mode": "dissolve",
+  "join_dissolve_seconds": 0.25,
+  "head": "<Picture 1> 是人物参考，完全还原图中女生的脸型、五官、发型、发色与身材比例，同一个人，全程五官、发型与服装不变。\n\n<Picture 2> 是全片唯一的场景空镜参考，房间结构、家具位置与光源方向全程以它为准，保持不变。",
+  "tail": "写实电影摄影，35mm 镜头，柔和浅景深，真实光学散景，细腻胶片颗粒。画面中只有她一个人，不出现文字、水印、字幕。\n\n[衔接] 段首约 0.5 秒人物动作与镜头保持稳定，随后开始本段动作；段尾约 0.5 秒动作收住、保持稳定。",
+  "segments": [
+    {
+      "id": "s01",
+      "title": "起手（无首帧：P1=人物，P2=空镜板）",
+      "seed": 471101,
+      "head": "<Picture 1> 是人物参考，完全还原图中女生的脸型、五官、发型、发色与身材比例，同一个人，全程五官、发型与服装不变。\n\n<Picture 2> 是全片唯一的场景空镜参考，房间结构、家具位置与光源方向全程以它为准，保持不变。",
+      "body": "她站在窗边的木桌前，侧身对着镜头，右手抬起把散落的头发别到耳后，动作缓慢克制。镜头固定在中景，轻微仰拍，背景是<Picture 2>里的房间陈设，虚化柔和。窗外的自然光从左侧斜射进来。"
+    },
+    {
+      "id": "s02",
+      "title": "链式承接（P1=上段尾帧，P2=人物，P3=空镜板）",
+      "seed": 471113,
+      "link": {
+        "mode": "chain",
+        "transition": "dissolve"
+      },
+      "head": "<Picture 1> 是本段的首帧，也是上一段的最后一帧，本段必须从这一帧的构图、人物位置和姿态无缝延续，不要重新起幅。\n\n<Picture 2> 是人物参考，还原图中女生的脸型、五官、发型、发色与身材比例，与<Picture 1>里是同一个人。\n\n<Picture 3> 是全片唯一的场景空镜参考，房间结构、家具位置与光源方向全程以它为准，保持不变。",
+      "body": "她放下手，转身正对镜头，向前走了一小步靠近桌沿，视线落在桌面上的杯子上。镜头保持机位不动，只做极缓慢的推近。动作自然连贯，光线与上一段一致。"
+    },
+    {
+      "id": "s03",
+      "title": "链式承接（同 s02 的编号规则）",
+      "seed": 471127,
+      "link": {
+        "mode": "chain",
+        "transition": "dissolve"
+      },
+      "head": "<Picture 1> 是本段的首帧，也是上一段的最后一帧，本段必须从这一帧的构图、人物位置和姿态无缝延续，不要重新起幅。\n\n<Picture 2> 是人物参考，还原图中女生的脸型、五官、发型、发色与身材比例，与<Picture 1>里是同一个人。\n\n<Picture 3> 是全片唯一的场景空镜参考，房间结构、家具位置与光源方向全程以它为准，保持不变。",
+      "body": "她伸手拿起杯子，抬到胸前，微微低头看着杯口，睫毛轻颤，然后抬眼看向镜头，露出一个很轻的笑。镜头缓慢推成近景，背景继续虚化。"
+    }
+  ]
+}
