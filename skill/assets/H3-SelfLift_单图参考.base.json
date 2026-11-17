@@ -1131,11 +1131,11 @@
     }
    },
    "widgets_values": [
-    "minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16.safetensors",
+    "TaoMate-H3-3step.safetensors",
     1.0000000000000002
    ],
    "widgets_values_named": {
-    "lora_name": "minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16.safetensors",
+    "lora_name": "TaoMate-H3-3step.safetensors",
     "strength_model": 1.0000000000000002
    },
    "color": "#223",
@@ -1526,11 +1526,11 @@
     }
    },
    "widgets_values": [
-    "minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors",
+    "DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors",
     "default"
    ],
    "widgets_values_named": {
-    "unet_name": "minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors",
+    "unet_name": "DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors",
     "weight_dtype": "default"
    },
    "color": "#233",
