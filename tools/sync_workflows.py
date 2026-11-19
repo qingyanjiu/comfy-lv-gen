@@ -55,6 +55,8 @@ RENAMES = {
     "H3-SelfLift_参考视频换动漫风_修正版.json": "H3-SelfLift_参考视频换动漫风_修正版.json",
     "minimax h3二采工作流（改自黑鹤大佬） (Copy) (2).json":
         "minimax-h3二采工作流-改自黑鹤大佬-66节点.json",
+    "H3黑鹤-首帧与背景板直连.json":
+        "H3黑鹤-首帧与背景板直连.json",
 }
 
 
