@@ -52,7 +52,7 @@ LOCAL_PARAM_KEYS = ("aspect_ratio", "megapixels", "quality", "seconds", "audio",
 
 # 改了路由/参数（比如新增 --cast）就把这个标记一起改掉，并且**重启出片服务**。
 # 前端 web/selflift_app.html 里的 UI_BUILD 必须写成同一个值，否则页面会提示进程是旧版。
-_PANEL_BUILD = "2026-11-17r-singleport"
+_PANEL_BUILD = "2026-11-19a-segtitle"
 
 
 def _has_local(v):
@@ -1108,6 +1108,24 @@ def register_routes(routes, web):
                     Path(cfg).write_text(
                         json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
                 log += f"\n已更新：本片设定（story）{'清空' if not s else s[:24]}"
+            # 段标题是纯展示字段：直接写 cfg，不经过 runner、不写 updated_at，
+            # 否则改个名字会让已出片段被 stale 判定成「需重出」。
+            if "seg_title" in p:
+                idx = int(seg) - 1
+                t = str(p["seg_title"] or "").strip()[:40]
+                with LOCK:
+                    cur = json.loads(Path(cfg).read_text(encoding="utf-8"))
+                    if not (0 <= idx < len(cur.get("segments") or [])):
+                        return web.json_response(
+                            {"ok": False, "error": f"段号越界：{seg}"}, status=400)
+                    if t and t.lower() not in ("none", "auto", "clear"):
+                        cur["segments"][idx]["title"] = t
+                    else:
+                        cur["segments"][idx].pop("title", None)
+                        t = ""
+                    Path(cfg).write_text(
+                        json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
+                log += f"\n已更新：段{seg} 名称 {t or '（恢复默认）'}"
             return web.json_response({"ok": True, "log": log})
         except Exception as exc:  # noqa: BLE001
             return web.json_response(

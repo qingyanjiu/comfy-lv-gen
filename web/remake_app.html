@@ -54,6 +54,10 @@ button.danger{color:var(--err)}
 .card .thumb{width:100%;aspect-ratio:16/9;object-fit:cover;background:#000;display:block}
 .card .bd{padding:10px}
 .card .tt{font-weight:600;font-size:13px;display:flex;justify-content:space-between;align-items:center}
+/* 段标题可点编辑：单击变输入框，Enter/失焦保存，Esc 取消 */
+.card .tt .segtitle{cursor:text;border-bottom:1px dashed transparent;padding:1px 2px}
+.card .tt .segtitle:hover{border-bottom-color:var(--mut)}
+.card .tt .segtitle.editing{border:1px solid var(--acc);border-radius:4px;outline:none;background:#fff;min-width:0;flex:1;font:inherit;padding:3px 5px}
 .card .meta{font-size:11px;color:var(--mut);margin:4px 0 8px}
 .st{font-size:11px;padding:2px 7px;border-radius:9px;background:#edf2f7;color:var(--mut)}
 .st.done{background:#f0fff4;color:var(--ok)}.st.running{background:#fffaf0;color:var(--run)}
@@ -1404,7 +1408,7 @@ $('#btnSplit').onclick=()=>{
 };
 
 // ---- 状态轮询（不整块重建：签名相同跳过） ----
-function sigOf(st){return JSON.stringify(st.segments.map(s=>[s.status,s.stale,s.seed,s.two_pass,s.seconds,s.first_override||'',s.first_override_at||0,s.has_audio]))+'|'+JSON.stringify(st.jobs)+'|'+st.merged+'|'+st.two_pass+'|'+st.audio_keep+'|'+st.current_seg}
+function sigOf(st){return JSON.stringify(st.segments.map(s=>[s.status,s.stale,s.seed,s.two_pass,s.seconds,s.first_override||'',s.first_override_at||0,s.has_audio,s.title||'']))+'|'+JSON.stringify(st.jobs)+'|'+st.merged+'|'+st.two_pass+'|'+st.audio_keep+'|'+st.current_seg}
 $('#tpSwitch').onchange=()=>{
   if(!FILM)return;
   fetch('/api/set-twopass',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1629,7 +1633,7 @@ function renderCards(st){
         ${fovTag(s)}
       </div>
       <div class="bd">
-        <div class="tt"><span>段 ${idx}</span><span style="display:flex;gap:5px;align-items:center">${tpTag(s)}${audTag(s)}<span class="st ${statusCls(s)}">${statusTxt(s)}</span></span></div>
+        <div class="tt"><span class="segtitle" data-act="segtitle" data-i="${idx}" title="点击修改这一段的名字（只改显示，不重出视频）">${s.title||('段 '+idx)}</span><span style="display:flex;gap:5px;align-items:center">${tpTag(s)}${audTag(s)}<span class="st ${statusCls(s)}">${statusTxt(s)}</span></span></div>
         <div class="meta">${secTxt}${clipTxt} · seed ${s.seed!=null?s.seed:'—'}</div>
         <div class="ops">
           <button data-act="gen" data-i="${idx}" ${s.status==='running'?'disabled':''}>${s.status==='done'?'重生成':'生成'}</button>
@@ -1648,7 +1652,7 @@ function renderCards(st){
     g.appendChild(c);
   });
   // 缩略图是 div（不是 button），单独一起绑；否则点大图没反应
-  g.querySelectorAll('button[data-act],[data-act].thumbwrap').forEach(b=>b.onclick=()=>onCard(b.dataset.act,+b.dataset.i));
+  g.querySelectorAll('button[data-act],[data-act].thumbwrap,[data-act="segtitle"]').forEach(b=>b.onclick=()=>onCard(b.dataset.act,+b.dataset.i));
 }
 function onCard(act,i){
   if(act==='gen'){
@@ -1671,7 +1675,37 @@ function onCard(act,i){
     pickFirstFrameUpload(i);
   }else if(act==='ffclear'){
     clearSegFirst(i);
+  }else if(act==='segtitle'){
+    editSegTitle(i,event&&event.currentTarget);
   }
+}
+
+// ---- 段名称：单击标题就地编辑；Enter/失焦保存，Esc 取消 ----
+// 幂等：只有值真变了才发请求；保存后轮询会拿后端的 title 回来覆盖，前端不自算。
+async function editSegTitle(i,el){
+  if(!FILM||!el||el.classList.contains('editing'))return;
+  const old=el.textContent.trim();
+  const input=document.createElement('input');
+  input.type='text'; input.className='segtitle editing'; input.value=old;
+  input.maxLength=40; input.placeholder='段 '+i;
+  el.replaceWith(input); input.focus(); input.select();
+  let done=false;
+  const finish=async(save)=>{
+    if(done)return; done=true;
+    const val=input.value.trim();
+    if(!save||val===old){SIG='';pollNow();return}   // 值没变 → 重画回来，不发请求
+    try{
+      const r=await fetch('/api/seg-title',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({film:FILM,idx:i,title:val})}).then(r=>r.json());
+      if(!r.ok)throw new Error(r.error||'未知错误');
+      SIG='';pollNow(); refreshLog();
+    }catch(e){alert('改段名称失败：'+e.message);SIG='';pollNow()}
+  };
+  input.addEventListener('keydown',e=>{
+    if(e.key==='Enter'){e.preventDefault();finish(true)}
+    else if(e.key==='Escape'){e.preventDefault();finish(false)}
+  });
+  input.addEventListener('blur',()=>finish(true));
 }
 
 // ---- 段首帧：抽上一段尾帧 / 上传 / 清除 ----

@@ -74,6 +74,10 @@
   .card[data-stale="1"]{border-color:#8a6430}
   .card-head{display:flex;align-items:center;gap:8px}
   .card-head .idx{font-weight:600;color:#9fc2ee}
+  .card-head .segtitle{cursor:text;border-bottom:1px dashed transparent;padding:1px 2px}
+  .card-head .segtitle:hover{border-bottom-color:var(--dim)}
+  .card-head .segtitle.editing{border:1px solid var(--acc);border-radius:4px;outline:none;
+    background:var(--bg);min-width:0;flex:1;font:inherit;padding:3px 5px}
   .card-head .badge{margin-left:auto;font-size:11px;color:var(--dim)}
   .card[data-stale="1"] .badge{color:var(--warn)}
   .thumbs{display:flex;gap:6px}
@@ -1624,7 +1628,7 @@ function cardSignature(data) {
   return JSON.stringify([
     data.title,
     data.segments.map((s) => [
-      s.index, s.id, s.seed, s.done, s.stale, s.running, s.mtime,
+      s.index, s.id, s.title, s.seed, s.done, s.stale, s.running, s.mtime,
       s.first_url, s.last_url, s.video_url, s.body, s.cast, s.optimized_body, s.optimized_at,
       s.link?.mode, s.link?.transition,
       s.first_frame_override, s.last_frame_override,
@@ -1747,6 +1751,39 @@ function fmtTime(ts) {
   return (d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
 }
 
+// 段名称：单击卡片标题就地编辑；Enter/失焦保存，Esc 取消。
+// 纯展示字段，后端直接写 cfg 且不动 updated_at —— 改名字不会让段变 stale。
+// 幂等：值没变就不发请求；保存后由下次轮询带回后端值，前端不自行改 state。
+async function editSegTitle(index, el) {
+  if (!state.cfg || !el || el.classList.contains("editing")) return;
+  const old = el.textContent.trim();
+  const input = document.createElement("input");
+  input.type = "text"; input.className = "segtitle editing";
+  input.value = old; input.maxLength = 40; input.placeholder = `第 ${index} 段`;
+  el.replaceWith(input); input.focus(); input.select();
+  let done = false;
+  const finish = async (save) => {
+    if (done) return; done = true;
+    const val = input.value.trim();
+    if (!save || val === old) { state.cardSig = null; await reload(); return; }
+    try {
+      await apiJson("/h3-long-video/selflift/set",
+                    { cfg: state.cfg, seg: index, seg_title: val });
+      state.cardSig = null;
+      await reload();
+      say(`第 ${index} 段已改名为「${val}」`, "ok");
+    } catch (e) {
+      say("改段名称失败：" + e.message, "error");
+      state.cardSig = null; await reload();
+    }
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
 function card(seg, total) {
   const el = document.createElement("div");
   el.className = "card";
@@ -1757,9 +1794,12 @@ function card(seg, total) {
   const idx = document.createElement("span");
   idx.className = "idx"; idx.textContent = "#" + seg.index;
   const title = document.createElement("span");
+  title.className = "segtitle";
   title.textContent = seg.title || seg.id;
+  title.title = "点击修改这一段的名字（只改显示，不重出视频）";
   title.style.overflow = "hidden"; title.style.textOverflow = "ellipsis";
   title.style.whiteSpace = "nowrap"; title.style.maxWidth = "180px";
+  title.onclick = () => editSegTitle(seg.index, title);
   const badge = document.createElement("span");
   badge.className = "badge"; badge.textContent = badgeFor(seg);
   head.append(idx, title, badge);
@@ -2814,7 +2854,7 @@ $("mOk").addEventListener("click", async () => {
 });
 
 /* 版本对齐：Python 路由改了不重启就等于没改，这里让旧进程自己暴露出来 */
-const UI_BUILD = "2026-11-17r-singleport";
+const UI_BUILD = "2026-11-19a-segtitle";
 (async function checkBackendBuild() {
   try {
     const r = await getJSON("/h3-long-video/selflift/build");

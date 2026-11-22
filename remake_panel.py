@@ -156,7 +156,7 @@ FPS = 24
 # 合并模式下由 tools/serve_app.py 覆盖成实际监听端口（8900），
 # /api/version 靠它报真实端口；--standalone 时才用这里的 8901。
 PORT = 8901
-UI_BUILD = "2026-11-18f-picwarn"
+UI_BUILD = "2026-11-19a-segtitle"
 COMFY = "http://127.0.0.1:8188"
 
 os.makedirs(ROOT, exist_ok=True)
@@ -2126,6 +2126,37 @@ class H(BaseHTTPRequestHandler):
             skip = bool(data.get("skip_done", True))
             ok, msg = run_all_proc(work_dir(film), skip_done=skip)
             return jresp(self, {"ok": ok, "msg": msg})
+        if p == "/api/seg-title":
+            # 改段的显示名称（卡片标题）。纯展示字段，不进提示词、不触发重出：
+            # 所以不写 updated_at，也不标 stale —— 否则改个名字全片变成待重出。
+            film = data.get("film"); idx = int(data.get("idx", 0))
+            title = str(data.get("title") or "").strip()[:40]
+            wd = work_dir(film)
+            if not os.path.exists(cfg_path(wd)):
+                return jresp(self, {"ok": False, "error": "未切段"}, 400)
+            j = json.load(open(cfg_path(wd), encoding="utf-8"))
+            n = len(j.get("segments") or [])
+            if not (1 <= idx <= n):
+                return jresp(self, {"ok": False, "error": f"段号越界（1~{n}）"}, 400)
+            if project_running(wd):
+                return jresp(self, {"ok": False, "error": "有任务在跑，先停下再改段名称"}, 400)
+            seg = j["segments"][idx - 1]
+            if title and title.lower() not in ("none", "auto", "clear"):
+                seg["title"] = title
+            else:
+                seg.pop("title", None)
+                title = ""
+            json.dump(j, open(cfg_path(wd), "w", encoding="utf-8"),
+                      ensure_ascii=False, indent=2)
+            # state 里也同步一份（cards 读的字段来源，和 seg_status 两处都要写）
+            st = load_state(wd)
+            if idx <= len(st.get("segments") or []):
+                if title:
+                    st["segments"][idx - 1]["title"] = title
+                else:
+                    st["segments"][idx - 1].pop("title", None)
+                save_state(wd, st)
+            return jresp(self, {"ok": True, "title": title, "idx": idx})
         if p == "/api/seg-first-from-source":
             # 抽「源视频该段的第一帧」锁成本段首帧。任意段可用，第 1 段也支持。
             # 与 from-prev 的区别：from-prev 承接上段成片尾帧（链式），
