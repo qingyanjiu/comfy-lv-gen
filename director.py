@@ -1201,6 +1201,8 @@ if PromptServer is not None:
         sys.path.insert(0, str(ROOT))
         import selflift_panel
         selflift_panel.register_routes(PromptServer.instance.routes, web)
+        import single_panel
+        single_panel.register_routes(PromptServer.instance.routes, web)
     except Exception as _selflift_exc:  # noqa: BLE001
         print(f"[H3] SelfLift 面板路由注册失败：{_selflift_exc}", flush=True)
 

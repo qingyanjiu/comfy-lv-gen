@@ -7,6 +7,7 @@
     根        /                      入口页，二选一
     出片台    /h3-long-video/app      SelfLift（参考图条带 · 全片提示词 · 分段卡片）
     复刻台    /remake                视频复刻导演台（黑鹤二采 · 切段 · 链式首帧）
+    单图出片  /single                input 选图 · MP/比例 · 提示词 · 带音轨成片列表
 
 以前这两个面板是两个独立服务、两个端口（8900 / 8901），要开两个窗口。现在合到
 一个进程里：它们的路由命名空间本来就不冲突——出片台全走 `/h3-long-video/*`，
@@ -37,6 +38,7 @@ if str(ROOT / "tools") not in sys.path:
 from aiohttp import web  # noqa: E402
 
 import selflift_panel as SP  # noqa: E402
+import single_panel as SGP  # noqa: E402
 
 BANNER = """
 ──────────────────────────────────────────────────────────
@@ -44,6 +46,7 @@ BANNER = """
   入口    http://{host}:{port}/             ← 二选一
   出片台  http://{host}:{port}/h3-long-video/app     (SelfLift)
   复刻台  http://{host}:{port}/remake                (黑鹤二采)
+  单图出片 http://{host}:{port}/single               (input 选图直出)
   ComfyUI {comfy}   ← 只当算力后端，可以在别的机器
 ──────────────────────────────────────────────────────────
 """.strip()
@@ -57,6 +60,7 @@ def build_app() -> web.Application:
     app = web.Application(client_max_size=256 * 1024 ** 3)
     routes = web.RouteTableDef()
     SP.register_routes(routes, web)          # 与 ComfyUI 面板共用同一套 handler
+    SGP.register_routes(routes, web)         # 单图出片台：/single/*
 
     # ---- 复刻导演台：可选加载，缺文件不影响出片台 ----
     remake_ok, remake_err = False, ""

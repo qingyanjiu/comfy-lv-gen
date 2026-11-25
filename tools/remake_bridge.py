@@ -166,8 +166,13 @@ LAUNCHER_HTML = """<!DOCTYPE html>
   code{background:#1a1f28;padding:1px 5px;border-radius:4px;color:#9fb4d0}
 </style></head><body><div class="wrap">
   <h1>H3 工作台</h1>
-  <div class="sub">一个服务、一个端口，两个面板都在这里。</div>
+  <div class="sub">一个服务、一个端口，三个应用都在这里。</div>
   <div class="grid">
+    <a class="card" href="/single">
+      <span class="tag">SelfLift · 单图直出</span>
+      <div class="name">单图出片</div>
+      <div class="desc">从 input 选参考图 · 设 MP 与画幅 · 填提示词 · 看带 audio 成片</div>
+    </a>
     <a class="card" href="/remake">
       <span class="tag">黑鹤二采</span>
       <div class="name">视频复刻导演台</div>
